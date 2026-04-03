@@ -82,17 +82,19 @@ export function normalizeChat(wahaChat) {
 
 export function normalizeMessage(wahaMsg) {
   const body = wahaMsg.body || wahaMsg.text || wahaMsg.content || wahaMsg._data?.body || "";
-  const ts   = wahaMsg.timestamp || wahaMsg.t || wahaMsg._data?.t || Date.now() / 1000;
+  const tsRaw = wahaMsg.timestamp || wahaMsg.t || wahaMsg._data?.t || null;
+  const ts = tsRaw ? new Date(tsRaw * 1000).toISOString() : new Date().toISOString();
+  const chatId = wahaMsg.chatId || wahaMsg.from || wahaMsg.to || null;
 
   return {
     id:       wahaMsg.id || String(Date.now()),
     from:     wahaMsg.fromMe ? "operator" : "patient",
     text:     body,
-    time:     new Date(ts * 1000).toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" }),
-    ts:       new Date(ts * 1000).toISOString(), // ← adiciona isso
+    time:     new Date(ts).toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" }),
+    ts,
+    chatId,
     type:     wahaMsg.type || "text",
     operator: wahaMsg.fromMe ? "Você" : null,
-    chatId:   wahaMsg.chatId || wahaMsg.from || null,
     hasPatientCard: detectPatientCard(body),
   };
 }
