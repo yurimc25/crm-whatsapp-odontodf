@@ -329,13 +329,15 @@ export function useWAHA(operator) {
 
   const resolveChat = useCallback((chatId) => {
     setChats(prev => {
-      const updated = prev.map(c =>
-        c.id === chatId ? { ...c, status: "resolved", unread: 0 } : c
-      );
+      const updated = prev.map(c => c.id !== chatId ? c : {
+        ...c,
+        status:        "resolved",
+        lastPatientTs: null,  // zera a contagem
+        unread:        0,
+      });
       cache.set(CHATS_KEY, updated, CHATS_TTL);
       return updated;
     });
-    persistChat(chatId, { status: "resolved" });
   }, []);
 
   const addTag = useCallback((chatId, tag) => {

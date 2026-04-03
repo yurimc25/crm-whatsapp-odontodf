@@ -158,7 +158,10 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
             operator={operator}
             onSend={(text) => send(activeChat.id, text, operator.name)}
             onForward={(toRole) => { forwardChat(activeChat.id, toRole); }}
-            onResolve={() => { resolveChat(activeChat.id); }}
+            onResolve={() => {
+              resolveChat(activeChat.id);
+              // chama também a API do WAHA se existir
+            }}
             onLoadMore={loadMoreMessages}
             canForwardToAdmin={perms.verAdmin}
           />

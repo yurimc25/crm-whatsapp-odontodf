@@ -120,14 +120,56 @@ module.exports = async function handler(req, res) {
     }
 
     if (action === "evolutions") {
-      if (!id) return res.status(400).json({ error: "id obrigatório" });
-      const r = await codentalFetch(`/patients/${id}/evolutions.json`, session);
-      if (!r.ok) return res.status(r.status).json({ error: `Codental: ${r.status}` });
-      const data = await r.json();
-      return res.json({ evolutions: Array.isArray(data) ? data : (data.evolutions || data.data || []) });
+    if (!id) return res.status(400).json({ error: "id obrigatório" });
+
+    // Tenta JSON primeiro
+    const r = await codentalFetch(`/patients/${id}/evolutions.json`, session);
+
+    const ct = r.headers.get("content-type") || "";
+
+    // Se retornou JSON real
+    if (ct.includes("json") && r.ok) {
+        const data = await r.json();
+        const list = Array.isArray(data) ? data : (data.evolutions || data.data || []);
+        return res.json({ evolutions: list });
     }
 
-    return res.status(400).json({ error: `Ação desconhecida: ${action}` });
+    // Se retornou HTML, faz parse manual
+    if (r.ok) {
+        const html = await r.text();
+        const evolutions = [];
+
+        // Extrai cada evolution-row
+        const rowReg = /id="evolution_(\d+)"[\s\S]*?class="evolutions-table-cell-text[\s\S]*?<\/tr>/g;
+        let match;
+        while ((match = rowReg.exec(html)) !== null) {
+        const block = match[0];
+        const eid   = match[1];
+
+        // Descrição: primeiro div dentro de evolutions-table-cell-text
+        const descM = block.match(/<div[^>]*tw-text-ugray-900[^>]*>([\s\S]*?)<\/div>/);
+        const desc  = descM ? descM[1].replace(/<[^>]+>/g,"").trim() : "";
+
+        // Data e dentista: evolution-dentist div
+        const dentM = block.match(/class="evolution-dentist[^"]*"[^>]*>([\s\S]*?)<\/div>/);
+        let date = "", dentist = "", signed = false;
+        if (dentM) {
+            const inner = dentM[1];
+            const dateM = inner.match(/(\d{2}\/\d{2}\/\d{4})\s+(\d{2}:\d{2}:\d{2})/);
+            if (dateM) date = `${dateM[1]} ${dateM[2]}`;
+            const dentistM = inner.match(/<span[^>]*tw-truncate[^>]*>([\s\S]*?)<\/span>/);
+            if (dentistM) dentist = dentistM[1].replace(/<[^>]+>/g,"").trim();
+            signed = inner.includes("Assinado");
+        }
+
+        evolutions.push({ id: eid, description: desc, date, dentist, signed });
+        }
+
+        return res.json({ evolutions });
+    }
+
+    return res.status(r.status).json({ error: `Codental: ${r.status}` });
+    }
 
   } catch (e) {
     console.error("[codental]", e.message);
