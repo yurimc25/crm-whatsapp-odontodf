@@ -88,37 +88,46 @@ export default async function handler(req, res) {
 function makeVariants(digits) {
   const variants = new Set();
   const d = digits.replace(/\D/g, "");
-  
   variants.add(d);
 
-  let local = d;
-  
-  // Remove DDI 55 se tiver
-  if (d.startsWith("55") && d.length >= 10) {
-    local = d.slice(2);
-  }
-  
+  // Remove DDI 55
+  let local = d.startsWith("55") ? d.slice(2) : d;
   variants.add(local);
-  
-  // Com DDI
   variants.add("55" + local);
 
-  // Celular BR com 9: 11 dígitos (DDD + 9 + 8)
+  // Remove DDD (primeiros 2 dígitos do local)
+  if (local.length >= 10) {
+    const semDDD = local.slice(2);
+    variants.add(semDDD);
+    // Com/sem 9 extra
+    if (semDDD.startsWith("9") && semDDD.length === 9) {
+      variants.add(semDDD.slice(1)); // 8 dígitos
+    }
+  }
+
+  // Remove 0 extra no final (bug do WAHA)
+  if (d.endsWith("0") && d.length > 11) {
+    const sem0 = d.slice(0, -1);
+    variants.add(sem0);
+    const localSem0 = sem0.startsWith("55") ? sem0.slice(2) : sem0;
+    variants.add(localSem0);
+    variants.add("55" + localSem0);
+    if (localSem0.length >= 10) variants.add(localSem0.slice(2));
+  }
+
+  // Com/sem 9 no celular
   if (local.length === 11 && local[2] === "9") {
-    const sem9 = local.slice(0, 2) + local.slice(3); // remove o 9 → 10 dígitos
+    const sem9 = local.slice(0, 2) + local.slice(3);
     variants.add(sem9);
     variants.add("55" + sem9);
+    variants.add(sem9.slice(2));
   }
-
-  // Fixo/comercial BR: 10 dígitos (DDD + 8)
   if (local.length === 10) {
-    const com9 = local.slice(0, 2) + "9" + local.slice(2); // adiciona 9 → 11 dígitos
+    const com9 = local.slice(0, 2) + "9" + local.slice(2);
     variants.add(com9);
     variants.add("55" + com9);
+    variants.add(com9.slice(2));
   }
-
-  // 8 dígitos sem DDD — adiciona DDDs comuns (improvável mas cobre edge cases)
-  // Não gera aqui para não criar falsos positivos
 
   return [...variants];
 }
