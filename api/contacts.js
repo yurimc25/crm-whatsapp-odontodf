@@ -91,31 +91,25 @@ function makeVariants(digits) {
   variants.add(d);
 
   // Remove DDI 55
-  let local = d.startsWith("55") ? d.slice(2) : d;
+  const local = d.startsWith("55") && d.length > 10 ? d.slice(2) : d;
   variants.add(local);
   variants.add("55" + local);
 
-  // Remove DDD (primeiros 2 dígitos do local)
+  // Remove DDD (2 dígitos) → número sem DDD
   if (local.length >= 10) {
     const semDDD = local.slice(2);
     variants.add(semDDD);
-    // Com/sem 9 extra
-    if (semDDD.startsWith("9") && semDDD.length === 9) {
+
+    // Com/sem 9 no celular
+    if (semDDD.length === 9 && semDDD.startsWith("9")) {
       variants.add(semDDD.slice(1)); // 8 dígitos
+    }
+    if (semDDD.length === 8) {
+      variants.add("9" + semDDD); // 9 dígitos
     }
   }
 
-  // Remove 0 extra no final (bug do WAHA)
-  if (d.endsWith("0") && d.length > 11) {
-    const sem0 = d.slice(0, -1);
-    variants.add(sem0);
-    const localSem0 = sem0.startsWith("55") ? sem0.slice(2) : sem0;
-    variants.add(localSem0);
-    variants.add("55" + localSem0);
-    if (localSem0.length >= 10) variants.add(localSem0.slice(2));
-  }
-
-  // Com/sem 9 no celular
+  // Com/sem 9 no local com DDD
   if (local.length === 11 && local[2] === "9") {
     const sem9 = local.slice(0, 2) + local.slice(3);
     variants.add(sem9);
@@ -127,6 +121,15 @@ function makeVariants(digits) {
     variants.add(com9);
     variants.add("55" + com9);
     variants.add(com9.slice(2));
+  }
+
+  // Remove 0 extra no final (bug WAHA)
+  if (d.endsWith("0") && d.length > 12) {
+    const sem0 = d.slice(0, -1);
+    variants.add(sem0);
+    const localSem0 = sem0.startsWith("55") ? sem0.slice(2) : sem0;
+    variants.add(localSem0);
+    variants.add(localSem0.slice(2));
   }
 
   return [...variants];
