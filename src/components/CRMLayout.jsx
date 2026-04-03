@@ -13,6 +13,7 @@ export default function CRMLayout({ operator, onLogout }) {
   const [search, setSearch]         = useState("");
 
   const { displayName, loading: contactsLoading } = useContactsCtx();
+  const { loadMoreMessages } = useWAHA(operator);
 
   const {
     chats, messages, loadMessages, send,
@@ -56,6 +57,7 @@ export default function CRMLayout({ operator, onLogout }) {
 
   const WS_COLOR = { connected:"#0d7d62", reconnecting:"#b56a00", disconnected:"#888" };
   const WS_LABEL = { connected:"ao vivo", reconnecting:"reconectando...", disconnected:"offline" };
+  
 
   return (
     <div style={{
@@ -153,6 +155,7 @@ export default function CRMLayout({ operator, onLogout }) {
               onForward={toRole => forwardChat(activeChat.id, toRole)}
               onResolve={() => resolveChat(activeChat.id)}
               canForwardToAdmin={perms.verAdmin}
+              onLoadMore={loadMoreMessages}
             />
           ) : (
             <div style={{ flex:1,display:"flex",alignItems:"center",justifyContent:"center",

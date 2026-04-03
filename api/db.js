@@ -107,6 +107,31 @@ export default async function handler(req, res) {
       return res.json({ ok: true });
     }
 
+    // ── Histórico de mensagens de um chat (scroll infinito) ──
+    if (req.method === "GET" && action === "messages") {
+      const { chatId, before, limit = "100" } = req.query;
+      if (!chatId) return res.status(400).json({ error: "chatId obrigatório" });
+
+      const query = { numero: chatId };
+      if (before) query.data = { $lte: before }; // paginação por data
+
+      const docs = await db.collection("conversas")
+        .find(query)
+        .sort({ data: -1 })
+        .limit(parseInt(limit))
+        .toArray();
+
+      // Achata todas as mensagens de todos os docs, ordena por ts
+      const msgs = docs
+        .flatMap(d => d.mensagens || [])
+        .sort((a, b) => new Date(a.ts) - new Date(b.ts));
+
+      const oldest = docs[docs.length - 1]?.data || null;
+      const hasMore = docs.length === parseInt(limit);
+
+      return res.json({ messages: msgs, oldest, hasMore });
+    }
+
     return res.status(404).json({ error: `Ação desconhecida: ${action}` });
 
   } catch (e) {

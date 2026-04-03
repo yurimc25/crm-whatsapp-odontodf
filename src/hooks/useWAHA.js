@@ -14,8 +14,8 @@ import { cache } from "../utils/cache";
 const USE_MOCK    = import.meta.env.VITE_USE_MOCK === "true";
 const CHATS_KEY   = "waha_chats";
 const MSGS_PREFIX = "waha_msgs_";
-const CHATS_TTL   = 5  * 60 * 1000; // 5 min
-const MSGS_TTL    = 10 * 60 * 1000; // 10 min
+const CHATS_TTL = 30 * 60 * 1000;      // 30min
+const MSGS_TTL  = 24 * 60 * 60 * 1000; // 24h
 
 export function useWAHA(operator) {
   // Carrega lista de chats do cache imediatamente
@@ -87,6 +87,39 @@ export function useWAHA(operator) {
             });
             setChats(withMeta);
             cache.set(CHATS_KEY, withMeta, CHATS_TTL);
+            // Carrega última mensagem de cada chat em background (sem bloquear a UI)
+            Promise.allSettled(
+              withMeta
+                .filter(c => !c.lastMsg) // só os que ainda não têm mensagem
+                .slice(0, 20)            // máximo 20 para não sobrecarregar
+                .map(async c => {
+                  try {
+                    const raw = await getMessages(c.id, 5);
+                    if (!raw?.length) return;
+                    const msgs = raw.map(normalizeMessage).reverse();
+                    const lastAny = msgs[msgs.length - 1];
+                    const lastPatient = [...msgs].reverse().find(m => m.from === "patient");
+
+                    // Salva mensagens no cache
+                    const cachedMsgs = cache.get(MSGS_PREFIX + c.id) || [];
+                    if (!cachedMsgs.length) {
+                      cache.set(MSGS_PREFIX + c.id, msgs, MSGS_TTL);
+                      setMessages(prev => ({ ...prev, [c.id]: msgs }));
+                    }
+
+                    setChats(prev => {
+                      const updated = prev.map(x => x.id !== c.id ? x : {
+                        ...x,
+                        lastMsg:       lastAny?.text || x.lastMsg,
+                        lastTime:      lastAny?.time || x.lastTime,
+                        lastPatientTs: lastPatient?.ts || x.lastPatientTs,
+                      });
+                      cache.set(CHATS_KEY, updated, CHATS_TTL);
+                      return updated;
+                    });
+                  } catch (_) {}
+                })
+            );
           } else {
             setChats(merged);
             cache.set(CHATS_KEY, merged, CHATS_TTL);
@@ -180,6 +213,8 @@ export function useWAHA(operator) {
       setMessages(prev => ({ ...prev, [chatId]: normalized }));
       cache.set(MSGS_PREFIX + chatId, normalized, MSGS_TTL);
 
+
+
       // Atualiza lastMsg e lastPatientTs no chat
       const lastPatient = [...normalized].reverse().find(m => m.from === "patient");
       const lastAny = normalized[normalized.length - 1];
@@ -197,6 +232,47 @@ export function useWAHA(operator) {
       console.error("loadMessages", e);
     }
   }, []);
+
+  // Adiciona após o loadMessages existente:
+  const loadMoreMessages = useCallback(async (chatId, beforeDate) => {
+    try {
+      const ikey = import.meta.env.VITE_INTERNAL_API_KEY || "";
+      const qs = new URLSearchParams({ action: "messages", chatId, limit: "100",
+        ...(beforeDate ? { before: beforeDate } : {}) }).toString();
+      const r = await fetch(`/api/db?${qs}`, {
+        headers: { "X-Internal-Key": ikey },
+      });
+      if (!r.ok) return { messages: [], hasMore: false };
+      const { messages, oldest, hasMore } = await r.json();
+
+      // Normaliza formato (MongoDB salva diferente do WAHA)
+      const normalized = messages.map(m => ({
+        id:       m.id || m.ts || String(Math.random()),
+        from:     m.role === "user" ? "patient" : "operator",
+        text:     m.content || m.text || "",
+        time:     m.ts ? new Date(m.ts).toLocaleTimeString("pt-BR",
+                    { hour:"2-digit", minute:"2-digit" }) : "",
+        ts:       m.ts,
+        type:     "text",
+        operator: m.role !== "user" ? (m.author || "Operador") : null,
+      }));
+
+      // Prepend no início do array atual
+      setMessages(prev => {
+        const current = prev[chatId] || [];
+        const ids = new Set(current.map(m => m.id));
+        const novos = normalized.filter(m => !ids.has(m.id));
+        return { ...prev, [chatId]: [...novos, ...current] };
+      });
+
+      return { hasMore, oldest };
+    } catch (e) {
+      console.error("loadMoreMessages", e);
+      return { messages: [], hasMore: false };
+    }
+  }, []);
+
+
 
   // ── 5. Envia mensagem ────────────────────────────────────────
   const send = useCallback(async (chatId, text, operatorName) => {
