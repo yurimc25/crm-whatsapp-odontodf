@@ -95,41 +95,43 @@ function makeVariants(digits) {
   variants.add(local);
   variants.add("55" + local);
 
-  // Remove DDD (2 dígitos) → número sem DDD
+  // Remove DDD
   if (local.length >= 10) {
-    const semDDD = local.slice(2);
-    variants.add(semDDD);
+    const ddd = local.slice(0, 2);
+    const num = local.slice(2);
+    variants.add(num);
 
-    // Com/sem 9 no celular
-    if (semDDD.length === 9 && semDDD.startsWith("9")) {
-      variants.add(semDDD.slice(1)); // 8 dígitos
+    // Celular com 9: 9 dígitos
+    if (num.length === 9 && num.startsWith("9")) {
+      const sem9 = num.slice(1); // 8 dígitos
+      variants.add(sem9);
+      variants.add(ddd + sem9);           // 6199611055 → 61611055... não
+      variants.add("55" + ddd + sem9);
     }
-    if (semDDD.length === 8) {
-      variants.add("9" + semDDD); // 9 dígitos
+
+    // Número antigo sem 9: 8 dígitos → gera variante com 9
+    if (num.length === 8) {
+      const com9 = "9" + num;             // 99611055
+      variants.add(com9);
+      variants.add(ddd + com9);           // 6199611055
+      variants.add("55" + ddd + com9);    // 556199611055 ← chave que o WAHA usa!
+      variants.add(ddd + num);            // 6199611055 sem 9
+      variants.add("55" + ddd + num);     // 5561... sem 9
     }
   }
 
-  // Com/sem 9 no local com DDD
+  // Com/sem 9 no local com DDD (11 dígitos)
   if (local.length === 11 && local[2] === "9") {
     const sem9 = local.slice(0, 2) + local.slice(3);
     variants.add(sem9);
     variants.add("55" + sem9);
-    variants.add(sem9.slice(2));
   }
+
+  // Local com 10 dígitos → adiciona 9
   if (local.length === 10) {
     const com9 = local.slice(0, 2) + "9" + local.slice(2);
     variants.add(com9);
     variants.add("55" + com9);
-    variants.add(com9.slice(2));
-  }
-
-  // Remove 0 extra no final (bug WAHA)
-  if (d.endsWith("0") && d.length > 12) {
-    const sem0 = d.slice(0, -1);
-    variants.add(sem0);
-    const localSem0 = sem0.startsWith("55") ? sem0.slice(2) : sem0;
-    variants.add(localSem0);
-    variants.add(localSem0.slice(2));
   }
 
   return [...variants];

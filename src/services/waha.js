@@ -11,7 +11,7 @@ const headers = () => ({
 // ── REST ─────────────────────────────────────────────────────────
 
 export async function getChats() {
-  const r = await fetch(`${WAHA_URL}/api/${SESSION}/chats?limit=50`, { headers: headers() });
+  const r = await fetch(`${WAHA_URL}/api/${SESSION}/chats?limit=50&lastMessageLimit=1`, { headers: headers() });
   if (!r.ok) throw new Error(`WAHA getChats: ${r.status}`);
   return r.json();
 }
