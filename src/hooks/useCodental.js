@@ -1,4 +1,3 @@
-// src/hooks/useCodental.js
 import { useState, useCallback } from "react";
 
 const ikey = () => import.meta.env.VITE_INTERNAL_API_KEY || "";
@@ -11,7 +10,9 @@ export function useCodental() {
     setLoading(true);
     setError(null);
     try {
-      const qs = new URLSearchParams(params).toString();
+      const qs = new URLSearchParams(
+        Object.fromEntries(Object.entries(params).filter(([,v]) => v != null))
+      ).toString();
       const r = await fetch(`/api/codental?${qs}`, {
         headers: { "X-Internal-Key": ikey() },
       });
@@ -25,9 +26,14 @@ export function useCodental() {
     }
   }
 
-  const searchPatient = useCallback((q) => call({ action: "search", q }), []);
+  // Busca por nome (fuzzy: local → API)
+  const searchByName  = useCallback((q) => call({ action: "search", q }), []);
+  // Busca por telefone
+  const searchByPhone = useCallback((phone) => call({ action: "search", phone }), []);
+  // Dados completos
   const getPatient    = useCallback((id) => call({ action: "patient", id }), []);
+  // Uploads/exames
   const getUploads    = useCallback((id) => call({ action: "uploads", id }), []);
 
-  return { searchPatient, getPatient, getUploads, loading, error };
+  return { searchByName, searchByPhone, getPatient, getUploads, loading, error };
 }

@@ -3,45 +3,78 @@ import { MOCK_PRONTUARIO } from "../data/mock";
 import { useContactsCtx } from "../App";
 import { wahaIdToPhone, formatPhone } from "../hooks/useContacts";
 import { useCodental } from "../hooks/useCodental";
+import { useState, useEffect } from "react";
 
 // Dentro do PerfilTab, adiciona estado e busca:
-function PerfilTab({ prontuario, chat }) {
-  const { searchPatient, loading: cLoading } = useCodental();
-  const [codental, setCodental] = useState(null);
+function PerfilTab({ chat }) {
+  const { searchByPhone, searchByName, getUploads, loading } = useCodental();
   const { displayInfo } = useContactsCtx();
+  const [paciente, setPaciente] = useState(null);
+  const [uploads, setUploads]   = useState([]);
   const info = displayInfo(chat.id, chat.name);
 
   useEffect(() => {
-    // Busca pelo nome do contato no Codental
-    const nome = info.hasContact ? info.name.split(" ").slice(0, 2).join(" ") : null;
-    const telefone = info.phone.replace(/\D/g, "");
-    const query = telefone || nome;
-    if (!query) return;
+    setPaciente(null);
+    setUploads([]);
 
-    searchPatient(query).then(data => {
-      if (data?.patients?.length > 0) setCodental(data.patients[0]);
-    });
+    async function buscar() {
+      // 1. Tenta pelo telefone primeiro (mais preciso)
+      const phone = info.phone.replace(/\D/g, "");
+      let result = phone ? await searchByPhone(phone) : null;
+
+      // 2. Se não achou, tenta pelo nome do contato
+      if ((!result?.patients?.length) && info.hasContact) {
+        const nome = info.name.split(" ").slice(0, 3).join(" ");
+        result = await searchByName(nome);
+      }
+
+      if (result?.patients?.length > 0) {
+        const p = result.patients[0];
+        setPaciente(p);
+        // Busca uploads se tiver ID
+        if (p.id) {
+          const u = await getUploads(p.id);
+          setUploads(u?.uploads || []);
+        }
+      }
+    }
+
+    buscar();
   }, [chat.id]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      <Section label="Dados cadastrais">
-        {codental ? (
+      <Section label="Codental">
+        {loading && <div style={{ color: "#3a7055", fontSize: 12 }}>Buscando...</div>}
+        {!loading && !paciente && <ModuleStub name="Paciente não encontrado no Codental" icon="📋" />}
+        {paciente && (
           <>
-            <Field label="Nome"     value={codental.name || codental.fullName} />
-            <Field label="CPF"      value={codental.cpf} />
-            <Field label="Email"    value={codental.email} />
-            <Field label="Convênio" value={codental.health_insurance || codental.convenio} />
-            <Field label="Dentista" value={codental.professional?.name} />
-            <Field label="ID Codental" value={codental.id} />
+            <Field label="Nome"      value={paciente.name || paciente.fullName} />
+            <Field label="CPF"       value={paciente.cpf} />
+            <Field label="Email"     value={paciente.email} />
+            <Field label="Convênio"  value={paciente.health_insurance || paciente.convenio} />
+            <Field label="Nascimento" value={paciente.birthdate || paciente.birthday} />
+            <Field label="Dentista"  value={paciente.professional?.name} />
           </>
-        ) : cLoading ? (
-          <div style={{ color: "#3a7055", fontSize: 12 }}>Buscando no Codental...</div>
-        ) : (
-          <ModuleStub name="Codental — sem resultado" icon="📋" />
         )}
       </Section>
-      {/* resto igual */}
+
+      {uploads.length > 0 && (
+        <Section label={`Exames / Uploads (${uploads.length})`}>
+          {uploads.slice(0, 5).map((u, i) => (
+            <div key={i} style={{ marginBottom: 5 }}>
+              <div style={{ color: "#c8e8d8", fontSize: 12 }}>{u.name || u.filename}</div>
+              <div style={{ color: "#3a7055", fontSize: 10 }}>
+                {u.created_at ? new Date(u.created_at).toLocaleDateString("pt-BR") : ""}
+              </div>
+            </div>
+          ))}
+        </Section>
+      )}
+
+      <Section label="Notas internas">
+        {/* existente */}
+      </Section>
     </div>
   );
 }
