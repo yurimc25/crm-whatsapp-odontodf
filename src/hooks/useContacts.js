@@ -1,14 +1,8 @@
-// src/hooks/useContacts.js
-// Camadas de cache: localStorage (instantâneo) → MongoDB (1h) → Google API
-// O usuário vê os dados imediatamente do localStorage,
-// enquanto o MongoDB e o Google atualizam em background.
-
 import { useState, useEffect, useCallback } from "react";
 import { cache } from "../utils/cache";
 
-const LS_KEY   = "contacts_map";
-const LS_TTL   = 60 * 60 * 1000; // 1 hora no localStorage
-const API_TTL  = 60 * 60 * 1000; // 1 hora no MongoDB
+const LS_KEY = "contacts_map";
+const LS_TTL = 60 * 60 * 1000;
 
 export function wahaIdToPhone(wahaId) {
   return (wahaId || "").replace(/@.*$/, "").replace(/\D/g, "");
@@ -24,30 +18,31 @@ export function formatPhone(digits) {
 }
 
 export function useContacts() {
-  // 1. Carrega do localStorage imediatamente (zero latência)
   const [contactMap, setContactMap] = useState(() => cache.get(LS_KEY) || {});
   const [loading, setLoading]       = useState(false);
   const [error, setError]           = useState(null);
-  const [source, setSource]         = useState("cache"); // cache | mongo | google
+  const [source, setSource]         = useState("cache");
 
   const internalKey = import.meta.env.VITE_INTERNAL_API_KEY || "";
 
-  // 2. Tenta MongoDB (rápido, ~100ms), depois Google API se necessário
   const fetchContacts = useCallback(async (force = false) => {
-    if (!force && cache.get(LS_KEY)) return; // localStorage válido, não precisa buscar
+    const cached = cache.get(LS_KEY);
+    if (!force && cached && Object.keys(cached).length > 0) {
+      setContactMap(cached);
+      return;
+    }
 
     setLoading(true);
     setError(null);
 
+    // Tenta MongoDB primeiro
     try {
-      // Tenta cache do MongoDB primeiro
       const mongoRes = await fetch(`/api/db?action=contacts_cache`, {
         headers: { "X-Internal-Key": internalKey },
       });
-
       if (mongoRes.ok) {
         const { contacts, expired } = await mongoRes.json();
-        if (contacts && !expired) {
+        if (contacts && !expired && Object.keys(contacts).length > 0) {
           setContactMap(contacts);
           cache.set(LS_KEY, contacts, LS_TTL);
           setSource("mongo");
@@ -56,10 +51,10 @@ export function useContacts() {
         }
       }
     } catch (e) {
-      console.warn("[useContacts] MongoDB cache falhou, indo para Google API:", e.message);
+      console.warn("[contacts] MongoDB falhou:", e.message);
     }
 
-    // Busca na Google Contacts API via Vercel Function
+    // Google API
     try {
       const r = await fetch("/api/contacts", {
         headers: { "X-Internal-Key": internalKey },
@@ -70,20 +65,23 @@ export function useContacts() {
         throw new Error(err.error || `HTTP ${r.status}`);
       }
 
-      const { contacts } = await r.json();
-      setContactMap(contacts);
-      cache.set(LS_KEY, contacts, LS_TTL);
-      setSource("google");
+      const data = await r.json();
+      const contacts = data.contacts || {};
+      console.log("[contacts] carregados:", Object.keys(contacts).length);
 
-      // Salva no MongoDB para próximas requisições
-      fetch(`/api/db?action=contacts_cache`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Internal-Key": internalKey },
-        body: JSON.stringify({ contacts }),
-      }).catch(() => {});
+      if (Object.keys(contacts).length > 0) {
+        setContactMap(contacts);
+        cache.set(LS_KEY, contacts, LS_TTL);
+        setSource("google");
 
+        fetch(`/api/db?action=contacts_cache`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Internal-Key": internalKey },
+          body: JSON.stringify({ contacts }),
+        }).catch(() => {});
+      }
     } catch (e) {
-      console.warn("[useContacts] Google API falhou:", e.message);
+      console.warn("[contacts] Google API falhou:", e.message);
       setError(e.message);
     } finally {
       setLoading(false);
@@ -92,8 +90,7 @@ export function useContacts() {
 
   useEffect(() => {
     fetchContacts();
-    // Atualiza em background a cada hora
-    const interval = setInterval(() => fetchContacts(true), API_TTL);
+    const interval = setInterval(() => fetchContacts(true), LS_TTL);
     return () => clearInterval(interval);
   }, [fetchContacts]);
 
@@ -110,10 +107,7 @@ export function useContacts() {
     const phone       = wahaIdToPhone(wahaId);
     const fmtPhone    = formatPhone(phone);
     const contactName = resolveName(wahaId);
-
-    if (contactName) {
-      return { hasContact: true, name: contactName, phone: fmtPhone };
-    }
+    if (contactName) return { hasContact: true, name: contactName, phone: fmtPhone };
     const rawNumber = fmtPhone !== "—" ? fmtPhone : (fallbackName || wahaId || "Desconhecido");
     return { hasContact: false, line1: rawNumber, line2: rawNumber, phone: fmtPhone };
   }, [resolveName]);

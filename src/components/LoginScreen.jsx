@@ -16,7 +16,7 @@ export default function LoginScreen({ onLogin }) {
       const r = await fetch("/api/auth", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        credentials: "include",
+        credentials: "include",   // ← adiciona essa linha
         body: JSON.stringify({ login: login.trim(), password }),
       });
       const data = await r.json();
