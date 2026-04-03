@@ -87,30 +87,38 @@ export default async function handler(req, res) {
 // Gera variações do número para cobrir diferentes formatos do WhatsApp
 function makeVariants(digits) {
   const variants = new Set();
-  variants.add(digits);
+  const d = digits.replace(/\D/g, "");
+  
+  variants.add(d);
 
-  // Sem DDI Brasil (55)
-  if (digits.startsWith("55") && digits.length >= 12) {
-    const local = digits.slice(2);
-    variants.add(local);
+  let local = d;
+  
+  // Remove DDI 55 se tiver
+  if (d.startsWith("55") && d.length >= 10) {
+    local = d.slice(2);
+  }
+  
+  variants.add(local);
+  
+  // Com DDI
+  variants.add("55" + local);
 
-    // Com/sem 9 extra (celular BR)
-    if (local.length === 11 && local[2] === "9") {
-      variants.add(local.slice(0, 2) + local.slice(3)); // remove o 9
-    }
-    if (local.length === 10) {
-      variants.add(local.slice(0, 2) + "9" + local.slice(2)); // adiciona o 9
-    }
+  // Celular BR com 9: 11 dígitos (DDD + 9 + 8)
+  if (local.length === 11 && local[2] === "9") {
+    const sem9 = local.slice(0, 2) + local.slice(3); // remove o 9 → 10 dígitos
+    variants.add(sem9);
+    variants.add("55" + sem9);
   }
 
-  // Com DDI se não tiver
-  if (!digits.startsWith("55") && digits.length === 10) {
-    variants.add("55" + digits);
-    variants.add("55" + digits.slice(0, 2) + "9" + digits.slice(2));
+  // Fixo/comercial BR: 10 dígitos (DDD + 8)
+  if (local.length === 10) {
+    const com9 = local.slice(0, 2) + "9" + local.slice(2); // adiciona 9 → 11 dígitos
+    variants.add(com9);
+    variants.add("55" + com9);
   }
-  if (!digits.startsWith("55") && digits.length === 11) {
-    variants.add("55" + digits);
-  }
+
+  // 8 dígitos sem DDD — adiciona DDDs comuns (improvável mas cobre edge cases)
+  // Não gera aqui para não criar falsos positivos
 
   return [...variants];
 }
