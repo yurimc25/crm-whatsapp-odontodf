@@ -1,43 +1,75 @@
 import { useState } from "react";
 
+const T = {
+  bg:       "#212121",
+  bubble:   "#2d2d2d",
+  border:   "#383838",
+  card:     "#252525",
+  cardBord: "#d4956a44",
+  text:     "#ececec",
+  sub:      "#8e8e8e",
+  accent:   "#d4956a",
+  accentBg: "#3a2a1e",
+  green:    "#4caf87",
+  greenBg:  "#1a2e22",
+  warn:     "#c9a84c",
+  warnBg:   "#2a2010",
+  inputBg:  "#1e1e1e",
+  fieldBg:  "#1a1a1a",
+};
+
 const CAMPOS = ["nome","cpf","convenio","nascimento","email","telefone"];
 
+function parsePatientData(text) {
+  const fields = {};
+  for (const line of text.split("\n")) {
+    const [key, ...rest] = line.split(":");
+    const val = rest.join(":").trim();
+    const k = key?.toLowerCase().trim() || "";
+    if (k.includes("nome"))                                     fields.nome = val;
+    if (k.includes("cpf"))                                      fields.cpf = val.replace(/\D/g,"");
+    if (k.includes("e-mail") || k.includes("email"))           fields.email = val;
+    if (k.includes("convênio") || k.includes("convenio") ||
+        k.includes("particular") || k.includes("plano"))        fields.convenio = val;
+    if (k.includes("telefone") || k.includes("celular") ||
+        k.includes("carteirinha") || k.includes("número do"))   fields.telefone = val;
+    if (k.includes("nascimento") || k.includes("data de"))      fields.nascimento = val;
+  }
+  return fields;
+}
+
 function isTemplateVazio(text) {
-  // Template vazio = tem os labels mas nenhum valor preenchido
-  const labels = ["Nome completo:","CPF:","E-mail:","Convênio","Telefone:","Data de nascimento:"];
+  const labels = ["Nome completo:","CPF:","E-mail:","Convênio","Telefone:","Data de nascimento:","Número do cartão"];
   const temLabels = labels.filter(l => text.includes(l)).length >= 3;
   if (!temLabels) return false;
-  // Verifica se todos os campos estão vazios (só label + quebra de linha)
+  // Checa se todas as linhas com ":" têm valor vazio depois
   const linhas = text.split("\n").map(l => l.trim()).filter(Boolean);
-  const camposPreenchidos = linhas.filter(l => {
-    const isLabel = l.endsWith(":") || l.match(/^(Nome|CPF|E-mail|Convênio|Telefone|Data|Número)/i);
-    return !isLabel && l.length > 1;
+  const comValor = linhas.filter(l => {
+    const idx = l.indexOf(":");
+    if (idx === -1) return false;
+    const val = l.slice(idx+1).trim();
+    return val.length > 0;
   });
-  return camposPreenchidos.length === 0;
+  return comValor.length === 0;
 }
 
 export default function PatientCardDetected({ msg }) {
   const [showModal, setShowModal] = useState(false);
-  const [form, setForm] = useState({
-    nome: msg.patientData?.nome || "",
-    cpf:  msg.patientData?.cpf  || "",
-    convenio: msg.patientData?.convenio || "",
-    nascimento: msg.patientData?.nascimento || "",
-    email: msg.patientData?.email || "",
-    telefone: msg.patientData?.telefone || "",
-  });
+  const [modalAction, setModalAction] = useState(null); // "codental" | "doctoralia"
+  const [status, setStatus]  = useState("idle");
+  const data = parsePatientData(msg.text);
 
-  // Não exibe card se template completamente vazio
+  // Não exibe card se template vazio
   if (isTemplateVazio(msg.text)) {
     return (
-      <div style={{ display:"flex", justifyContent:"flex-start" }}>
-        <div style={{ maxWidth:"70%", background:"#fff", border:"1px solid #e5e4df",
+      <div style={{ display:"flex", justifyContent:"flex-start", marginBottom:2 }}>
+        <div style={{ maxWidth:"70%", background:T.bubble, border:`1px solid ${T.border}`,
           borderRadius:"2px 12px 12px 12px", padding:"8px 12px",
-          boxShadow:"0 1px 2px rgba(0,0,0,.06)" }}>
-          <div style={{ color:"#1a1a1a", fontSize:13, lineHeight:1.55, whiteSpace:"pre-wrap" }}>
+          boxShadow:"0 1px 3px rgba(0,0,0,.3)" }}>
+          <div style={{ color:T.text, fontSize:13, lineHeight:1.55, whiteSpace:"pre-wrap" }}>
             {msg.text}
           </div>
-          <div style={{ color:"#6b6b6b", fontSize:10, marginTop:4, textAlign:"right" }}>
+          <div style={{ color:T.sub, fontSize:10, marginTop:4, textAlign:"right" }}>
             {msg.time}
           </div>
         </div>
@@ -45,135 +77,200 @@ export default function PatientCardDetected({ msg }) {
     );
   }
 
-  const data = msg.patientData || {};
-  const temAlgumDado = Object.values(data).some(v => v && v !== "—");
-  const camposVazios = CAMPOS.filter(c => !data[c] || data[c] === "—");
+  const camposVazios = CAMPOS.filter(c => !data[c] || data[c].trim() === "");
+  const algumDado    = CAMPOS.some(c => data[c] && data[c].trim() !== "");
+
+  function handleAction(action) {
+    if (camposVazios.length > 0) {
+      setModalAction(action);
+      setShowModal(true);
+    } else {
+      executar(action, data);
+    }
+  }
+
+  function executar(action, formData) {
+    setStatus("loading");
+    setTimeout(() => {
+      console.log(`[${action}] dados:`, formData);
+      setStatus("success_" + action);
+    }, 1000);
+  }
+
+  const isSuccess = status.startsWith("success");
 
   return (
     <>
-      <div style={{ display:"flex", justifyContent:"flex-start" }}>
-        <div style={{ maxWidth:"75%", background:"#fff", border:"1px solid #e5e4df",
-          borderRadius:"2px 12px 12px 12px", overflow:"hidden",
-          boxShadow:"0 1px 2px rgba(0,0,0,.06)" }}>
-
-          {/* Mensagem original */}
-          <div style={{ padding:"8px 12px 6px",
-            borderBottom:"1px solid #f0efea" }}>
-            <div style={{ color:"#1a1a1a", fontSize:13, lineHeight:1.55, whiteSpace:"pre-wrap" }}>
+      <div style={{ display:"flex", justifyContent:"flex-start", marginBottom:2 }}>
+        <div style={{ maxWidth:"78%" }}>
+          {/* Bolha original */}
+          <div style={{ background:T.bubble, border:`1px solid ${T.border}`,
+            borderRadius:"2px 12px 0 0", padding:"8px 12px",
+            boxShadow:"0 1px 3px rgba(0,0,0,.3)" }}>
+            <div style={{ color:T.text, fontSize:13, lineHeight:1.55, whiteSpace:"pre-wrap" }}>
               {msg.text}
             </div>
-            <div style={{ color:"#6b6b6b", fontSize:10, marginTop:2, textAlign:"right" }}>
+            <div style={{ color:T.sub, fontSize:10, marginTop:4, textAlign:"right" }}>
               {msg.time}
             </div>
           </div>
 
-          {/* Card de dados detectados */}
-          <div style={{ padding:"10px 12px", background:"#f9fffe",
-            borderTop:"2px solid #0a7c5c" }}>
+          {/* Card detectado */}
+          <div style={{ background:T.card, border:`1px solid ${T.cardBord}`,
+            borderRadius:"0 0 12px 12px", padding:"10px 12px",
+            borderTop:`2px solid ${T.accent}` }}>
+
+            {/* Título */}
             <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:8 }}>
-              <span style={{ fontSize:14 }}>🦷</span>
-              <span style={{ fontSize:11, fontWeight:700, color:"#0a7c5c",
+              <span style={{ fontSize:13 }}>🦷</span>
+              <span style={{ fontSize:10, fontWeight:700, color:T.accent,
                 textTransform:"uppercase", letterSpacing:.5 }}>
                 Dados de Paciente Detectados
               </span>
-              {camposVazios.length === 0 && (
-                <span style={{ marginLeft:"auto", fontSize:10, fontWeight:700,
-                  color:"#0a7c5c", background:"#dcf2e8",
-                  padding:"1px 6px", borderRadius:4 }}>Completo</span>
-              )}
-              {camposVazios.length > 0 && (
-                <span style={{ marginLeft:"auto", fontSize:10, fontWeight:700,
-                  color:"#b7560a", background:"#fff3e0",
-                  padding:"1px 6px", borderRadius:4 }}>
-                  {camposVazios.length} campo{camposVazios.length>1?"s":""} ausente{camposVazios.length>1?"s":""}
+              {camposVazios.length > 0 ? (
+                <span style={{ marginLeft:"auto", fontSize:9, fontWeight:700,
+                  color:T.warn, background:T.warnBg,
+                  padding:"2px 6px", borderRadius:4 }}>
+                  {camposVazios.length} ausente{camposVazios.length>1?"s":""}
+                </span>
+              ) : (
+                <span style={{ marginLeft:"auto", fontSize:9, fontWeight:700,
+                  color:T.green, background:T.greenBg,
+                  padding:"2px 6px", borderRadius:4 }}>
+                  Completo
                 </span>
               )}
             </div>
 
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 16px", marginBottom:10 }}>
+            {/* Grid de dados */}
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr",
+              gap:"5px 12px", marginBottom:10 }}>
               {[["nome","Nome"],["cpf","CPF"],["convenio","Convênio"],
-                ["nascimento","Nascimento"],["email","Email"],["telefone","Telefone"]].map(([k,l]) => (
+                ["nascimento","Nascimento"],["email","Email"],["telefone","Telefone"]
+              ].map(([k,l]) => (
                 <div key={k}>
-                  <div style={{ fontSize:9, fontWeight:700, color:"#6b6b6b",
-                    textTransform:"uppercase", letterSpacing:.5 }}>{l}</div>
-                  <div style={{ fontSize:12, color: data[k] ? "#1a1a1a" : "#ccc" }}>
-                    {data[k] || "—"}
+                  <div style={{ fontSize:9, fontWeight:700, color:T.sub,
+                    textTransform:"uppercase", letterSpacing:.5, marginBottom:1 }}>{l}</div>
+                  <div style={{ fontSize:12,
+                    color: data[k] ? T.text : "#555",
+                    fontFamily: k==="cpf"||k==="telefone" ? "'DM Mono',monospace" : "inherit" }}>
+                    {k==="cpf" && data[k]
+                      ? data[k].replace(/(\d{3})(\d{3})(\d{3})(\d{2})/,"$1.$2.$3-$4")
+                      : data[k] || "—"}
                   </div>
                 </div>
               ))}
             </div>
 
-            <div style={{ display:"flex", gap:8 }}>
-              <button onClick={() => setShowModal(true)} style={{
-                flex:1, background:"#0a7c5c", border:"none", borderRadius:6,
-                padding:"7px 10px", color:"#fff", fontSize:12, fontWeight:600,
-                cursor:"pointer", fontFamily:"'DM Sans', sans-serif" }}>
-                {camposVazios.length > 0 ? "✏️ Completar e adicionar" : "+ Prontuário Codental"}
-              </button>
-              <button style={{
-                flex:1, background:"#fff", border:"1px solid #e5e4df",
-                borderRadius:6, padding:"7px 10px", color:"#1a1a1a",
-                fontSize:12, cursor:"pointer", fontFamily:"'DM Sans', sans-serif" }}>
-                🗓 Doctoralia
-              </button>
-            </div>
+            {/* Botões */}
+            {isSuccess ? (
+              <div style={{ background:T.greenBg, border:`1px solid ${T.green}44`,
+                borderRadius:6, padding:"8px 12px", color:T.green,
+                fontSize:12, fontWeight:600, textAlign:"center" }}>
+                ✓ {status.includes("codental") ? "Adicionado ao Codental" : "Adicionado ao Doctoralia"}
+              </div>
+            ) : (
+              <div style={{ display:"flex", gap:6 }}>
+                <button onClick={() => handleAction("codental")} disabled={status==="loading"}
+                  style={{ flex:1, background:T.accentBg, border:`1px solid ${T.accent}44`,
+                    borderRadius:6, padding:"7px 8px", color:T.accent,
+                    fontSize:11, fontWeight:600, cursor:"pointer",
+                    opacity: status==="loading" ? .6 : 1 }}>
+                  {camposVazios.length > 0 ? "✏️ Completar + Codental" : "+ Prontuário Codental"}
+                </button>
+                <button onClick={() => handleAction("doctoralia")} disabled={status==="loading"}
+                  style={{ flex:1, background:"#1a1e3a", border:"1px solid #3a4a8a44",
+                    borderRadius:6, padding:"7px 8px", color:"#7a9af8",
+                    fontSize:11, fontWeight:600, cursor:"pointer",
+                    opacity: status==="loading" ? .6 : 1 }}>
+                  🗓 Doctoralia
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
 
-      {/* Modal para completar dados */}
+      {/* Modal para preencher dados ausentes */}
       {showModal && (
-        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.4)",
-          zIndex:1000, display:"flex", alignItems:"center", justifyContent:"center" }}
-          onClick={() => setShowModal(false)}>
-          <div style={{ background:"#fff", borderRadius:12, padding:24,
-            width:460, maxWidth:"90vw", boxShadow:"0 20px 60px rgba(0,0,0,.2)" }}
-            onClick={e => e.stopPropagation()}>
-            <div style={{ fontWeight:700, fontSize:16, color:"#1a1a1a", marginBottom:4 }}>
-              Dados do Paciente
-            </div>
-            <div style={{ color:"#6b6b6b", fontSize:12, marginBottom:16 }}>
-              Complete os campos ausentes antes de adicionar ao sistema.
-            </div>
-
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"10px 16px", marginBottom:20 }}>
-              {[["nome","Nome completo"],["cpf","CPF"],["convenio","Convênio/Plano"],
-                ["nascimento","Data de nascimento"],["email","E-mail"],["telefone","Telefone"]].map(([k,l]) => (
-                <div key={k} style={{ gridColumn: k==="nome" || k==="email" ? "span 2" : "span 1" }}>
-                  <label style={{ display:"block", fontSize:11, fontWeight:600,
-                    color:"#6b6b6b", marginBottom:4, textTransform:"uppercase",
-                    letterSpacing:.5 }}>{l}</label>
-                  <input value={form[k]} onChange={e => setForm(p=>({...p,[k]:e.target.value}))}
-                    placeholder={camposVazios.includes(k) ? "Preencher..." : ""}
-                    style={{ width:"100%", background: camposVazios.includes(k) ? "#fffbf0" : "#f9f9f8",
-                      border:`1px solid ${camposVazios.includes(k) ? "#f0ad4e" : "#e5e4df"}`,
-                      borderRadius:6, padding:"8px 10px", color:"#1a1a1a",
-                      fontSize:13, fontFamily:"'DM Sans', sans-serif",
-                      outline:"none", boxSizing:"border-box" }} />
-                </div>
-              ))}
-            </div>
-
-            <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
-              <button onClick={() => setShowModal(false)} style={{
-                background:"transparent", border:"1px solid #e5e4df",
-                borderRadius:6, padding:"8px 16px", color:"#6b6b6b",
-                fontSize:13, cursor:"pointer", fontFamily:"'DM Sans', sans-serif" }}>
-                Cancelar
-              </button>
-              <button onClick={() => {
-                console.log("Dados para enviar ao Codental:", form);
-                setShowModal(false);
-              }} style={{
-                background:"#0a7c5c", border:"none", borderRadius:6,
-                padding:"8px 16px", color:"#fff", fontSize:13,
-                fontWeight:600, cursor:"pointer", fontFamily:"'DM Sans', sans-serif" }}>
-                ✓ Confirmar e adicionar
-              </button>
-            </div>
-          </div>
-        </div>
+        <Modal
+          data={data}
+          camposVazios={camposVazios}
+          action={modalAction}
+          onConfirm={(formData) => {
+            setShowModal(false);
+            executar(modalAction, formData);
+          }}
+          onClose={() => setShowModal(false)}
+        />
       )}
     </>
+  );
+}
+
+function Modal({ data, camposVazios, action, onConfirm, onClose }) {
+  const [form, setForm] = useState({
+    nome:       data.nome       || "",
+    cpf:        data.cpf        || "",
+    convenio:   data.convenio   || "",
+    nascimento: data.nascimento || "",
+    email:      data.email      || "",
+    telefone:   data.telefone   || "",
+  });
+
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.7)",
+      zIndex:1000, display:"flex", alignItems:"center", justifyContent:"center" }}
+      onClick={onClose}>
+      <div style={{ background:"#252525", borderRadius:12, padding:24,
+        width:460, maxWidth:"90vw", boxShadow:"0 20px 60px rgba(0,0,0,.6)",
+        border:"1px solid #383838" }}
+        onClick={e => e.stopPropagation()}>
+
+        <div style={{ fontWeight:700, fontSize:15, color:"#ececec", marginBottom:4 }}>
+          Completar dados do paciente
+        </div>
+        <div style={{ color:"#8e8e8e", fontSize:12, marginBottom:16 }}>
+          Preencha os campos ausentes antes de adicionar ao {action === "codental" ? "Codental" : "Doctoralia"}.
+        </div>
+
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"10px 16px", marginBottom:20 }}>
+          {[["nome","Nome completo","span 2"],["cpf","CPF","span 1"],
+            ["convenio","Convênio / Plano","span 1"],["nascimento","Data de nascimento","span 1"],
+            ["telefone","Telefone","span 1"],["email","E-mail","span 2"]
+          ].map(([k,l,col]) => (
+            <div key={k} style={{ gridColumn:col }}>
+              <label style={{ display:"block", fontSize:10, fontWeight:700,
+                color: camposVazios.includes(k) ? "#c9a84c" : "#8e8e8e",
+                marginBottom:4, textTransform:"uppercase", letterSpacing:.5 }}>
+                {l}{camposVazios.includes(k) ? " *" : ""}
+              </label>
+              <input value={form[k]} onChange={e => setForm(p=>({...p,[k]:e.target.value}))}
+                placeholder={camposVazios.includes(k) ? "Obrigatório..." : ""}
+                style={{ width:"100%", background: camposVazios.includes(k) ? "#2a2010" : "#1e1e1e",
+                  border:`1px solid ${camposVazios.includes(k) ? "#c9a84c66" : "#383838"}`,
+                  borderRadius:6, padding:"8px 10px", color:"#ececec",
+                  fontSize:13, outline:"none", boxSizing:"border-box",
+                  fontFamily:"'DM Sans', sans-serif" }}
+                onFocus={e => e.target.style.borderColor="#d4956a"}
+                onBlur={e => e.target.style.borderColor=camposVazios.includes(k)?"#c9a84c66":"#383838"} />
+            </div>
+          ))}
+        </div>
+
+        <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
+          <button onClick={onClose} style={{ background:"transparent",
+            border:"1px solid #383838", borderRadius:6, padding:"8px 16px",
+            color:"#8e8e8e", fontSize:13, cursor:"pointer" }}>
+            Cancelar
+          </button>
+          <button onClick={() => onConfirm(form)} style={{ background:"#3a2a1e",
+            border:"1px solid #d4956a44", borderRadius:6, padding:"8px 16px",
+            color:"#d4956a", fontSize:13, fontWeight:600, cursor:"pointer" }}>
+            ✓ Confirmar e adicionar
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
