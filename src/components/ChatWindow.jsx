@@ -1,11 +1,15 @@
 import { useState, useRef, useEffect } from "react";
 import PatientCardDetected from "./modules/PatientCardDetected";
+import { useContactsCtx } from "../App";
+import { wahaIdToPhone, formatPhone } from "../hooks/useContacts";
 
 export default function ChatWindow({ chat, messages, operator, onSend, onForward, onResolve, canForwardToAdmin }) {
   const [text, setText]               = useState("");
   const [sending, setSending]         = useState(false);
   const [showForward, setShowForward] = useState(false);
   const bottomRef = useRef(null);
+  const { displayInfo } = useContactsCtx();
+  const info = displayInfo(chat.id, chat.name);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -33,14 +37,39 @@ export default function ChatWindow({ chat, messages, operator, onSend, onForward
         background: "#0d1610", display: "flex", alignItems: "center", gap: 10, flexShrink: 0,
       }}>
         <div style={{
-          width: 36, height: 36, borderRadius: 10,
+          width: 38, height: 38, borderRadius: 10,
           background: chat.avatarColor + "22", color: chat.avatarColor,
           display: "flex", alignItems: "center", justifyContent: "center",
           fontSize: 12, fontWeight: 700,
-        }}>{chat.avatar}</div>
-        <div style={{ flex: 1 }}>
-          <div style={{ color: "#e8f5ee", fontSize: 14, fontWeight: 600 }}>{chat.name}</div>
-          <div style={{ color: "#3a7055", fontSize: 11 }}>{chat.phone}</div>
+        }}>
+          {info.hasContact
+            ? info.name.split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase()
+            : chat.avatar}
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {info.hasContact ? (
+            <>
+              <div style={{ color: "#e8f5ee", fontSize: 14, fontWeight: 600,
+                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {info.name}
+              </div>
+              <div style={{ color: "#3a7055", fontSize: 11,
+                fontFamily: "'DM Mono', monospace" }}>
+                {info.phone}
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ color: "#e8f5ee", fontSize: 13, fontWeight: 600,
+                fontFamily: "'DM Mono', monospace",
+                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {info.phone}
+              </div>
+              <div style={{ color: "#2a5040", fontSize: 10, fontFamily: "'DM Mono', monospace" }}>
+                {info.phone} · sem contato
+              </div>
+            </>
+          )}
         </div>
 
         <div style={{ position: "relative" }}>

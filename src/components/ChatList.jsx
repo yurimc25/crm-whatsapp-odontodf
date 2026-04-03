@@ -1,4 +1,6 @@
 import { TAG_COLORS, STATUS_LABELS } from "../data/mock";
+import { useContactsCtx } from "../App";
+import { wahaIdToPhone, formatPhone } from "../hooks/useContacts";
 
 export default function ChatList({ chats, activeId, search, onSearch, onSelect, loading }) {
   return (
@@ -36,12 +38,20 @@ export default function ChatList({ chats, activeId, search, onSearch, onSelect, 
 }
 
 function ChatItem({ chat, active, onClick }) {
+  const { displayInfo } = useContactsCtx();
+  const info = displayInfo(chat.id, chat.name);
+
+  // Gera iniciais do avatar
+  const initials = info.hasContact
+    ? info.name.split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase()
+    : formatPhone(wahaIdToPhone(chat.id)).replace(/\D/g, "").slice(2, 4) || "??";
+
   return (
     <div
       onClick={onClick}
       draggable
       style={{
-        padding: "12px 14px", cursor: "pointer", borderBottom: "1px solid #111a15",
+        padding: "10px 14px", cursor: "pointer", borderBottom: "1px solid #111a15",
         background: active ? "#111a15" : "transparent",
         borderLeft: active ? "3px solid #0d7d62" : "3px solid transparent",
         transition: "background .1s", display: "flex", gap: 10, alignItems: "flex-start",
@@ -49,13 +59,14 @@ function ChatItem({ chat, active, onClick }) {
       onMouseEnter={e => { if (!active) e.currentTarget.style.background = "#0d1610"; }}
       onMouseLeave={e => { if (!active) e.currentTarget.style.background = "transparent"; }}
     >
+      {/* Avatar */}
       <div style={{
-        width: 40, height: 40, borderRadius: 12, flexShrink: 0,
+        width: 42, height: 42, borderRadius: 12, flexShrink: 0,
         background: chat.avatarColor + "22", color: chat.avatarColor,
         display: "flex", alignItems: "center", justifyContent: "center",
-        fontSize: 13, fontWeight: 700, position: "relative",
+        fontSize: 12, fontWeight: 700, position: "relative",
       }}>
-        {chat.avatar}
+        {initials}
         <div style={{
           position: "absolute", bottom: 0, right: 0,
           width: 10, height: 10, borderRadius: "50%",
@@ -64,20 +75,49 @@ function ChatItem({ chat, active, onClick }) {
         }} />
       </div>
 
+      {/* Conteúdo */}
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2 }}>
-          <span style={{ color: "#e8f5ee", fontSize: 13, fontWeight: 600,
-            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 160 }}>
-            {chat.name}
+
+        {/* Linha 1: nome (ou número) + horário */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 1 }}>
+          <span style={{
+            color: "#e8f5ee", fontSize: 13, fontWeight: 600,
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            maxWidth: 165,
+          }}>
+            {info.hasContact ? info.name : info.line1}
           </span>
-          <span style={{ color: "#3a7055", fontSize: 11, flexShrink: 0 }}>{chat.lastTime}</span>
+          <span style={{ color: "#3a7055", fontSize: 10, flexShrink: 0, marginLeft: 6 }}>
+            {chat.lastTime}
+          </span>
         </div>
-        <div style={{ color: "#3a7055", fontSize: 12,
-          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 5 }}>
-          {chat.lastMsg}
+
+        {/* Linha 2: se sem contato → número formatado; se tem contato → número menor */}
+        <div style={{
+          color: info.hasContact ? "#3a7055" : "#2a5040",
+          fontSize: info.hasContact ? 11 : 12,
+          fontFamily: info.hasContact ? "inherit" : "'DM Mono', monospace",
+          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+          marginBottom: 3,
+        }}>
+          {info.hasContact ? info.phone : info.phone}
         </div>
+
+        {/* Linha 3: preview da última mensagem */}
+        <div style={{
+          color: "#3a5244", fontSize: 11,
+          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+          marginBottom: 4,
+        }}>
+          {chat.lastMsg
+            ? (chat.lastMsg.length > 45 ? chat.lastMsg.slice(0, 45) + "…" : chat.lastMsg)
+            : <span style={{ color: "#1e3028", fontStyle: "italic" }}>Sem mensagens</span>
+          }
+        </div>
+
+        {/* Tags + badge de não lido */}
         <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
-          {chat.tags.map(tag => {
+          {(chat.tags || []).map(tag => {
             const tc = TAG_COLORS[tag] || { bg: "#1e3028", text: "#3a7055" };
             return (
               <span key={tag} style={{

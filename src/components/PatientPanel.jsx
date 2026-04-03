@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { MOCK_PRONTUARIO } from "../data/mock";
+import { useContactsCtx } from "../App";
+import { wahaIdToPhone, formatPhone } from "../hooks/useContacts";
 
 // MODULE stubs — cada seção tem comentário indicando a API real
 function ModuleStub({ name, icon }) {
@@ -21,11 +23,11 @@ function ModuleStub({ name, icon }) {
 }
 
 export default function PatientPanel({ chat, operator }) {
-  const [tab, setTab] = useState("perfil"); // perfil | agendamentos | evolucoes | notas
+  const [tab, setTab] = useState("perfil");
+  const { displayInfo } = useContactsCtx();
+  const info = displayInfo(chat.id, chat.name);
 
-  // Tenta encontrar prontuário pelo chat — em produção seria por CPF via Codental API
-  // MODULE: Codental API → GET /pacientes?telefone={chat.phone}
-  const prontuario = Object.values(MOCK_PRONTUARIO)[0]; // placeholder
+  const prontuario = Object.values(MOCK_PRONTUARIO)[0];
 
   const TABS = [
     { id: "perfil",       label: "Perfil" },
@@ -38,21 +40,39 @@ export default function PatientPanel({ chat, operator }) {
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden",
       fontFamily: "'DM Sans', sans-serif", background: "#0a0f0d" }}>
 
-      {/* Header */}
-      <div style={{
-        padding: "12px 14px 0", background: "#0d1610",
-        borderBottom: "1px solid #1a2e22",
-      }}>
+      <div style={{ padding: "12px 14px 0", background: "#0d1610", borderBottom: "1px solid #1a2e22" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
           <div style={{
             width: 40, height: 40, borderRadius: 12,
             background: chat.avatarColor + "22", color: chat.avatarColor,
             display: "flex", alignItems: "center", justifyContent: "center",
             fontSize: 13, fontWeight: 700,
-          }}>{chat.avatar}</div>
-          <div>
-            <div style={{ color: "#e8f5ee", fontSize: 14, fontWeight: 600 }}>{chat.name}</div>
-            <div style={{ color: "#3a7055", fontSize: 11 }}>{chat.phone}</div>
+          }}>
+            {info.hasContact
+              ? info.name.split(" ").map(w => w[0]).join("").slice(0,2).toUpperCase()
+              : chat.avatar}
+          </div>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            {info.hasContact ? (
+              <>
+                <div style={{ color: "#e8f5ee", fontSize: 14, fontWeight: 600,
+                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {info.name}
+                </div>
+                <div style={{ color: "#3a7055", fontSize: 11, fontFamily: "'DM Mono', monospace" }}>
+                  {info.phone}
+                </div>
+              </>
+            ) : (
+              <>
+                <div style={{ color: "#e8f5ee", fontSize: 13, fontWeight: 600,
+                  fontFamily: "'DM Mono', monospace",
+                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {info.phone}
+                </div>
+                <div style={{ color: "#2a5040", fontSize: 10 }}>Sem contato cadastrado</div>
+              </>
+            )}
           </div>
         </div>
 
