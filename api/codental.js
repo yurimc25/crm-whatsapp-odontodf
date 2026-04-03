@@ -10,7 +10,7 @@ async function getDb() {
     client = new MongoClient(process.env.MONGODB_URI);
     await client.connect();
   }
-  return client.db("clinica");
+  return _client.db(process.env.MONGODB_DB || "codental_monitor");
 }
 
 const APP_BASE = "https://app.codental.com.br";
