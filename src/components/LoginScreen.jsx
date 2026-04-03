@@ -16,7 +16,8 @@ export default function LoginScreen({ onLogin }) {
       const r = await fetch("/api/auth", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ login: login.trim().toLowerCase(), password }),
+        credentials: "include",
+        body: JSON.stringify({ login: login.trim(), password }),
       });
       const data = await r.json();
       if (!r.ok) { setError(data.error || "Erro de autenticação"); return; }
