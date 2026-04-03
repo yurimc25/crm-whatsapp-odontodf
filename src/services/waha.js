@@ -1,7 +1,4 @@
 // src/services/waha.js
-// Cliente completo para a WAHA API
-// URL e Key vêm de variáveis de ambiente do Vercel
-
 const WAHA_URL = import.meta.env.VITE_WAHA_URL || "https://n8n-waha8.vxjlst.easypanel.host";
 const WAHA_KEY = import.meta.env.VITE_WAHA_API_KEY || "";
 const SESSION  = import.meta.env.VITE_WAHA_SESSION || "default";
@@ -11,12 +8,12 @@ const headers = () => ({
   "X-Api-Key": WAHA_KEY,
 });
 
-// ── REST ────────────────────────────────────────────────────────
+// ── REST ─────────────────────────────────────────────────────────
 
 export async function getChats() {
   const r = await fetch(`${WAHA_URL}/api/${SESSION}/chats?limit=50`, { headers: headers() });
   if (!r.ok) throw new Error(`WAHA getChats: ${r.status}`);
-  return r.json(); // [{ id, name, unreadCount, lastMessage, ... }]
+  return r.json();
 }
 
 export async function getMessages(chatId, limit = 40) {
@@ -26,7 +23,7 @@ export async function getMessages(chatId, limit = 40) {
     { headers: headers() }
   );
   if (!r.ok) throw new Error(`WAHA getMessages: ${r.status}`);
-  return r.json(); // [{ id, body, from, timestamp, ... }]
+  return r.json();
 }
 
 export async function sendText(chatId, text) {
@@ -42,50 +39,72 @@ export async function sendText(chatId, text) {
 export async function getSessionStatus() {
   const r = await fetch(`${WAHA_URL}/api/sessions/${SESSION}`, { headers: headers() });
   if (!r.ok) throw new Error(`WAHA status: ${r.status}`);
-  return r.json(); // { status: "WORKING" | "SCAN_QR_CODE" | ... }
+  return r.json();
 }
 
-// ── Normalização ────────────────────────────────────────────────
-// WAHA retorna formatos ligeiramente diferentes dependendo do engine.
-// Essas funções normalizam para o formato que o CRM usa.
+// ── Normalização ──────────────────────────────────────────────────
+// Cobre NOWEB, WEBJS e GOWS que retornam campos diferentes
 
 export function normalizeChat(wahaChat) {
+  // lastMessage varia por engine
+  const lm = wahaChat.lastMessage
+    || wahaChat.messages?.[0]
+    || wahaChat.msgs?.[0]
+    || null;
+
+  const lastBody = lm?.body
+    || lm?.text
+    || lm?.content
+    || lm?._data?.body
+    || "";
+
+  const lastTs = lm?.timestamp || lm?.t || lm?._data?.t || null;
+
+  // ID pode vir como @c.us ou @s.whatsapp.net
+  const cleanId = wahaChat.id.replace(/@.*$/, "");
+
   return {
     id:          wahaChat.id,
-    name:        wahaChat.name || wahaChat.id.replace("@c.us", ""),
-    phone:       "+" + wahaChat.id.replace("@c.us", ""),
-    lastMsg:     wahaChat.lastMessage?.body || "",
-    lastTime:    wahaChat.lastMessage
-      ? new Date(wahaChat.lastMessage.timestamp * 1000)
-          .toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
+    name:        wahaChat.name || cleanId,
+    phone:       "+" + cleanId,
+    lastMsg:     lastBody,
+    lastTime:    lastTs
+      ? new Date(lastTs * 1000).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
       : "",
-    unread:      wahaChat.unreadCount || 0,
+    unread:      wahaChat.unreadCount ?? wahaChat.unread ?? 0,
     status:      "open",
     assignedTo:  null,
     tags:        [],
-    avatar:      (wahaChat.name || "??").slice(0, 2).toUpperCase(),
+    avatar:      (wahaChat.name || cleanId || "??").slice(0, 2).toUpperCase(),
     avatarColor: stringToColor(wahaChat.id),
   };
 }
 
 export function normalizeMessage(wahaMsg) {
+  // body pode estar em lugares diferentes
+  const body = wahaMsg.body
+    || wahaMsg.text
+    || wahaMsg.content
+    || wahaMsg._data?.body
+    || "";
+
+  const ts = wahaMsg.timestamp || wahaMsg.t || wahaMsg._data?.t || Date.now() / 1000;
+
   return {
-    id:       wahaMsg.id,
+    id:       wahaMsg.id || String(Date.now()),
     from:     wahaMsg.fromMe ? "operator" : "patient",
-    text:     wahaMsg.body || "",
-    time:     new Date(wahaMsg.timestamp * 1000)
-                .toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
+    text:     body,
+    time:     new Date(ts * 1000).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
     type:     wahaMsg.type || "text",
     operator: wahaMsg.fromMe ? "Você" : null,
-    hasPatientCard: detectPatientCard(wahaMsg.body || ""),
+    chatId:   wahaMsg.chatId || wahaMsg.from || null,
+    hasPatientCard: detectPatientCard(body),
   };
 }
 
 function detectPatientCard(text) {
-  return (
-    text.toLowerCase().includes("nome completo") &&
-    text.toLowerCase().includes("cpf")
-  );
+  const t = (text || "").toLowerCase();
+  return t.includes("nome completo") && t.includes("cpf");
 }
 
 function stringToColor(str) {
@@ -95,29 +114,24 @@ function stringToColor(str) {
   return colors[Math.abs(hash) % colors.length];
 }
 
-// ── WebSocket ───────────────────────────────────────────────────
+// ── WebSocket ─────────────────────────────────────────────────────
 
 export function createWAHASocket({ onMessage, onStatus, onError }) {
   const wsUrl = WAHA_URL.replace(/^http/, "ws");
   const url = `${wsUrl}/ws?session=${SESSION}&events=message&x-api-key=${WAHA_KEY}`;
 
-  let ws;
-  let reconnectTimer;
+  let ws, reconnectTimer;
   let dead = false;
 
   function connect() {
     if (dead) return;
     ws = new WebSocket(url);
 
-    ws.onopen = () => {
-      console.log("[WAHA WS] conectado");
-      onStatus?.("connected");
-    };
+    ws.onopen = () => { onStatus?.("connected"); };
 
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        // WAHA envia { event: "message", payload: { ... } }
         if (data.event === "message" && data.payload) {
           onMessage?.(normalizeMessage(data.payload));
         }
@@ -126,14 +140,9 @@ export function createWAHASocket({ onMessage, onStatus, onError }) {
       }
     };
 
-    ws.onerror = (e) => {
-      console.warn("[WAHA WS] erro", e);
-      onError?.(e);
-    };
-
-    ws.onclose = () => {
+    ws.onerror  = (e) => { onError?.(e); };
+    ws.onclose  = () => {
       if (dead) return;
-      console.log("[WAHA WS] desconectado, reconectando em 3s...");
       onStatus?.("reconnecting");
       reconnectTimer = setTimeout(connect, 3000);
     };
@@ -142,11 +151,7 @@ export function createWAHASocket({ onMessage, onStatus, onError }) {
   connect();
 
   return {
-    send: (data) => ws?.readyState === WebSocket.OPEN && ws.send(JSON.stringify(data)),
-    close: () => {
-      dead = true;
-      clearTimeout(reconnectTimer);
-      ws?.close();
-    },
+    send:  (data) => ws?.readyState === WebSocket.OPEN && ws.send(JSON.stringify(data)),
+    close: () => { dead = true; clearTimeout(reconnectTimer); ws?.close(); },
   };
 }

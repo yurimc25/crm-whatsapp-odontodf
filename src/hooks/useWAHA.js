@@ -1,33 +1,39 @@
 // src/hooks/useWAHA.js
-// Hook central que gerencia toda a comunicação com o WAHA.
-// Usado pelo CRMLayout — passa dados já normalizados para os componentes.
+// Cache em localStorage:
+//   - Lista de chats: 5 minutos
+//   - Mensagens por chat: 10 minutos (atualiza em background ao abrir)
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
-  getChats, getMessages, sendText,
-  getSessionStatus, normalizeChat, normalizeMessage,
-  createWAHASocket,
+  getChats, getMessages, sendText, getSessionStatus,
+  normalizeChat, normalizeMessage, createWAHASocket,
 } from "../services/waha";
 import { MOCK_CHATS, MOCK_MESSAGES } from "../data/mock";
+import { cache } from "../utils/cache";
 
-const USE_MOCK = import.meta.env.VITE_USE_MOCK === "true";
+const USE_MOCK    = import.meta.env.VITE_USE_MOCK === "true";
+const CHATS_KEY   = "waha_chats";
+const MSGS_PREFIX = "waha_msgs_";
+const CHATS_TTL   = 5  * 60 * 1000; // 5 min
+const MSGS_TTL    = 10 * 60 * 1000; // 10 min
 
 export function useWAHA(operator) {
-  const [chats, setChats]           = useState([]);
-  const [messages, setMessages]     = useState({});   // { chatId: [...] }
-  const [loading, setLoading]       = useState(true);
-  const [wsStatus, setWsStatus]     = useState("disconnected"); // connected | reconnecting | disconnected
-  const [sessionOk, setSessionOk]   = useState(null); // true | false | null (checking)
-  const [error, setError]           = useState(null);
+  // Carrega lista de chats do cache imediatamente
+  const [chats, setChats]         = useState(() => cache.get(CHATS_KEY) || []);
+  const [messages, setMessages]   = useState({});
+  const [loading, setLoading]     = useState(!cache.get(CHATS_KEY)); // só mostra loading se não tem cache
+  const [wsStatus, setWsStatus]   = useState("disconnected");
+  const [sessionOk, setSessionOk] = useState(null);
+  const [error, setError]         = useState(null);
 
   const activeChatRef = useRef(null);
   const socketRef     = useRef(null);
 
-  // ── 1. Checa status da sessão ──────────────────────────────
+  // ── 1. Status da sessão ─────────────────────────────────────
   useEffect(() => {
     if (USE_MOCK) {
       setSessionOk(true);
-      setChats(MOCK_CHATS);
+      if (!cache.get(CHATS_KEY)) setChats(MOCK_CHATS);
       setLoading(false);
       return;
     }
@@ -44,57 +50,90 @@ export function useWAHA(operator) {
       });
   }, []);
 
-  // ── 2. Carrega lista de chats ──────────────────────────────
+  // ── 2. Carrega lista de chats ────────────────────────────────
   useEffect(() => {
     if (!sessionOk) return;
 
     async function load() {
-      setLoading(true);
+      // Só mostra loading se não tem nada em cache
+      if (!cache.get(CHATS_KEY)) setLoading(true);
+
       try {
         const raw = await getChats();
-        // Filtra grupos (termina em @g.us)
         const normalized = raw
           .filter(c => !c.id.endsWith("@g.us"))
           .map(normalizeChat);
-        setChats(normalized);
+
+        // Preserva campos locais (status, assignedTo, tags) do cache anterior
+        const prev = cache.get(CHATS_KEY) || [];
+        const merged = normalized.map(c => {
+          const old = prev.find(p => p.id === c.id);
+          return old
+            ? { ...c, status: old.status, assignedTo: old.assignedTo, tags: old.tags }
+            : c;
+        });
+
+        // Cruza com metadata do MongoDB (status, tags, assignedTo)
+        try {
+          const ikey = import.meta.env.VITE_INTERNAL_API_KEY || "";
+          const dbRes = await fetch(`/api/db?action=chats`, {
+            headers: { "X-Internal-Key": ikey },
+          });
+          if (dbRes.ok) {
+            const { chats: dbMeta } = await dbRes.json();
+            const withMeta = merged.map(c => {
+              const meta = dbMeta[c.id];
+              return meta ? { ...c, ...meta } : c;
+            });
+            setChats(withMeta);
+            cache.set(CHATS_KEY, withMeta, CHATS_TTL);
+          } else {
+            setChats(merged);
+            cache.set(CHATS_KEY, merged, CHATS_TTL);
+          }
+        } catch {
+          setChats(merged);
+          cache.set(CHATS_KEY, merged, CHATS_TTL);
+        }
       } catch (e) {
         setError(`Erro ao carregar chats: ${e.message}`);
+        // Mantém cache antigo
       } finally {
         setLoading(false);
       }
     }
 
     load();
-    // Polling a cada 30s para novos chats
-    const interval = setInterval(load, 30_000);
+    const interval = setInterval(load, CHATS_TTL);
     return () => clearInterval(interval);
   }, [sessionOk]);
 
-  // ── 3. WebSocket para mensagens em tempo real ──────────────
+  // ── 3. WebSocket ─────────────────────────────────────────────
   useEffect(() => {
     if (!sessionOk || USE_MOCK) return;
 
     socketRef.current = createWAHASocket({
       onMessage: (msg) => {
-        // Adiciona mensagem ao chat correspondente
+        const chatId = activeChatRef.current;
+        if (!chatId) return;
+
         setMessages(prev => {
-          const chatId = msg.from === "patient"
-            ? (msg.chatId || activeChatRef.current)
-            : activeChatRef.current;
-          if (!chatId) return prev;
           const existing = prev[chatId] || [];
-          // Evita duplicata
           if (existing.find(m => m.id === msg.id)) return prev;
-          return { ...prev, [chatId]: [...existing, msg] };
+          const updated = [...existing, msg];
+          cache.set(MSGS_PREFIX + chatId, updated, MSGS_TTL);
+          return { ...prev, [chatId]: updated };
         });
 
-        // Incrementa badge de não lido se não for o chat ativo
-        setChats(prev => prev.map(c => {
-          if (c.id !== activeChatRef.current && msg.from === "patient") {
-            return { ...c, unread: (c.unread || 0) + 1, lastMsg: msg.text, lastTime: msg.time };
-          }
-          return c;
-        }));
+        setChats(prev => {
+          const updated = prev.map(c =>
+            c.id !== activeChatRef.current && msg.from === "patient"
+              ? { ...c, unread: (c.unread || 0) + 1, lastMsg: msg.text, lastTime: msg.time }
+              : c
+          );
+          cache.set(CHATS_KEY, updated, CHATS_TTL);
+          return updated;
+        });
       },
       onStatus: setWsStatus,
       onError:  (e) => console.warn("[WS]", e),
@@ -103,35 +142,42 @@ export function useWAHA(operator) {
     return () => socketRef.current?.close();
   }, [sessionOk]);
 
-  // ── 4. Carrega mensagens de um chat ───────────────────────
+  // ── 4. Carrega mensagens de um chat ──────────────────────────
   const loadMessages = useCallback(async (chatId) => {
     activeChatRef.current = chatId;
 
     // Zera badge de não lido
-    setChats(prev => prev.map(c => c.id === chatId ? { ...c, unread: 0 } : c));
+    setChats(prev => {
+      const updated = prev.map(c => c.id === chatId ? { ...c, unread: 0 } : c);
+      cache.set(CHATS_KEY, updated, CHATS_TTL);
+      return updated;
+    });
+
+    // Exibe cache instantaneamente
+    const cached = cache.get(MSGS_PREFIX + chatId);
+    if (cached) {
+      setMessages(prev => ({ ...prev, [chatId]: cached }));
+    }
 
     if (USE_MOCK) {
       setMessages(prev => ({ ...prev, [chatId]: MOCK_MESSAGES[chatId] || [] }));
       return;
     }
 
-    // Já tem mensagens carregadas? Usa o cache e atualiza em background
-    if (!messages[chatId]) {
-      try {
-        const raw = await getMessages(chatId);
-        const normalized = raw.map(normalizeMessage).reverse(); // WAHA retorna do mais novo
-        setMessages(prev => ({ ...prev, [chatId]: normalized }));
-      } catch (e) {
-        console.error("loadMessages", e);
-      }
+    // Busca atualização em background
+    try {
+      const raw = await getMessages(chatId);
+      const normalized = raw.map(normalizeMessage).reverse();
+      setMessages(prev => ({ ...prev, [chatId]: normalized }));
+      cache.set(MSGS_PREFIX + chatId, normalized, MSGS_TTL);
+    } catch (e) {
+      console.error("loadMessages", e);
     }
-  }, [messages]);
+  }, []);
 
-  // ── 5. Envia mensagem ──────────────────────────────────────
+  // ── 5. Envia mensagem ────────────────────────────────────────
   const send = useCallback(async (chatId, text, operatorName) => {
     const formatted = `${operatorName}: ${text}`;
-
-    // Otimistic update
     const tmpMsg = {
       id:       `tmp-${Date.now()}`,
       from:     "operator",
@@ -140,15 +186,18 @@ export function useWAHA(operator) {
       type:     "text",
       operator: operatorName,
     };
-    setMessages(prev => ({ ...prev, [chatId]: [...(prev[chatId] || []), tmpMsg] }));
+
+    setMessages(prev => {
+      const updated = [...(prev[chatId] || []), tmpMsg];
+      cache.set(MSGS_PREFIX + chatId, updated, MSGS_TTL);
+      return { ...prev, [chatId]: updated };
+    });
 
     if (USE_MOCK) return;
 
     try {
       await sendText(chatId, formatted);
     } catch (e) {
-      console.error("send", e);
-      // Remove a mensagem otimista em caso de erro
       setMessages(prev => ({
         ...prev,
         [chatId]: (prev[chatId] || []).filter(m => m.id !== tmpMsg.id),
@@ -157,28 +206,50 @@ export function useWAHA(operator) {
     }
   }, []);
 
-  // ── 6. Ações locais (encaminhar, resolver) ─────────────────
-  // Essas ações são locais por enquanto — em produção salvariam no MongoDB
+  const ikey = import.meta.env.VITE_INTERNAL_API_KEY || "";
+
+  function persistChat(chatId, fields) {
+    fetch(`/api/db?action=chat`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Internal-Key": ikey },
+      body: JSON.stringify({ chatId, ...fields }),
+    }).catch(e => console.warn("[db] persist failed:", e.message));
+  }
+
+  // ── 6. Ações persistidas no MongoDB ──────────────────────────
   const forwardChat = useCallback((chatId, toRole) => {
-    setChats(prev => prev.map(c =>
-      c.id === chatId ? { ...c, assignedTo: toRole, status: "open" } : c
-    ));
-    // MODULE: MongoDB → db.chats.updateOne({ id: chatId }, { assignedTo, status })
+    setChats(prev => {
+      const updated = prev.map(c =>
+        c.id === chatId ? { ...c, assignedTo: toRole, status: "open" } : c
+      );
+      cache.set(CHATS_KEY, updated, CHATS_TTL);
+      return updated;
+    });
+    persistChat(chatId, { assignedTo: toRole, status: "open" });
   }, []);
 
   const resolveChat = useCallback((chatId) => {
-    setChats(prev => prev.map(c =>
-      c.id === chatId ? { ...c, status: "resolved", unread: 0 } : c
-    ));
-    // MODULE: MongoDB → db.chats.updateOne({ id: chatId }, { status: "resolved" })
+    setChats(prev => {
+      const updated = prev.map(c =>
+        c.id === chatId ? { ...c, status: "resolved", unread: 0 } : c
+      );
+      cache.set(CHATS_KEY, updated, CHATS_TTL);
+      return updated;
+    });
+    persistChat(chatId, { status: "resolved" });
   }, []);
 
   const addTag = useCallback((chatId, tag) => {
-    setChats(prev => prev.map(c =>
-      c.id === chatId && !c.tags.includes(tag)
-        ? { ...c, tags: [...c.tags, tag] }
-        : c
-    ));
+    setChats(prev => {
+      const updated = prev.map(c => {
+        if (c.id !== chatId || c.tags.includes(tag)) return c;
+        const tags = [...c.tags, tag];
+        persistChat(chatId, { tags });
+        return { ...c, tags };
+      });
+      cache.set(CHATS_KEY, updated, CHATS_TTL);
+      return updated;
+    });
   }, []);
 
   return {
