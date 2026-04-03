@@ -1,9 +1,8 @@
 import { TAG_COLORS, STATUS_LABELS } from "../data/mock";
 
-export default function ChatList({ chats, activeId, search, onSearch, onSelect, operator }) {
+export default function ChatList({ chats, activeId, search, onSearch, onSelect, loading }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
-      {/* Search */}
       <div style={{ padding: "10px 12px", borderBottom: "1px solid #1a2e22" }}>
         <input
           value={search}
@@ -17,20 +16,19 @@ export default function ChatList({ chats, activeId, search, onSearch, onSelect, 
         />
       </div>
 
-      {/* List */}
       <div style={{ flex: 1, overflowY: "auto" }}>
-        {chats.length === 0 && (
+        {loading && (
+          <div style={{ padding: 24, textAlign: "center", color: "#2a4a36", fontSize: 13 }}>
+            Carregando chats...
+          </div>
+        )}
+        {!loading && chats.length === 0 && (
           <div style={{ padding: 24, textAlign: "center", color: "#2a4a36", fontSize: 13 }}>
             Nenhum chat encontrado
           </div>
         )}
         {chats.map(chat => (
-          <ChatItem
-            key={chat.id}
-            chat={chat}
-            active={chat.id === activeId}
-            onClick={() => onSelect(chat)}
-          />
+          <ChatItem key={chat.id} chat={chat} active={chat.id === activeId} onClick={() => onSelect(chat)} />
         ))}
       </div>
     </div>
@@ -38,23 +36,19 @@ export default function ChatList({ chats, activeId, search, onSearch, onSelect, 
 }
 
 function ChatItem({ chat, active, onClick }) {
-  const statusDot = STATUS_LABELS[chat.status];
-
   return (
     <div
       onClick={onClick}
-      draggable  // MODULE: drag-to-forward → implementar onDragStart/onDrop
+      draggable
       style={{
         padding: "12px 14px", cursor: "pointer", borderBottom: "1px solid #111a15",
         background: active ? "#111a15" : "transparent",
         borderLeft: active ? "3px solid #0d7d62" : "3px solid transparent",
-        transition: "background .1s",
-        display: "flex", gap: 10, alignItems: "flex-start",
+        transition: "background .1s", display: "flex", gap: 10, alignItems: "flex-start",
       }}
       onMouseEnter={e => { if (!active) e.currentTarget.style.background = "#0d1610"; }}
       onMouseLeave={e => { if (!active) e.currentTarget.style.background = "transparent"; }}
     >
-      {/* Avatar */}
       <div style={{
         width: 40, height: 40, borderRadius: 12, flexShrink: 0,
         background: chat.avatarColor + "22", color: chat.avatarColor,
@@ -62,29 +56,26 @@ function ChatItem({ chat, active, onClick }) {
         fontSize: 13, fontWeight: 700, position: "relative",
       }}>
         {chat.avatar}
-        {/* Status dot */}
         <div style={{
           position: "absolute", bottom: 0, right: 0,
           width: 10, height: 10, borderRadius: "50%",
-          background: statusDot.color, border: "2px solid #0a0f0d",
+          background: STATUS_LABELS[chat.status]?.color || "#888",
+          border: "2px solid #0a0f0d",
         }} />
       </div>
 
-      {/* Content */}
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 2 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2 }}>
           <span style={{ color: "#e8f5ee", fontSize: 13, fontWeight: 600,
             overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 160 }}>
             {chat.name}
           </span>
           <span style={{ color: "#3a7055", fontSize: 11, flexShrink: 0 }}>{chat.lastTime}</span>
         </div>
-
         <div style={{ color: "#3a7055", fontSize: 12,
           overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 5 }}>
           {chat.lastMsg}
         </div>
-
         <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
           {chat.tags.map(tag => {
             const tc = TAG_COLORS[tag] || { bg: "#1e3028", text: "#3a7055" };
