@@ -2,6 +2,49 @@ import { useState } from "react";
 import { MOCK_PRONTUARIO } from "../data/mock";
 import { useContactsCtx } from "../App";
 import { wahaIdToPhone, formatPhone } from "../hooks/useContacts";
+import { useCodental } from "../hooks/useCodental";
+
+// Dentro do PerfilTab, adiciona estado e busca:
+function PerfilTab({ prontuario, chat }) {
+  const { searchPatient, loading: cLoading } = useCodental();
+  const [codental, setCodental] = useState(null);
+  const { displayInfo } = useContactsCtx();
+  const info = displayInfo(chat.id, chat.name);
+
+  useEffect(() => {
+    // Busca pelo nome do contato no Codental
+    const nome = info.hasContact ? info.name.split(" ").slice(0, 2).join(" ") : null;
+    const telefone = info.phone.replace(/\D/g, "");
+    const query = telefone || nome;
+    if (!query) return;
+
+    searchPatient(query).then(data => {
+      if (data?.patients?.length > 0) setCodental(data.patients[0]);
+    });
+  }, [chat.id]);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <Section label="Dados cadastrais">
+        {codental ? (
+          <>
+            <Field label="Nome"     value={codental.name || codental.fullName} />
+            <Field label="CPF"      value={codental.cpf} />
+            <Field label="Email"    value={codental.email} />
+            <Field label="Convênio" value={codental.health_insurance || codental.convenio} />
+            <Field label="Dentista" value={codental.professional?.name} />
+            <Field label="ID Codental" value={codental.id} />
+          </>
+        ) : cLoading ? (
+          <div style={{ color: "#3a7055", fontSize: 12 }}>Buscando no Codental...</div>
+        ) : (
+          <ModuleStub name="Codental — sem resultado" icon="📋" />
+        )}
+      </Section>
+      {/* resto igual */}
+    </div>
+  );
+}
 
 // MODULE stubs — cada seção tem comentário indicando a API real
 function ModuleStub({ name, icon }) {
@@ -151,7 +194,50 @@ function PerfilTab({ prontuario, chat }) {
     </div>
   );
 }
+// Adiciona no topo do PatientPanel.jsx
+import { useCodental } from "../hooks/useCodental";
 
+// Dentro do PerfilTab, adiciona estado e busca:
+function PerfilTab({ prontuario, chat }) {
+  const { searchPatient, loading: cLoading } = useCodental();
+  const [codental, setCodental] = useState(null);
+  const { displayInfo } = useContactsCtx();
+  const info = displayInfo(chat.id, chat.name);
+
+  useEffect(() => {
+    // Busca pelo nome do contato no Codental
+    const nome = info.hasContact ? info.name.split(" ").slice(0, 2).join(" ") : null;
+    const telefone = info.phone.replace(/\D/g, "");
+    const query = telefone || nome;
+    if (!query) return;
+
+    searchPatient(query).then(data => {
+      if (data?.patients?.length > 0) setCodental(data.patients[0]);
+    });
+  }, [chat.id]);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <Section label="Dados cadastrais">
+        {codental ? (
+          <>
+            <Field label="Nome"     value={codental.name || codental.fullName} />
+            <Field label="CPF"      value={codental.cpf} />
+            <Field label="Email"    value={codental.email} />
+            <Field label="Convênio" value={codental.health_insurance || codental.convenio} />
+            <Field label="Dentista" value={codental.professional?.name} />
+            <Field label="ID Codental" value={codental.id} />
+          </>
+        ) : cLoading ? (
+          <div style={{ color: "#3a7055", fontSize: 12 }}>Buscando no Codental...</div>
+        ) : (
+          <ModuleStub name="Codental — sem resultado" icon="📋" />
+        )}
+      </Section>
+      {/* resto igual */}
+    </div>
+  );
+}
 // ── Agendamentos ────────────────────────────────────────────────
 function AgendamentosTab() {
   return (

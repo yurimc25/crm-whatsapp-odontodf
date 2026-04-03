@@ -1,0 +1,40 @@
+name: Refresh Codental Session
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'  # a cada 30 minutos
+  workflow_dispatch:          # permite rodar manualmente
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        run: npm install playwright mongodb
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Refresh Codental session
+        env:
+          CODENTAL_EMAIL: ${{ secrets.CODENTAL_EMAIL }}
+          CODENTAL_PASSWORD: ${{ secrets.CODENTAL_PASSWORD }}
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+        run: node .github/scripts/refresh-session.js
+
+      - name: Sync Google Contacts → MongoDB
+        env:
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          INTERNAL_API_KEY: ${{ secrets.INTERNAL_API_KEY }}
+        run: node scripts/sync-contacts.js
