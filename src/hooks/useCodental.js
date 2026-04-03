@@ -34,6 +34,11 @@ export function useCodental() {
   const getPatient    = useCallback((id) => call({ action: "patient", id }), []);
   // Uploads/exames
   const getUploads    = useCallback((id) => call({ action: "uploads", id }), []);
+  //busca evoluções
+  const getEvolutions = useCallback((id) => call({ action: "evolutions", id }), []);
+
+// adiciona no return:
+return { searchByName, searchByPhone, getPatient, getUploads, getEvolutions, loading, error };
 
   return { searchByName, searchByPhone, getPatient, getUploads, loading, error };
 }

@@ -101,6 +101,27 @@ export default async function handler(req, res) {
       return res.json(status);
     }
 
+    // ── Evoluções do paciente ──────────────────────────────────────────────
+    if (action === "evolutions") {
+    if (!id) return res.status(400).json({ error: "id obrigatório" });
+    const r = await codentalFetch(`/patients/${id}/evolutions.json`, session);
+    if (!r.ok) return res.status(r.status).json({ error: `Codental: ${r.status}` });
+    const data = await r.json();
+    const list = Array.isArray(data) ? data : (data.evolutions || data.data || []);
+    return res.json({ evolutions: list });
+    }
+
+    // ── URL de preview de upload (proxy para evitar CORS) ──────────────────
+    if (action === "upload_url") {
+    if (!id) return res.status(400).json({ error: "id obrigatório" });
+    // Busca a URL do arquivo específico com autenticação
+    const { upload_id } = req.query;
+    if (!upload_id) return res.status(400).json({ error: "upload_id obrigatório" });
+    const r = await codentalFetch(`/patients/${id}/uploads/${upload_id}.json`, session);
+    if (!r.ok) return res.status(r.status).json({ error: `Codental: ${r.status}` });
+    return res.json(await r.json());
+    }
+
     return res.status(400).json({ error: `Ação desconhecida: ${action}` });
 
   } catch (e) {

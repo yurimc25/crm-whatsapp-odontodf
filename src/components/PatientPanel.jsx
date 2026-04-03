@@ -82,42 +82,39 @@ export default function PatientPanel({ chat, operator }) {
 }
 
 function PerfilTab({ chat }) {
-  const { searchByPhone, searchByName, getUploads, loading } = useCodental();
+  const { searchByPhone, searchByName, getUploads, getEvolutions, loading } = useCodental();
   const { displayInfo } = useContactsCtx();
   const [paciente, setPaciente] = useState(null);
   const [uploads, setUploads]   = useState([]);
+  const [evols, setEvols]       = useState([]);
   const info = displayInfo(chat.id, chat.name);
 
   useEffect(() => {
-    setPaciente(null);
-    setUploads([]);
+    setPaciente(null); setUploads([]); setEvols([]);
 
     async function buscar() {
       const phone = info.phone.replace(/\D/g, "");
       let result = phone ? await searchByPhone(phone) : null;
-
       if (!result?.patients?.length && info.hasContact) {
-        const nome = info.name.split(" ").slice(0, 3).join(" ");
-        result = await searchByName(nome);
+        result = await searchByName(info.name.split(" ").slice(0, 3).join(" "));
       }
-
       if (result?.patients?.length > 0) {
         const p = result.patients[0];
         setPaciente(p);
         if (p.id) {
-          const u = await getUploads(p.id);
+          const [u, e] = await Promise.all([getUploads(p.id), getEvolutions(p.id)]);
           setUploads(u?.uploads || []);
+          setEvols(e?.evolutions || []);
         }
       }
     }
-
     buscar();
   }, [chat.id]);
 
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
       <Section label="Codental">
-        {loading && <div style={{ color:"#3a7055", fontSize:12 }}>Buscando no Codental...</div>}
+        {loading && <div style={{ color:"#3a7055", fontSize:12 }}>Buscando...</div>}
         {!loading && !paciente && <ModuleStub name="Paciente não encontrado" icon="📋" />}
         {paciente && (
           <>
@@ -131,20 +128,74 @@ function PerfilTab({ chat }) {
         )}
       </Section>
 
-      {uploads.length > 0 && (
-        <Section label={`Exames / Uploads (${uploads.length})`}>
-          {uploads.slice(0, 5).map((u, i) => (
-            <div key={i} style={{ marginBottom:5 }}>
-              <div style={{ color:"#c8e8d8", fontSize:12 }}>{u.name || u.filename}</div>
-              <div style={{ color:"#3a7055", fontSize:10 }}>
-                {u.created_at ? new Date(u.created_at).toLocaleDateString("pt-BR") : ""}
+      {evols.length > 0 && (
+        <Section label={`Evoluções (${evols.length})`}>
+          {evols.slice(0, 5).map((e, i) => (
+            <div key={i} style={{ marginBottom:8, paddingBottom:8,
+              borderBottom: i < evols.length - 1 ? "1px solid #1a2e22" : "none" }}>
+              <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}>
+                <span style={{ color:"#0d7d62", fontSize:10, fontWeight:700 }}>
+                  {e.professional?.name || e.dentist_name || "Dentista"}
+                </span>
+                <span style={{ color:"#3a7055", fontSize:10 }}>
+                  {e.date || e.created_at
+                    ? new Date(e.date || e.created_at).toLocaleDateString("pt-BR")
+                    : ""}
+                </span>
               </div>
+              <div style={{ color:"#c8e8d8", fontSize:11, lineHeight:1.5 }}>
+                {(e.description || e.notes || e.content || "").slice(0, 150)}
+                {(e.description || e.notes || e.content || "").length > 150 ? "..." : ""}
+              </div>
+              {e.procedures && e.procedures.length > 0 && (
+                <div style={{ color:"#3a7055", fontSize:10, marginTop:4 }}>
+                  {e.procedures.map(p => p.name || p).join(", ")}
+                </div>
+              )}
             </div>
           ))}
         </Section>
       )}
 
-      <ModuleStub name="Google Contacts" icon="👤" />
+      {uploads.length > 0 && (
+        <Section label={`Exames / Uploads (${uploads.length})`}>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:6 }}>
+            {uploads.slice(0, 9).map((u, i) => {
+              const url = u.url || u.service_url || u.file_url;
+              const name = u.name || u.filename || u.file_name || `Arquivo ${i+1}`;
+              const isImg = /\.(jpg|jpeg|png|gif|webp)/i.test(name);
+              const isPdf = /\.pdf/i.test(name);
+
+              return (
+                <a key={i} href={url} target="_blank" rel="noreferrer"
+                  title={name}
+                  style={{
+                    display:"block", borderRadius:6, overflow:"hidden",
+                    border:"1px solid #1a2e22", textDecoration:"none",
+                    background:"#0d1610", cursor: url ? "pointer" : "default",
+                  }}>
+                  {isImg && url ? (
+                    <img src={url} alt={name}
+                      style={{ width:"100%", aspectRatio:"1", objectFit:"cover",
+                        display:"block" }}
+                      onError={e => { e.target.style.display="none"; }}
+                    />
+                  ) : (
+                    <div style={{ aspectRatio:"1", display:"flex", flexDirection:"column",
+                      alignItems:"center", justifyContent:"center", padding:4 }}>
+                      <div style={{ fontSize:20 }}>{isPdf ? "📄" : "📎"}</div>
+                    </div>
+                  )}
+                  <div style={{ padding:"3px 5px", color:"#3a7055", fontSize:9,
+                    overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                    {name}
+                  </div>
+                </a>
+              );
+            })}
+          </div>
+        </Section>
+      )}
     </div>
   );
 }
@@ -165,11 +216,13 @@ function AgendamentosTab() {
 function EvolucoeTab() {
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-      <Section label="Últimas evoluções">
-        <ModuleStub name="Codental Evoluções" icon="📝" />
+      <Section label="Evoluções e exames">
+        <div style={{ color:"#3a7055", fontSize:12 }}>
+          Evoluções e exames aparecem automaticamente na aba Perfil após identificar o paciente no Codental.
+        </div>
       </Section>
-      <Section label="Exames">
-        <ModuleStub name="Gmail Exames" icon="🦷" />
+      <Section label="Gmail — exames por email">
+        <ModuleStub name="Gmail Exames" icon="📧" />
       </Section>
     </div>
   );
