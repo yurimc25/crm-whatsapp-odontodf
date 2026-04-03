@@ -1,24 +1,23 @@
-// api/codental.js
-// Usa a lógica de busca já existente em lib/patientSearch.js
+const { MongoClient } = require("mongodb");
 
-import { MongoClient } from "mongodb";
-import { searchPatientsWithFallback, getCacheStatus } from "../lib/patientSearch.js";
-
-let client;
+let _client;
 async function getDb() {
-  if (!client) {
-    client = new MongoClient(process.env.MONGODB_URI);
-    await client.connect();
+  if (!_client) {
+    _client = new MongoClient(process.env.MONGODB_URI);
+    await _client.connect();
   }
   return _client.db(process.env.MONGODB_DB || "codental_monitor");
 }
 
-const APP_BASE = "https://app.codental.com.br";
-const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+const APP_BASE = process.env.CODENTAL_BASE_URL || "https://app.codental.com.br";
+const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
-async function getSession(db) {
+async function getSession() {
+  const db = await getDb();
   const doc = await db.collection("settings").findOne({ _id: "codental_session" });
-  if (!doc?.cookie || !doc?.csrf) throw new Error("Sem sessão Codental no banco");
+  if (!doc?.cookie || !doc?.csrf) {
+    throw new Error("Sem sessão Codental no MongoDB. GitHub Actions não rodou?");
+  }
   return { cookie: doc.cookie, csrf: doc.csrf };
 }
 
@@ -32,7 +31,15 @@ function authHeaders(session) {
   };
 }
 
-export default async function handler(req, res) {
+async function codentalFetch(path, session) {
+  const r = await fetch(`${APP_BASE}${path}`, { headers: authHeaders(session) });
+  if (r.status === 401 || r.status === 403) {
+    throw new Error("Sessão Codental expirada");
+  }
+  return r;
+}
+
+module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Internal-Key");
@@ -44,82 +51,80 @@ export default async function handler(req, res) {
   const { action, q, id, phone } = req.query;
 
   try {
-    const db = await getDb();
+    const session = await getSession();
 
-    // ── Busca fuzzy: nome ou telefone ──────────────────────────────────────
-    // Usa patientSearch.js: base local (patients_cache) → API Codental com fallback
-    if (action === "search") {
-      if (!q && !phone) return res.status(400).json({ error: "q ou phone obrigatório" });
+    if (action === "search" && phone) {
+      const digits = phone.replace(/\D/g, "");
+      const local = digits.startsWith("55") && digits.length > 10 ? digits.slice(2) : digits;
+      const variants = new Set([digits, local, "55" + local]);
 
-      // Se vier telefone, busca direto na API por telefone
-      if (phone) {
-        const session = await getSession(db);
-        const digits = phone.replace(/\D/g, "");
-        // Tenta variações: com e sem DDI 55
-        const queries = [digits, digits.startsWith("55") ? digits.slice(2) : "55" + digits];
-        let found = [];
-        for (const tq of queries) {
-          const r = await fetch(
-            `${APP_BASE}/patients/search.json?query=${encodeURIComponent(tq)}`,
-            { headers: authHeaders(session) }
-          );
+      if (local.length === 11 && local[2] === "9") {
+        const sem9 = local.slice(0, 2) + local.slice(3);
+        variants.add(sem9);
+        variants.add("55" + sem9);
+      }
+      if (local.length === 10) {
+        const com9 = local.slice(0, 2) + "9" + local.slice(2);
+        variants.add(com9);
+        variants.add("55" + com9);
+      }
+
+      let found = [];
+      for (const v of variants) {
+        if (found.length > 0) break;
+        try {
+          const r = await codentalFetch(`/patients/search.json?query=${encodeURIComponent(v)}`, session);
           if (!r.ok) continue;
           const data = await r.json();
           const list = Array.isArray(data) ? data : (data.patients || data.data || []);
-          if (list.length > 0) { found = list; break; }
-        }
-        return res.json({ patients: found, source: "phone" });
+          if (list.length > 0) found = list;
+        } catch (_) {}
       }
-
-      // Busca por nome com fuzzy (local + API)
-      const result = await searchPatientsWithFallback(q);
-      return res.json(result);
+      return res.json({ patients: found, source: "phone" });
     }
 
-    // ── Dados completos de um paciente ─────────────────────────────────────
+    if (action === "search" && q) {
+      const tokens = q.trim().split(/\s+/).filter(t => t.length > 1);
+      const variants = new Set([q]);
+      if (tokens.length >= 2) variants.add(`${tokens[0]} ${tokens[tokens.length - 1]}`);
+      if (tokens.length >= 3) variants.add(`${tokens[0]} ${tokens[1]}`);
+      variants.add(tokens[0]);
+
+      let best = [];
+      for (const v of variants) {
+        if (best.length > 0) break;
+        try {
+          const r = await codentalFetch(`/patients/search.json?query=${encodeURIComponent(v)}`, session);
+          if (!r.ok) continue;
+          const data = await r.json();
+          const list = Array.isArray(data) ? data : (data.patients || data.data || []);
+          if (list.length > 0) best = list;
+        } catch (_) {}
+      }
+      return res.json({ patients: best, source: "name" });
+    }
+
     if (action === "patient") {
       if (!id) return res.status(400).json({ error: "id obrigatório" });
-      const session = await getSession(db);
-      const r = await fetch(`${APP_BASE}/patients/${id}.json`, { headers: authHeaders(session) });
+      const r = await codentalFetch(`/patients/${id}.json`, session);
       if (!r.ok) return res.status(r.status).json({ error: `Codental: ${r.status}` });
       return res.json(await r.json());
     }
 
-    // ── Uploads/exames do paciente ─────────────────────────────────────────
     if (action === "uploads") {
       if (!id) return res.status(400).json({ error: "id obrigatório" });
-      const session = await getSession(db);
-      const r = await fetch(`${APP_BASE}/patients/${id}/uploads.json`, { headers: authHeaders(session) });
+      const r = await codentalFetch(`/patients/${id}/uploads.json`, session);
       if (!r.ok) return res.status(r.status).json({ error: `Codental: ${r.status}` });
       const data = await r.json();
       return res.json({ uploads: Array.isArray(data) ? data : (data.uploads || []) });
     }
 
-    // ── Status do cache local ──────────────────────────────────────────────
-    if (action === "cache_status") {
-      const status = await getCacheStatus();
-      return res.json(status);
-    }
-
-    // ── Evoluções do paciente ──────────────────────────────────────────────
     if (action === "evolutions") {
-    if (!id) return res.status(400).json({ error: "id obrigatório" });
-    const r = await codentalFetch(`/patients/${id}/evolutions.json`, session);
-    if (!r.ok) return res.status(r.status).json({ error: `Codental: ${r.status}` });
-    const data = await r.json();
-    const list = Array.isArray(data) ? data : (data.evolutions || data.data || []);
-    return res.json({ evolutions: list });
-    }
-
-    // ── URL de preview de upload (proxy para evitar CORS) ──────────────────
-    if (action === "upload_url") {
-    if (!id) return res.status(400).json({ error: "id obrigatório" });
-    // Busca a URL do arquivo específico com autenticação
-    const { upload_id } = req.query;
-    if (!upload_id) return res.status(400).json({ error: "upload_id obrigatório" });
-    const r = await codentalFetch(`/patients/${id}/uploads/${upload_id}.json`, session);
-    if (!r.ok) return res.status(r.status).json({ error: `Codental: ${r.status}` });
-    return res.json(await r.json());
+      if (!id) return res.status(400).json({ error: "id obrigatório" });
+      const r = await codentalFetch(`/patients/${id}/evolutions.json`, session);
+      if (!r.ok) return res.status(r.status).json({ error: `Codental: ${r.status}` });
+      const data = await r.json();
+      return res.json({ evolutions: Array.isArray(data) ? data : (data.evolutions || data.data || []) });
     }
 
     return res.status(400).json({ error: `Ação desconhecida: ${action}` });
@@ -128,4 +133,4 @@ export default async function handler(req, res) {
     console.error("[codental]", e.message);
     return res.status(500).json({ error: e.message });
   }
-}
+};
