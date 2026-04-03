@@ -125,6 +125,17 @@ export function useWAHA(operator) {
           return { ...prev, [chatId]: updated };
         });
 
+        if (msg.from === "patient" && msg.ts) {
+          setChats(prev => {
+            const updated = prev.map(c =>
+              c.id !== activeChatRef.current ? c
+              : { ...c, lastMsg: msg.text, lastTime: msg.time, lastPatientTs: msg.ts }
+            );
+            cache.set(CHATS_KEY, updated, CHATS_TTL);
+            return updated;
+          });
+        }
+
         setChats(prev => {
           const updated = prev.map(c =>
             c.id !== activeChatRef.current && msg.from === "patient"
@@ -146,7 +157,7 @@ export function useWAHA(operator) {
   const loadMessages = useCallback(async (chatId) => {
     activeChatRef.current = chatId;
 
-    // Zera badge de não lido
+    // Zera badge
     setChats(prev => {
       const updated = prev.map(c => c.id === chatId ? { ...c, unread: 0 } : c);
       cache.set(CHATS_KEY, updated, CHATS_TTL);
@@ -155,21 +166,33 @@ export function useWAHA(operator) {
 
     // Exibe cache instantaneamente
     const cached = cache.get(MSGS_PREFIX + chatId);
-    if (cached) {
-      setMessages(prev => ({ ...prev, [chatId]: cached }));
-    }
+    if (cached) setMessages(prev => ({ ...prev, [chatId]: cached }));
 
     if (USE_MOCK) {
       setMessages(prev => ({ ...prev, [chatId]: MOCK_MESSAGES[chatId] || [] }));
       return;
     }
 
-    // Busca atualização em background
     try {
-      const raw = await getMessages(chatId);
+      // Busca as últimas 100 mensagens (máximo que cabe no localStorage)
+      const raw = await getMessages(chatId, 100);
       const normalized = raw.map(normalizeMessage).reverse();
       setMessages(prev => ({ ...prev, [chatId]: normalized }));
       cache.set(MSGS_PREFIX + chatId, normalized, MSGS_TTL);
+
+      // Atualiza lastMsg e lastPatientTs no chat
+      const lastPatient = [...normalized].reverse().find(m => m.from === "patient");
+      const lastAny = normalized[normalized.length - 1];
+      setChats(prev => {
+        const updated = prev.map(c => c.id === chatId ? {
+          ...c,
+          lastMsg: lastAny?.text || c.lastMsg,
+          lastTime: lastAny?.time || c.lastTime,
+          lastPatientTs: lastPatient?.ts || c.lastPatientTs,
+        } : c);
+        cache.set(CHATS_KEY, updated, CHATS_TTL);
+        return updated;
+      });
     } catch (e) {
       console.error("loadMessages", e);
     }

@@ -81,20 +81,15 @@ export function normalizeChat(wahaChat) {
 }
 
 export function normalizeMessage(wahaMsg) {
-  // body pode estar em lugares diferentes
-  const body = wahaMsg.body
-    || wahaMsg.text
-    || wahaMsg.content
-    || wahaMsg._data?.body
-    || "";
-
-  const ts = wahaMsg.timestamp || wahaMsg.t || wahaMsg._data?.t || Date.now() / 1000;
+  const body = wahaMsg.body || wahaMsg.text || wahaMsg.content || wahaMsg._data?.body || "";
+  const ts   = wahaMsg.timestamp || wahaMsg.t || wahaMsg._data?.t || Date.now() / 1000;
 
   return {
     id:       wahaMsg.id || String(Date.now()),
     from:     wahaMsg.fromMe ? "operator" : "patient",
     text:     body,
-    time:     new Date(ts * 1000).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
+    time:     new Date(ts * 1000).toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" }),
+    ts:       new Date(ts * 1000).toISOString(), // ← adiciona isso
     type:     wahaMsg.type || "text",
     operator: wahaMsg.fromMe ? "Você" : null,
     chatId:   wahaMsg.chatId || wahaMsg.from || null,
@@ -154,4 +149,24 @@ export function createWAHASocket({ onMessage, onStatus, onError }) {
     send:  (data) => ws?.readyState === WebSocket.OPEN && ws.send(JSON.stringify(data)),
     close: () => { dead = true; clearTimeout(reconnectTimer); ws?.close(); },
   };
+}
+// Adiciona no final do arquivo, antes do createWAHASocket:
+
+export function calcTimeSinceLastPatientMsg(messages) {
+  if (!messages || messages.length === 0) return null;
+  // Pega a última mensagem do paciente (não do operador/bot)
+  const lastPatient = [...messages].reverse().find(m => m.from === "patient");
+  if (!lastPatient) return null;
+  return lastPatient.ts || null; // timestamp ISO string
+}
+
+export function formatTimeSince(isoTs) {
+  if (!isoTs) return null;
+  const diff = Date.now() - new Date(isoTs).getTime();
+  const mins  = Math.floor(diff / 60000);
+  const hours = Math.floor(mins / 60);
+  const days  = Math.floor(hours / 24);
+  if (days > 0)  return `${days}d ${hours % 24}h`;
+  if (hours > 0) return `${hours}h ${mins % 60}m`;
+  return `${mins}m`;
 }
