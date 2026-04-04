@@ -127,7 +127,7 @@ export default function PatientPanel({ chat, operator }) {
         display:"flex", flexDirection:"column", gap:10 }}>
         {tab === "perfil"       && <PerfilTab chat={chat} />}
         {tab === "agendamentos" && <AgendamentosTab />}
-        {tab === "evolucoes"    && <EvolucoeTab />}
+        {tab === "evolucoes"    && <EvolucoeTab chat={chat} />}
         {tab === "notas"        && <NotasTab chat={chat} operator={operator} />}
       </div>
     </div>
@@ -267,14 +267,113 @@ function AgendamentosTab() {
   );
 }
 
-function EvolucoeTab() {
+function EvolucoeTab({ chat }) {
+  const { searchByPhone, searchByName, getEvolutions } = useCodental();
+  const { displayInfo } = useContactsCtx();
+  const [evols, setEvols]         = useState(null); // null = ainda carregando
+  const [paciente, setPaciente]   = useState(null);
+  const [erro, setErro]           = useState(null);
+  const info = displayInfo(chat.id, chat.name);
+
+  useEffect(() => {
+    setEvols(null); setPaciente(null); setErro(null);
+    async function buscar() {
+      try {
+        const phone = info.phone.replace(/\D/g, "");
+        let result = phone ? await searchByPhone(phone) : null;
+        if (!result?.patients?.length && info.hasContact) {
+          result = await searchByName(info.name.split(" ").slice(0,3).join(" "));
+        }
+        if (!result?.patients?.length) {
+          setEvols([]);
+          setErro("Paciente não encontrado no Codental");
+          return;
+        }
+        const p = result.patients[0];
+        setPaciente(p);
+        const e = await getEvolutions(p.id);
+        setEvols(e?.evolutions || []);
+      } catch (err) {
+        setErro(err.message);
+        setEvols([]);
+      }
+    }
+    buscar();
+  }, [chat.id]);
+
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-      <Section label="Evoluções e exames">
-        <div style={{ color:T.sub, fontSize:12 }}>
-          Dados exibidos automaticamente na aba Perfil após identificar o paciente.
-        </div>
+      <Section label={evols !== null ? `Evoluções (${evols.length})` : "Evoluções"}>
+
+        {/* Carregando */}
+        {evols === null && (
+          <div style={{ color:T.sub, fontSize:12, textAlign:"center", padding:"16px 0" }}>
+            Buscando evoluções...
+          </div>
+        )}
+
+        {/* Erro / não encontrado */}
+        {evols !== null && erro && (
+          <div style={{ color:T.sub, fontSize:12 }}>{erro}</div>
+        )}
+
+        {/* Vazio */}
+        {evols !== null && !erro && evols.length === 0 && (
+          <div style={{ color:T.sub, fontSize:12 }}>Nenhuma evolução registrada.</div>
+        )}
+
+        {/* Lista de evoluções */}
+        {evols !== null && evols.length > 0 && (
+          <>
+            {paciente?.id && (
+              <a href={`https://app.codental.com.br/patients/${paciente.id}/evolutions`}
+                target="_blank" rel="noreferrer"
+                style={{ display:"block", marginBottom:10, textAlign:"center",
+                  background:T.accentBg, color:T.accent, border:`1px solid ${T.accent}44`,
+                  borderRadius:6, padding:"5px 0", fontSize:11, fontWeight:600,
+                  textDecoration:"none" }}>
+                Abrir no Codental →
+              </a>
+            )}
+            {evols.map((e, i) => (
+              <div key={e.id || i} style={{
+                marginBottom: i < evols.length-1 ? 10 : 0,
+                paddingBottom: i < evols.length-1 ? 10 : 0,
+                borderBottom: i < evols.length-1 ? `1px solid ${T.border}` : "none",
+              }}>
+                {/* Texto da evolução */}
+                <div style={{ color:T.text, fontSize:13, fontWeight:500,
+                  lineHeight:1.5, marginBottom:4 }}>
+                  {e.texto || e.description || e.notes || "—"}
+                </div>
+
+                {/* Data + Dentista */}
+                <div style={{ display:"flex", justifyContent:"space-between",
+                  alignItems:"center", flexWrap:"wrap", gap:4 }}>
+                  <span style={{ color:T.sub, fontSize:10 }}>
+                    {[e.data, e.hora].filter(Boolean).join(" ")}
+                  </span>
+                  <span style={{ color:T.accent, fontSize:10, fontWeight:600,
+                    overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap",
+                    maxWidth:160 }}>
+                    {e.dentista || e.dentist || e.professional?.name || ""}
+                  </span>
+                </div>
+
+                {/* Badge assinado */}
+                {(e.assinado || e.signed) && (
+                  <span style={{ fontSize:9, color:T.green, fontWeight:700,
+                    marginTop:4, display:"inline-block",
+                    background:T.greenBg, padding:"1px 6px", borderRadius:4 }}>
+                    ✓ Assinado
+                  </span>
+                )}
+              </div>
+            ))}
+          </>
+        )}
       </Section>
+
       <Section label="Gmail — exames por email">
         <ModuleStub name="Gmail Exames" icon="📧" />
       </Section>

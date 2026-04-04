@@ -1,23 +1,28 @@
-const { MongoClient } = require("mongodb");
+// api/codental.js
+// Vercel Serverless Function — proxy para a API do Codental
+// Lê a sessão do MongoDB (renovada pelo GitHub Actions a cada 30min)
+//
+// GET /api/codental?action=search&q=nome_ou_telefone
+// GET /api/codental?action=patient&id=123
+// GET /api/codental?action=uploads&id=123
 
-let _client;
+import { MongoClient } from "mongodb";
+
+let client;
 async function getDb() {
-  if (!_client) {
-    _client = new MongoClient(process.env.MONGODB_URI);
-    await _client.connect();
+  if (!client) {
+    client = new MongoClient(process.env.MONGODB_URI);
+    await client.connect();
   }
-  return _client.db(process.env.MONGODB_DB || "codental_monitor");
+  return client.db("clinica");
 }
 
 const APP_BASE = process.env.CODENTAL_BASE_URL || "https://app.codental.com.br";
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
-async function getSession() {
-  const db = await getDb();
+async function getSession(db) {
   const doc = await db.collection("settings").findOne({ _id: "codental_session" });
-  if (!doc?.cookie || !doc?.csrf) {
-    throw new Error("Sem sessão Codental no MongoDB. GitHub Actions não rodou?");
-  }
+  if (!doc?.cookie || !doc?.csrf) throw new Error("Sem sessão Codental no banco — GitHub Actions não rodou?");
   return { cookie: doc.cookie, csrf: doc.csrf };
 }
 
@@ -31,148 +36,144 @@ function authHeaders(session) {
   };
 }
 
-async function codentalFetch(path, session) {
-  const r = await fetch(`${APP_BASE}${path}`, { headers: authHeaders(session) });
-  if (r.status === 401 || r.status === 403) {
-    throw new Error("Sessão Codental expirada");
-  }
-  return r;
-}
-
-module.exports = async function handler(req, res) {
+export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Internal-Key");
+
   if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
 
   const key = req.headers["x-internal-key"];
-  if (key !== process.env.INTERNAL_API_KEY) return res.status(401).json({ error: "Unauthorized" });
+  if (key !== process.env.INTERNAL_API_KEY) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
 
-  const { action, q, id, phone } = req.query;
+  const { action, q, id } = req.query;
 
   try {
-    const session = await getSession();
+    const db = await getDb();
+    const session = await getSession(db);
+    const hdrs = authHeaders(session);
 
-    if (action === "search" && phone) {
-      const digits = phone.replace(/\D/g, "");
-      const local = digits.startsWith("55") && digits.length > 10 ? digits.slice(2) : digits;
-      const variants = new Set([digits, local, "55" + local]);
+    // ── Busca paciente por nome ou telefone ──────────────────────────────────
+    if (action === "search") {
+      if (!q) return res.status(400).json({ error: "Parâmetro q obrigatório" });
 
-      if (local.length === 11 && local[2] === "9") {
-        const sem9 = local.slice(0, 2) + local.slice(3);
-        variants.add(sem9);
-        variants.add("55" + sem9);
-      }
-      if (local.length === 10) {
-        const com9 = local.slice(0, 2) + "9" + local.slice(2);
-        variants.add(com9);
-        variants.add("55" + com9);
+      const r = await fetch(
+        `${APP_BASE}/patients/search.json?query=${encodeURIComponent(q)}`,
+        { headers: hdrs }
+      );
+
+      if (!r.ok) {
+        console.error(`[codental search] ${r.status} para query "${q}"`);
+        return res.status(r.status).json({ error: `Codental retornou ${r.status}` });
       }
 
-      let found = [];
-      for (const v of variants) {
-        if (found.length > 0) break;
-        try {
-          const r = await codentalFetch(`/patients/search.json?query=${encodeURIComponent(v)}`, session);
-          if (!r.ok) continue;
-          const data = await r.json();
-          const list = Array.isArray(data) ? data : (data.patients || data.data || []);
-          if (list.length > 0) found = list;
-        } catch (_) {}
-      }
-      return res.json({ patients: found, source: "phone" });
+      const data = await r.json();
+      const list = Array.isArray(data) ? data : (data.patients || data.data || []);
+      return res.json({ patients: list, total: list.length });
     }
 
-    if (action === "search" && q) {
-      const tokens = q.trim().split(/\s+/).filter(t => t.length > 1);
-      const variants = new Set([q]);
-      if (tokens.length >= 2) variants.add(`${tokens[0]} ${tokens[tokens.length - 1]}`);
-      if (tokens.length >= 3) variants.add(`${tokens[0]} ${tokens[1]}`);
-      variants.add(tokens[0]);
-
-      let best = [];
-      for (const v of variants) {
-        if (best.length > 0) break;
-        try {
-          const r = await codentalFetch(`/patients/search.json?query=${encodeURIComponent(v)}`, session);
-          if (!r.ok) continue;
-          const data = await r.json();
-          const list = Array.isArray(data) ? data : (data.patients || data.data || []);
-          if (list.length > 0) best = list;
-        } catch (_) {}
-      }
-      return res.json({ patients: best, source: "name" });
-    }
-
+    // ── Dados completos de um paciente ───────────────────────────────────────
     if (action === "patient") {
-      if (!id) return res.status(400).json({ error: "id obrigatório" });
-      const r = await codentalFetch(`/patients/${id}.json`, session);
-      if (!r.ok) return res.status(r.status).json({ error: `Codental: ${r.status}` });
+      if (!id) return res.status(400).json({ error: "Parâmetro id obrigatório" });
+
+      const r = await fetch(`${APP_BASE}/patients/${id}.json`, { headers: hdrs });
+
+      if (!r.ok) {
+        console.error(`[codental patient] ${r.status} para id ${id}`);
+        return res.status(r.status).json({ error: `Codental retornou ${r.status}` });
+      }
+
       return res.json(await r.json());
     }
 
+    // ── Uploads e exames do paciente ─────────────────────────────────────────
     if (action === "uploads") {
-      if (!id) return res.status(400).json({ error: "id obrigatório" });
-      const r = await codentalFetch(`/patients/${id}/uploads.json`, session);
-      if (!r.ok) return res.status(r.status).json({ error: `Codental: ${r.status}` });
+      if (!id) return res.status(400).json({ error: "Parâmetro id obrigatório" });
+
+      const r = await fetch(`${APP_BASE}/patients/${id}/uploads.json`, { headers: hdrs });
+
+      if (!r.ok) {
+        console.error(`[codental uploads] ${r.status} para id ${id}`);
+        return res.status(r.status).json({ error: `Codental retornou ${r.status}` });
+      }
+
       const data = await r.json();
-      return res.json({ uploads: Array.isArray(data) ? data : (data.uploads || []) });
+      const uploads = Array.isArray(data) ? data : (data.uploads || data.data || []);
+      return res.json({ uploads, total: uploads.length });
     }
 
+    // ── Evoluções do paciente ────────────────────────────────────────────────
     if (action === "evolutions") {
-    if (!id) return res.status(400).json({ error: "id obrigatório" });
+      if (!id) return res.status(400).json({ error: "Parâmetro id obrigatório" });
 
-    // Tenta JSON primeiro
-    const r = await codentalFetch(`/patients/${id}/evolutions.json`, session);
-
-    const ct = r.headers.get("content-type") || "";
-
-    // Se retornou JSON real
-    if (ct.includes("json") && r.ok) {
-        const data = await r.json();
-        const list = Array.isArray(data) ? data : (data.evolutions || data.data || []);
-        return res.json({ evolutions: list });
-    }
-
-    // Se retornou HTML, faz parse manual
-    if (r.ok) {
-        const html = await r.text();
-        const evolutions = [];
-
-        // Extrai cada evolution-row
-        const rowReg = /id="evolution_(\d+)"[\s\S]*?class="evolutions-table-cell-text[\s\S]*?<\/tr>/g;
-        let match;
-        while ((match = rowReg.exec(html)) !== null) {
-        const block = match[0];
-        const eid   = match[1];
-
-        // Descrição: primeiro div dentro de evolutions-table-cell-text
-        const descM = block.match(/<div[^>]*tw-text-ugray-900[^>]*>([\s\S]*?)<\/div>/);
-        const desc  = descM ? descM[1].replace(/<[^>]+>/g,"").trim() : "";
-
-        // Data e dentista: evolution-dentist div
-        const dentM = block.match(/class="evolution-dentist[^"]*"[^>]*>([\s\S]*?)<\/div>/);
-        let date = "", dentist = "", signed = false;
-        if (dentM) {
-            const inner = dentM[1];
-            const dateM = inner.match(/(\d{2}\/\d{2}\/\d{4})\s+(\d{2}:\d{2}:\d{2})/);
-            if (dateM) date = `${dateM[1]} ${dateM[2]}`;
-            const dentistM = inner.match(/<span[^>]*tw-truncate[^>]*>([\s\S]*?)<\/span>/);
-            if (dentistM) dentist = dentistM[1].replace(/<[^>]+>/g,"").trim();
-            signed = inner.includes("Assinado");
+      // Tenta JSON primeiro
+      const rJson = await fetch(`${APP_BASE}/patients/${id}/evolutions.json`, { headers: hdrs });
+      if (rJson.ok) {
+        const ct = rJson.headers.get("content-type") || "";
+        if (ct.includes("application/json")) {
+          const data = await rJson.json();
+          const evols = Array.isArray(data) ? data : (data.evolutions || data.data || []);
+          return res.json({ evolutions: evols, total: evols.length });
         }
+      }
 
-        evolutions.push({ id: eid, description: desc, date, dentist, signed });
-        }
+      // Codental retorna HTML — faz parse manual dos <tr id="evolution_XXX">
+      const rHtml = await fetch(`${APP_BASE}/patients/${id}/evolutions`, { headers: hdrs });
+      if (!rHtml.ok) {
+        console.error(`[codental evolutions] ${rHtml.status} para id ${id}`);
+        return res.status(rHtml.status).json({ error: `Codental retornou ${rHtml.status}` });
+      }
 
-        return res.json({ evolutions });
+      const html = await rHtml.text();
+
+      // Extrai cada <tr id="evolution_XXXXX">
+      const evolutions = [];
+      const trRegex = /<tr[^>]+id="evolution_(\d+)"[^>]*>([\s\S]*?)<\/tr>/g;
+      let m;
+      while ((m = trRegex.exec(html)) !== null) {
+        const evolId = m[1];
+        const inner  = m[2];
+
+        // Texto da evolução (div principal)
+        const textMatch = inner.match(/<div[^>]*tw-text-ugray-900[^>]*><div>([\s\S]*?)<\/div><\/div>/);
+        const texto = textMatch ? textMatch[1].replace(/<[^>]+>/g, "").trim() : "";
+
+        // Data/hora e dentista
+        const dentistBlock = inner.match(/<div[^>]*evolution-dentist[^>]*>([\s\S]*?)<\/div>/);
+        const dentistRaw   = dentistBlock ? dentistBlock[1].replace(/<[^>]+>/g, " ").trim() : "";
+        // Separa data, hora e nome do dentista
+        const dateMatch    = dentistRaw.match(/(\d{2}\/\d{2}\/\d{4})/);
+        const timeMatch    = dentistRaw.match(/(\d{2}:\d{2}:\d{2})/);
+        const dentistName  = dentistRaw
+          .replace(/\d{2}\/\d{2}\/\d{4}/, "")
+          .replace(/\d{2}:\d{2}:\d{2}/, "")
+          .replace(/Assinado/gi, "")
+          .replace(/\s+/g, " ")
+          .trim();
+
+        // Assinado?
+        const assinado = /Assinado/i.test(inner);
+
+        evolutions.push({
+          id:       evolId,
+          texto,
+          data:     dateMatch ? dateMatch[1] : "",
+          hora:     timeMatch ? timeMatch[1] : "",
+          dentista: dentistName,
+          assinado,
+        });
+      }
+
+      return res.json({ evolutions, total: evolutions.length });
     }
 
-    return res.status(r.status).json({ error: `Codental: ${r.status}` });
-    }
+    return res.status(400).json({ error: `Ação desconhecida: ${action}` });
 
   } catch (e) {
     console.error("[codental]", e.message);
     return res.status(500).json({ error: e.message });
   }
-};
+}
