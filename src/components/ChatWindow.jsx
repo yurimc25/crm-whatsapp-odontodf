@@ -151,6 +151,7 @@ export default function ChatWindow({
   return (
     <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden",
       background:T.bg, fontFamily:"'DM Sans', sans-serif" }}>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
 
       {/* Header */}
       <div style={{ padding:"10px 16px", borderBottom:`1px solid ${T.border}`,
@@ -232,14 +233,22 @@ export default function ChatWindow({
         display:"flex", flexDirection:"column", gap:2, background:T.bg }}>
 
         {loadingMore && (
-          <div style={{ textAlign:"center", padding:8, color:T.sub, fontSize:12 }}>
-            Carregando histórico...
+          <div style={{ textAlign:"center", padding:"12px 0", display:"flex",
+            alignItems:"center", justifyContent:"center", gap:8, color:T.sub, fontSize:12 }}>
+            <div style={{
+              width:14, height:14, borderRadius:"50%",
+              border:`2px solid ${T.border}`,
+              borderTopColor: T.accent,
+              animation:"spin 0.8s linear infinite",
+            }} />
+            Carregando mensagens anteriores...
           </div>
         )}
-        {!hasMore && messages.length > 10 && (
-          <div style={{ textAlign:"center", padding:"6px 0",
-            color:"#444", fontSize:11, fontStyle:"italic" }}>
-            Início da conversa
+        {!loadingMore && !hasMore && messages.length > 0 && (
+          <div style={{ textAlign:"center", padding:"8px 0 4px",
+            color:"#444", fontSize:11, fontStyle:"italic",
+            borderBottom:`1px solid ${T.border}22`, marginBottom:8 }}>
+            Não foi possível localizar mensagens mais antigas
           </div>
         )}
         {messages.length === 0 && !loadingMore && (

@@ -131,9 +131,17 @@ export default function ChatList({
 }
 
 function ChatItem({ chat, active, onClick, onOpenMenu }) {
-  const { displayInfo } = useContactsCtx();
+  const { displayInfo, lookupPhone } = useContactsCtx();
   const info = displayInfo(chat.id, chat.name);
   const hasUnread = !active && (chat.unread > 0);
+
+  // Busca individual no Google Contacts se não encontrou no bulk load
+  // useEffect com debounce de 2s para não sobrecarregar a API
+  useEffect(() => {
+    if (info.hasContact) return; // já tem nome, não precisa buscar
+    const t = setTimeout(() => lookupPhone(chat.id), 2000);
+    return () => clearTimeout(t);
+  }, [chat.id, info.hasContact]);
 
   const timeSince = chat.lastPatientTs ? formatTimeSince(chat.lastPatientTs) : null;
   const waitMs    = chat.lastPatientTs ? Date.now() - new Date(chat.lastPatientTs).getTime() : 0;

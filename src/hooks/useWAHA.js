@@ -612,42 +612,47 @@ export function useWAHA(operator) {
     const SESSION = import.meta.env.VITE_WAHA_SESSION || "default";
     const id      = encodeURIComponent(chatId);
 
-    // Timestamp Unix da mensagem mais antiga que temos
     const oldestMsg = (currentMsgs || [])[0];
     const oldestTs  = oldestMsg?.ts
-      ? Math.floor(new Date(oldestMsg.ts).getTime() / 1000) - 1
+      ? Math.floor(new Date(oldestMsg.ts).getTime() / 1000)
       : null;
 
-    const tsParam = oldestTs ? `&fromTimestamp=${oldestTs}` : "";
     try {
+      // Tenta com fromTimestamp (suportado em alguns engines WAHA)
+      const tsParam = oldestTs ? `&fromTimestamp=${oldestTs - 1}` : "";
       const r = await fetch(
-        `/api/waha?path=/api/${SESSION}/chats/${id}/messages&limit=20&downloadMedia=false${tsParam}`,
+        `/api/waha?path=/api/${SESSION}/chats/${id}/messages&limit=30&downloadMedia=false${tsParam}`,
         { headers: { "X-Internal-Key": iKey } }
       );
       if (!r.ok) return { hasMore: false };
       const raw = await r.json();
-      if (!raw || !Array.isArray(raw) || raw.length === 0) return { hasMore: false };
+      if (!raw || !Array.isArray(raw)) return { hasMore: false };
 
       const normalized = raw
         .map(normalizeMessage)
         .sort((a, b) => new Date(a.ts) - new Date(b.ts));
 
+      // Filtra mensagens que já temos
       const existingIds = new Set((currentMsgs || []).map(m => m.id));
-      const novas       = normalized.filter(m => !existingIds.has(m.id));
+      // Se fromTimestamp funcionou, filtra por ID; senão filtra por timestamp anterior
+      const novas = normalized.filter(m =>
+        !existingIds.has(m.id) &&
+        (!oldestTs || new Date(m.ts).getTime() / 1000 < oldestTs)
+      );
 
-      if (novas.length > 0) {
-        setMessages(prev => {
-          const current = prev[chatId] || [];
-          const ids     = new Set(current.map(m => m.id));
-          const toAdd   = novas.filter(m => !ids.has(m.id));
-          if (toAdd.length === 0) return prev;
-          const updated = [...toAdd, ...current].sort((a,b) => new Date(a.ts)-new Date(b.ts));
-          cache.set(MSGS_PREFIX + chatId, updated, MSGS_TTL);
-          return { ...prev, [chatId]: updated };
-        });
-      }
+      if (novas.length === 0) return { hasMore: false };
 
-      return { hasMore: raw.length >= 20 && novas.length > 0 };
+      setMessages(prev => {
+        const current = prev[chatId] || [];
+        const ids     = new Set(current.map(m => m.id));
+        const toAdd   = novas.filter(m => !ids.has(m.id));
+        if (toAdd.length === 0) return prev;
+        const updated = [...toAdd, ...current].sort((a,b) => new Date(a.ts)-new Date(b.ts));
+        cache.set(MSGS_PREFIX + chatId, updated, MSGS_TTL);
+        return { ...prev, [chatId]: updated };
+      });
+
+      return { hasMore: novas.length >= 20 };
     } catch { return { hasMore: false }; }
   }, []);
 

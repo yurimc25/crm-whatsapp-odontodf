@@ -140,6 +140,46 @@ export function useContacts() {
     });
   }, []);
 
+  // Busca individual de número no Google Contacts
+  // Chamado pelo ChatList quando !hasContact — faz uma busca específica
+  const lookupPhone = useCallback(async (wahaId) => {
+    const phone = wahaIdToPhone(wahaId);
+    if (!phone || phone.length < 7) return;
+    // Já tem no mapa — não busca de novo
+    if (contactMap[phone]) return;
+
+    try {
+      const r = await fetch(
+        `/api/contacts?action=search&phone=${phone}`,
+        { headers: { "X-Internal-Key": internalKey } }
+      );
+      if (!r.ok) return;
+      const { found, name, variants } = await r.json();
+      if (!found || !name) return;
+
+      // Injeta no mapa todas as variantes retornadas
+      setContactMap(prev => {
+        const updated = { ...prev };
+        let changed = false;
+        for (const v of (variants || [phone])) {
+          if (!prev[v]) { updated[v] = name; changed = true; }
+        }
+        if (!changed) return prev;
+        // Persiste no localStorage
+        try {
+          const raw = localStorage.getItem("crm_" + LS_KEY);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            parsed.value = { ...parsed.value, ...updated };
+            localStorage.setItem("crm_" + LS_KEY, JSON.stringify(parsed));
+          }
+        } catch {}
+        console.log(`[contacts] lookup ${phone} → ${name}`);
+        return updated;
+      });
+    } catch {}
+  }, [contactMap, internalKey]);
+
   const resolveName = useCallback((wahaId) => {
     const phone = wahaIdToPhone(wahaId);
     return contactMap[phone] || null;
@@ -163,7 +203,7 @@ export function useContacts() {
 
   return {
     contactMap, resolveName, displayName, displayInfo,
-    addLocalContact,
+    addLocalContact, lookupPhone,
     loading, error, source,
     refresh: () => fetchContacts(true),
   };
