@@ -196,11 +196,6 @@ export default function PatientCardDetected({ msg }) {
 
   function handleAction(action) {
     setError(null);
-    if (action === "doctoralia") {
-      // Doctoralia: abre o site com os dados pré-preenchidos (futuro)
-      window.open("https://www.doctoralia.com.br", "_blank");
-      return;
-    }
     if (camposVazios.length > 0) {
       setModalAction(action);
       setShowModal(true);
@@ -210,22 +205,43 @@ export default function PatientCardDetected({ msg }) {
   }
 
   async function executar(action, formData) {
+    if (action === "doctoralia") {
+      setStatus("loading");
+      setError(null);
+      try {
+        const r = await fetch("/api/doctoralia?action=create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Internal-Key": iKey },
+          body: JSON.stringify(formData),
+        });
+        const json = await r.json();
+        if (json.tokenExpired) {
+          setError("Token Doctoralia expirado — atualize DOCTORALIA_TOKEN no Vercel.");
+          setStatus("error");
+          return;
+        }
+        if (!r.ok) throw new Error(json.error || `Erro ${r.status}`);
+        setResult(json);
+        setStatus("success_doctoralia");
+      } catch (e) {
+        setError(e.message);
+        setStatus("error");
+      }
+      return;
+    }
+
+    // Codental
     if (action !== "codental") return;
     setStatus("loading");
     setError(null);
     try {
       const r = await fetch("/api/codental?action=create", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Internal-Key": iKey,
-        },
+        headers: { "Content-Type": "application/json", "X-Internal-Key": iKey },
         body: JSON.stringify(formData),
       });
       const json = await r.json();
-      if (!r.ok) {
-        throw new Error(json.error || `Erro ${r.status}`);
-      }
+      if (!r.ok) throw new Error(json.error || `Erro ${r.status}`);
       setResult(json);
       setStatus("success_codental");
     } catch (e) {
@@ -306,12 +322,12 @@ export default function PatientCardDetected({ msg }) {
               <div style={{ background:T.greenBg, border:`1px solid ${T.green}44`,
                 borderRadius:6, padding:"8px 12px", color:T.green,
                 fontSize:12, fontWeight:600, textAlign:"center" }}>
-                ✓ Paciente adicionado ao Codental!
+                ✓ {status === "success_codental" ? "Paciente adicionado ao Codental!" : "Paciente adicionado ao Doctoralia!"}
                 {result?.url && (
                   <a href={result.url} target="_blank" rel="noreferrer"
                     style={{ display:"block", marginTop:4, color:T.accent,
                       fontSize:11, textDecoration:"underline" }}>
-                    Ver prontuário →
+                    {status === "success_codental" ? "Ver prontuário →" : "Ver no Doctoralia →"}
                   </a>
                 )}
               </div>
