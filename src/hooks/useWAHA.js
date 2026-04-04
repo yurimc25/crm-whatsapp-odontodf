@@ -183,7 +183,7 @@ export function useWAHA(operator) {
             const chatId = chat.id;
             const id     = encodeURIComponent(chatId);
             const rm     = await fetch(
-              `/api/waha?path=/api/${SESSION}/chats/${id}/messages&limit=5&downloadMedia=false`,
+              `/api/waha?path=/api/${SESSION}/chats/${id}/messages&limit=20&downloadMedia=false`,
               { headers: { "X-Internal-Key": iKey } }
             );
             if (!rm.ok) continue;
@@ -340,16 +340,18 @@ export function useWAHA(operator) {
   async function bgScan(chatList) {
     for (const c of chatList) {
       try {
-        const cachedMsgs = cache.get(MSGS_PREFIX + c.id);
-        let msgs = cachedMsgs;
-
-        if (!msgs || msgs.length === 0) {
-          const raw = await getMessages(c.id, 5);
-          if (raw?.length) {
-            msgs = raw.map(normalizeMessage).sort((a,b) => new Date(a.ts)-new Date(b.ts));
-            cache.set(MSGS_PREFIX + c.id, msgs, MSGS_TTL);
-            setMessages(prev => ({ ...prev, [c.id]: msgs }));
-          }
+        // bgScan sempre busca mensagens frescas do WAHA — não usa cache
+        // para garantir que lastMsg e lastPatientTs estejam corretos
+        const raw = await getMessages(c.id, 20);
+        let msgs = [];
+        if (raw?.length) {
+          msgs = raw.map(normalizeMessage).sort((a,b) => new Date(a.ts)-new Date(b.ts));
+          cache.set(MSGS_PREFIX + c.id, msgs, MSGS_TTL);
+          setMessages(prev => ({ ...prev, [c.id]: msgs }));
+        } else {
+          // Se não veio nada do WAHA, usa o cache como fallback
+          const cachedMsgs = cache.get(MSGS_PREFIX + c.id);
+          if (cachedMsgs?.length) msgs = cachedMsgs;
         }
 
         if (msgs?.length) {
