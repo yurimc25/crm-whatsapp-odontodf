@@ -66,7 +66,7 @@ export default function ChatWindow({
   const scrollRef   = useRef(null);
   const prevScrollH = useRef(0);
   const { displayInfo } = useContactsCtx();
-  const info = displayInfo(chat.id, chat.name);
+  const info = displayInfo(chat.id, chat.name, chat.pushname);
 
   // Auto-refresh a cada 5 segundos
   useEffect(() => {
@@ -317,10 +317,17 @@ function MessageBubble({ msg, currentOperator }) {
   const isBot     = msg.operator?.includes("🤖");
   const isMe      = msg.operator === currentOperator?.name;
   const dateStr   = formatMsgDate(msg.ts);
+  const iKey      = import.meta.env.VITE_INTERNAL_API_KEY || "";
+  const SESSION   = import.meta.env.VITE_WAHA_SESSION || "default";
+
+  // URL de download de mídia via proxy
+  const mediaDownloadUrl = msg.media?.msgId
+    ? `/api/waha?path=/api/${SESSION}/messages/${encodeURIComponent(msg.media.msgId)}/download-media&X-Internal-Key=${iKey}`
+    : null;
 
   return (
     <div style={{ display:"flex", justifyContent:isPatient?"flex-start":"flex-end", marginBottom:2 }}>
-      <div style={{ maxWidth:"70%" }}>
+      <div style={{ maxWidth:"75%" }}>
         {!isPatient && (
           <div style={{ fontSize:10, fontWeight:700, marginBottom:2, textAlign:"right",
             color:isBot?"#9c7cd4":T.accent }}>
@@ -331,15 +338,257 @@ function MessageBubble({ msg, currentOperator }) {
           background: isBot ? T.bubbleBot : isMe ? T.bubbleMe : T.bubblePat,
           border:`1px solid ${isBot ? T.borderBot : isMe ? T.borderMe : "#383838"}`,
           borderRadius: isPatient ? "2px 12px 12px 12px" : "12px 2px 12px 12px",
-          padding:"8px 12px",
+          padding: msg.media ? "4px" : "8px 12px",
+          overflow:"hidden",
           boxShadow:"0 1px 3px rgba(0,0,0,.3)" }}>
-          <div style={{ color:T.text, fontSize:13, lineHeight:1.55, whiteSpace:"pre-wrap" }}>
-            {msg.text}
-          </div>
-          <div style={{ color:T.sub, fontSize:10, marginTop:4, textAlign:"right" }}>
+
+          {/* Mídia */}
+          {msg.media && <MediaContent media={msg.media} downloadUrl={mediaDownloadUrl} />}
+
+          {/* Texto da legenda ou mensagem normal */}
+          {msg.text && (
+            <div style={{ color:T.text, fontSize:13, lineHeight:1.55, whiteSpace:"pre-wrap",
+              padding: msg.media ? "6px 8px 2px" : 0 }}>
+              {msg.text}
+            </div>
+          )}
+          <div style={{ color:T.sub, fontSize:10, marginTop:4, textAlign:"right",
+            padding: msg.media ? "0 8px 4px" : 0 }}>
             {dateStr || msg.time}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Renderizador de mídia ──────────────────────────────────────────
+function MediaContent({ media, downloadUrl }) {
+  const [lightbox, setLightbox] = useState(false);
+  const [loaded, setLoaded]     = useState(false);
+  const [error, setError]       = useState(false);
+
+  const isImage = media.type === "image" || media.type === "sticker" ||
+                  (media.mimetype || "").startsWith("image/");
+  const isVideo = media.type === "video" || (media.mimetype || "").startsWith("video/");
+  const isAudio = media.type === "audio" || media.type === "voice" ||
+                  (media.mimetype || "").startsWith("audio/");
+  const isDoc   = media.type === "document";
+
+  // URL para exibir (pode ser URL direta ou o proxy de download)
+  const srcUrl = media.url || downloadUrl;
+
+  if (isImage && srcUrl) {
+    return (
+      <>
+        <div style={{ position:"relative", cursor:"pointer" }} onClick={() => setLightbox(true)}>
+          <img src={srcUrl} alt="imagem"
+            onLoad={() => setLoaded(true)}
+            onError={() => setError(true)}
+            style={{ width:"100%", maxWidth:280, maxHeight:220, objectFit:"cover",
+              borderRadius:8, display: error ? "none" : "block" }} />
+          {!loaded && !error && (
+            <div style={{ width:200, height:140, background:"#2a2a2a", borderRadius:8,
+              display:"flex", alignItems:"center", justifyContent:"center", color:T.sub }}>
+              🖼️ carregando...
+            </div>
+          )}
+          {error && (
+            <div style={{ padding:"8px 12px", color:T.sub, fontSize:12 }}>🖼️ Imagem</div>
+          )}
+          {loaded && !error && (
+            <div style={{ position:"absolute", top:6, right:6, background:"rgba(0,0,0,.5)",
+              borderRadius:6, padding:"3px 7px", fontSize:10, color:"#fff", display:"flex", gap:6 }}>
+              <span>🔍</span>
+            </div>
+          )}
+        </div>
+        {lightbox && (
+          <ImageLightbox src={srcUrl} downloadUrl={downloadUrl} onClose={() => setLightbox(false)} />
+        )}
+      </>
+    );
+  }
+
+  if (isVideo && srcUrl) {
+    return (
+      <video controls style={{ width:"100%", maxWidth:280, borderRadius:8 }}>
+        <source src={srcUrl} type={media.mimetype || "video/mp4"} />
+      </video>
+    );
+  }
+
+  if (isAudio && srcUrl) {
+    return (
+      <div style={{ padding:"8px 6px" }}>
+        <audio controls style={{ width:"100%", minWidth:220 }}>
+          <source src={srcUrl} type={media.mimetype || "audio/ogg"} />
+        </audio>
+      </div>
+    );
+  }
+
+  if (isDoc || (!isImage && !isVideo && !isAudio)) {
+    const filename = media.filename || "arquivo";
+    return (
+      <div style={{ padding:"8px 12px", display:"flex", alignItems:"center", gap:10 }}>
+        <span style={{ fontSize:24 }}>📎</span>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ color:T.text, fontSize:12, fontWeight:600,
+            overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+            {filename}
+          </div>
+          <div style={{ color:T.sub, fontSize:10 }}>{media.mimetype || "arquivo"}</div>
+        </div>
+        {downloadUrl && (
+          <a href={downloadUrl} download={filename} target="_blank" rel="noreferrer"
+            style={{ color:T.accent, fontSize:18, textDecoration:"none" }} title="Baixar">
+            ⬇
+          </a>
+        )}
+      </div>
+    );
+  }
+
+  return null;
+}
+
+// ── Lightbox de imagem com zoom ───────────────────────────────────
+function ImageLightbox({ src, downloadUrl, onClose }) {
+  const [zoom, setZoom] = useState(1);
+  const [pos, setPos]   = useState({ x:0, y:0 });
+  const [drag, setDrag] = useState(null);
+
+  useEffect(() => {
+    const k = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", k);
+    return () => window.removeEventListener("keydown", k);
+  }, [onClose]);
+
+  function onWheel(e) {
+    e.preventDefault();
+    setZoom(z => Math.min(5, Math.max(1, z - e.deltaY * 0.002)));
+  }
+  function onMouseDown(e) {
+    if (zoom <= 1) return;
+    setDrag({ sx: e.clientX - pos.x, sy: e.clientY - pos.y });
+  }
+  function onMouseMove(e) {
+    if (!drag) return;
+    setPos({ x: e.clientX - drag.sx, y: e.clientY - drag.sy });
+  }
+  function onMouseUp() { setDrag(null); }
+
+  return (
+    <div onClick={onClose} style={{
+      position:"fixed", inset:0, background:"rgba(0,0,0,.92)", zIndex:9999,
+      display:"flex", alignItems:"center", justifyContent:"center" }}>
+      <div onClick={e => e.stopPropagation()} onWheel={onWheel}
+        onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp}
+        style={{ position:"relative", cursor: zoom>1 ? (drag?"grabbing":"grab") : "default" }}>
+        <img src={src} alt="visualização"
+          style={{ maxWidth:"90vw", maxHeight:"85vh", objectFit:"contain",
+            transform:`scale(${zoom}) translate(${pos.x/zoom}px, ${pos.y/zoom}px)`,
+            transition: drag ? "none" : "transform .15s",
+            userSelect:"none", pointerEvents:"none" }} />
+      </div>
+      {/* Controles */}
+      <div style={{ position:"fixed", top:16, right:16, display:"flex", gap:8 }}>
+        <button onClick={() => setZoom(z => Math.min(5, z+0.5))}
+          style={btnStyle}>🔍+</button>
+        <button onClick={() => { setZoom(1); setPos({x:0,y:0}); }}
+          style={btnStyle}>↺</button>
+        <button onClick={() => setZoom(z => Math.max(1, z-0.5))}
+          style={btnStyle}>🔍−</button>
+        {downloadUrl && (
+          <a href={downloadUrl} download target="_blank" rel="noreferrer" style={btnStyle}>⬇</a>
+        )}
+        <button onClick={onClose} style={{ ...btnStyle, background:"#c0412c44" }}>✕</button>
+      </div>
+      {/* Hint */}
+      <div style={{ position:"fixed", bottom:16, left:"50%", transform:"translateX(-50%)",
+        color:"rgba(255,255,255,.4)", fontSize:11 }}>
+        Scroll para zoom · Arraste para mover · Esc para fechar
+      </div>
+    </div>
+  );
+}
+
+const btnStyle = {
+  background:"rgba(255,255,255,.12)", border:"1px solid rgba(255,255,255,.2)",
+  borderRadius:8, padding:"6px 10px", color:"#fff", fontSize:14,
+  cursor:"pointer", textDecoration:"none", display:"flex", alignItems:"center",
+};
+
+// ── Lightbox para arquivos do Codental (imagem ou PDF) ─────────────
+export function FileLightbox({ file, onClose }) {
+  const [zoom, setZoom] = useState(1);
+  const [pos, setPos]   = useState({ x:0, y:0 });
+  const [drag, setDrag] = useState(null);
+  const isPdf = /\.pdf/i.test(file.name || "") || (file.content_type || "").includes("pdf");
+  const src   = file.url || file.preview_url || file.download_url;
+
+  useEffect(() => {
+    const k = e => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", k);
+    document.body.style.overflow = "hidden";
+    return () => { window.removeEventListener("keydown", k); document.body.style.overflow = ""; };
+  }, [onClose]);
+
+  function onWheel(e) {
+    if (isPdf) return;
+    e.preventDefault();
+    setZoom(z => Math.min(5, Math.max(0.5, z - e.deltaY * 0.002)));
+  }
+
+  return (
+    <div onClick={onClose} style={{
+      position:"fixed", inset:0, background:"rgba(0,0,0,.95)", zIndex:9999,
+      display:"flex", flexDirection:"column" }}>
+
+      {/* Barra superior */}
+      <div onClick={e => e.stopPropagation()} style={{
+        display:"flex", alignItems:"center", justifyContent:"space-between",
+        padding:"10px 16px", background:"rgba(0,0,0,.6)", flexShrink:0, gap:8 }}>
+        <span style={{ color:"#ccc", fontSize:12, overflow:"hidden",
+          textOverflow:"ellipsis", whiteSpace:"nowrap", flex:1 }}>
+          {file.name || "Arquivo"}
+        </span>
+        <div style={{ display:"flex", gap:6, flexShrink:0 }}>
+          {!isPdf && <>
+            <button onClick={() => setZoom(z => Math.min(5, z+0.5))} style={btnStyle}>🔍+</button>
+            <button onClick={() => { setZoom(1); setPos({x:0,y:0}); }} style={btnStyle}>1:1</button>
+            <button onClick={() => setZoom(z => Math.max(0.5, z-0.5))} style={btnStyle}>🔍−</button>
+          </>}
+          {(file.url || file.download_url) && (
+            <a href={file.download_url || file.url} download={file.name} target="_blank"
+              rel="noreferrer" style={btnStyle}>⬇ Baixar</a>
+          )}
+          <button onClick={onClose} style={{ ...btnStyle, background:"#c0412c44" }}>✕</button>
+        </div>
+      </div>
+
+      {/* Conteúdo */}
+      <div onClick={e => e.stopPropagation()} style={{ flex:1, overflow:"hidden",
+        display:"flex", alignItems:"center", justifyContent:"center" }}>
+        {isPdf ? (
+          <iframe src={src} title={file.name}
+            style={{ width:"100%", height:"100%", border:"none", background:"#fff" }} />
+        ) : (
+          <div onWheel={onWheel}
+            onMouseDown={e => { if (zoom>1) setDrag({sx:e.clientX-pos.x,sy:e.clientY-pos.y}); }}
+            onMouseMove={e => { if (drag) setPos({x:e.clientX-drag.sx, y:e.clientY-drag.sy}); }}
+            onMouseUp={() => setDrag(null)}
+            style={{ overflow:"hidden", width:"100%", height:"100%",
+              display:"flex", alignItems:"center", justifyContent:"center",
+              cursor: zoom>1?(drag?"grabbing":"grab"):"default" }}>
+            <img src={src} alt={file.name}
+              style={{ maxWidth:"92vw", maxHeight:"88vh", objectFit:"contain",
+                transform:`scale(${zoom}) translate(${pos.x/zoom}px,${pos.y/zoom}px)`,
+                transition: drag?"none":"transform .15s",
+                userSelect:"none", pointerEvents:"none" }} />
+          </div>
+        )}
       </div>
     </div>
   );

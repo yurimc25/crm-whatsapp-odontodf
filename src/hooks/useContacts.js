@@ -180,19 +180,20 @@ export function useContacts() {
     } catch {}
   }, [contactMap, internalKey]);
 
-  const resolveName = useCallback((wahaId) => {
+  const resolveName = useCallback((wahaId, pushname) => {
     const phone = wahaIdToPhone(wahaId);
-    return contactMap[phone] || null;
+    // Ordem de prioridade: Google Contacts > pushname do WhatsApp > nada
+    return contactMap[phone] || pushname || null;
   }, [contactMap]);
 
-  const displayName = useCallback((wahaId, fallback) => {
-    return resolveName(wahaId) || fallback || formatPhone(wahaIdToPhone(wahaId));
+  const displayName = useCallback((wahaId, fallback, pushname) => {
+    return resolveName(wahaId, pushname) || fallback || formatPhone(wahaIdToPhone(wahaId));
   }, [resolveName]);
 
-  const displayInfo = useCallback((wahaId, fallbackName) => {
+  const displayInfo = useCallback((wahaId, fallbackName, pushname) => {
     const phone       = wahaIdToPhone(wahaId);
     const fmtPhone    = formatPhone(phone);
-    const contactName = resolveName(wahaId);
+    const contactName = resolveName(wahaId, pushname);
 
     if (contactName) {
       return { hasContact: true, name: contactName, phone: fmtPhone };

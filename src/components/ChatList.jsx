@@ -132,7 +132,7 @@ export default function ChatList({
 
 function ChatItem({ chat, active, onClick, onOpenMenu }) {
   const { displayInfo, lookupPhone } = useContactsCtx();
-  const info = displayInfo(chat.id, chat.name);
+  const info = displayInfo(chat.id, chat.name, chat.pushname);
   const hasUnread = !active && (chat.unread > 0);
 
   // Busca individual no Google Contacts se não encontrou no bulk load

@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useContactsCtx } from "../App";
 import { useCodental } from "../hooks/useCodental";
+import { FileLightbox } from "./ChatWindow";
 
 const T = {
   bg:       "#212121",
@@ -46,7 +47,7 @@ function Field({ label, value }) {
 export default function PatientPanel({ chat, operator }) {
   const [tab, setTab] = useState("perfil");
   const { displayInfo, addLocalContact } = useContactsCtx();
-  const info = displayInfo(chat.id, chat.name);
+  const info = displayInfo(chat.id, chat.name, chat.pushname);
 
   const { searchByPhone, searchByName, getUploads, getEvolutions } = useCodental();
   const [pacientes, setPacientes]   = useState([]); // todos os pacientes encontrados
@@ -371,51 +372,55 @@ function EvolucoeTab({ paciente, evols, uploads, buscando }) {
 
 // ── Grid de uploads reutilizável ──────────────────────────────────
 function UploadsGrid({ uploads, paciente, maxItems = 9 }) {
+  const [lightbox, setLightbox] = useState(null); // arquivo selecionado
+
   return (
-    <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:6 }}>
-      {uploads.slice(0, maxItems).map((u, i) => {
-        const downloadUrl = u.url || u.download_url || u.service_url || u.file_url;
-        const previewUrl  = u.preview_url || u.url || u.service_url;
-        const name  = u.name || u.filename || u.title || `Arquivo ${i+1}`;
-        const ct    = u.content_type || u.mime_type || "";
-        const isImg = /\.(jpg|jpeg|png|gif|webp|bmp)/i.test(name) || ct.startsWith("image/");
-        const isPdf = /\.pdf/i.test(name) || ct === "application/pdf";
+    <>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:6 }}>
+        {uploads.slice(0, maxItems).map((u, i) => {
+          const downloadUrl = u.url || u.download_url || u.service_url;
+          const previewUrl  = u.preview_url || u.url || u.service_url;
+          const name  = u.name || u.filename || u.title || `Arquivo ${i+1}`;
+          const ct    = u.content_type || u.mime_type || "";
+          const isImg = /\.(jpg|jpeg|png|gif|webp|bmp)/i.test(name) || ct.startsWith("image/");
+          const isPdf = /\.pdf/i.test(name) || ct === "application/pdf";
 
-        return (
-          <a key={u.id || i} href={downloadUrl || "#"} target="_blank" rel="noreferrer"
-            title={name}
-            style={{ display:"block", borderRadius:8, overflow:"hidden",
-              background:T.inputBg, border:`1px solid ${T.border}`,
-              textDecoration:"none", aspectRatio:"1",
-              cursor: downloadUrl ? "pointer" : "default",
-              transition:"border-color .15s" }}
-            onMouseEnter={e => e.currentTarget.style.borderColor = T.accent}
-            onMouseLeave={e => e.currentTarget.style.borderColor = T.border}>
+          return (
+            <div key={u.id || i} onClick={() => setLightbox(u)}
+              title={name}
+              style={{ borderRadius:8, overflow:"hidden",
+                background:T.inputBg, border:`1px solid ${T.border}`,
+                cursor:"pointer", aspectRatio:"1",
+                transition:"border-color .15s, transform .1s" }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor=T.accent; e.currentTarget.style.transform="scale(1.03)"; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor=T.border; e.currentTarget.style.transform="scale(1)"; }}>
 
-            {isImg && previewUrl && (
-              <img src={previewUrl} alt={name}
-                style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }}
-                onError={e => { e.target.style.display="none"; }} />
-            )}
-
-            {(!isImg || !previewUrl) && (
-              <div style={{ width:"100%", height:"100%", display:"flex",
-                flexDirection:"column", alignItems:"center",
-                justifyContent:"center", gap:4, padding:6 }}>
-                <span style={{ fontSize:22 }}>
-                  {isPdf ? "📄" : isImg ? "🖼️" : "📎"}
-                </span>
-                <span style={{ color:T.sub, fontSize:8, textAlign:"center",
-                  overflow:"hidden", textOverflow:"ellipsis",
-                  width:"100%", whiteSpace:"nowrap", padding:"0 2px" }}>
-                  {name.length > 18 ? name.slice(0,15)+"..." : name}
-                </span>
-              </div>
-            )}
-          </a>
-        );
-      })}
-    </div>
+              {isImg && previewUrl ? (
+                <img src={previewUrl} alt={name}
+                  style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }}
+                  onError={e => { e.target.style.display="none"; }} />
+              ) : (
+                <div style={{ width:"100%", height:"100%", display:"flex",
+                  flexDirection:"column", alignItems:"center",
+                  justifyContent:"center", gap:4, padding:6 }}>
+                  <span style={{ fontSize:22 }}>
+                    {isPdf ? "📄" : isImg ? "🖼️" : "📎"}
+                  </span>
+                  <span style={{ color:T.sub, fontSize:8, textAlign:"center",
+                    overflow:"hidden", textOverflow:"ellipsis",
+                    width:"100%", whiteSpace:"nowrap", padding:"0 2px" }}>
+                    {name.length > 18 ? name.slice(0,15)+"..." : name}
+                  </span>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {lightbox && (
+        <FileLightbox file={lightbox} onClose={() => setLightbox(null)} />
+      )}
+    </>
   );
 }
 
