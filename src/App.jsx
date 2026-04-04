@@ -46,11 +46,11 @@ export default function App() {
   if (checking) {
     return (
       <div style={{
-        minHeight: "100vh", background: "#0a0f0d",
+        minHeight: "100vh", background: "#1e1e1e",
         display: "flex", alignItems: "center", justifyContent: "center",
         fontFamily: "'DM Sans', sans-serif",
       }}>
-        <div style={{ color: "#3a7055", fontSize: 14 }}>Verificando sessão...</div>
+        <div style={{ color: "#8e8e8e", fontSize: 14 }}>Verificando sessão...</div>
       </div>
     );
   }

@@ -170,7 +170,7 @@ export default function CRMLayout({ operator, onLogout }) {
           borderRadius:8, padding:3, border:`1px solid ${T.border}` }}>
           {FILTERS.map(f => (
             <button key={f.id} onClick={() => setFilter(f.id)} style={{
-              background: filter===f.id ? "#fff" : "transparent",
+              background: filter===f.id ? "#2d2d2d" : "transparent",
               border:"none", borderRadius:6, padding:"4px 12px",
               color: filter===f.id ? T.text : T.sub,
               fontSize:12, fontWeight: filter===f.id ? 600 : 400,
@@ -217,7 +217,7 @@ export default function CRMLayout({ operator, onLogout }) {
       {/* ── Erro ────────────────────────────────────────────────── */}
       {error && (
         <div style={{
-          background:"#fef2f2", borderBottom:`1px solid #fecaca`,
+          background:"#2a1a1a", borderBottom:`1px solid #5a2a2a`,
           padding:"8px 16px", color:T.red, fontSize:12,
           display:"flex", alignItems:"center", gap:8,
         }}>
