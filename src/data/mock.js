@@ -7,9 +7,9 @@
 
 // MODULE: Auth → substituir por JWT / NextAuth / Supabase Auth
 export const OPERATORS = [
-  { id: 1, login: "yuri",       name: "Yuri",       role: "gerente",       avatar: "YU", color: "#0d7d62" },
-  { id: 2, login: "ana",        name: "Ana",         role: "dentista",      avatar: "AN", color: "#1a5fa8" },
-  { id: 3, login: "patricia",   name: "Patrícia",    role: "recepcao",      avatar: "PA", color: "#b56a00" },
+  { id: 1, login: "yuri",       name: "Yuri (Gerente de Plantão)",       role: "gerente",       avatar: "YU", color: "#0d7d62" },
+  { id: 2, login: "raquel",        name: "Dra. Raquel Mello",         role: "dentista",      avatar: "RM", color: "#1a5fa8" },
+  { id: 3, login: "raquelp",   name: "Recepcionista Raquel",    role: "recepcao",      avatar: "PA", color: "#b56a00" },
   { id: 4, login: "dudu",       name: "Dudu 🤖",     role: "bot",           avatar: "🤖", color: "#5b3db8" },
 ];
 
