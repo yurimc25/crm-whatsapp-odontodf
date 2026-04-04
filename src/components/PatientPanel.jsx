@@ -61,6 +61,39 @@ export default function PatientPanel({ chat, operator }) {
   const { displayInfo } = useContactsCtx();
   const info = displayInfo(chat.id, chat.name);
 
+  // Estado compartilhado entre Perfil e Evoluções
+  const { searchByPhone, searchByName, getUploads, getEvolutions } = useCodental();
+  const [paciente, setPaciente] = useState(null);
+  const [uploads, setUploads]   = useState([]);
+  const [evols, setEvols]       = useState(null); // null = carregando
+  const [buscando, setBuscando] = useState(false);
+
+  useEffect(() => {
+    setPaciente(null); setUploads([]); setEvols(null); setBuscando(true);
+    async function buscar() {
+      try {
+        const phone = info.phone.replace(/\D/g, "");
+        let result = phone ? await searchByPhone(phone) : null;
+        if (!result?.patients?.length && info.hasContact) {
+          result = await searchByName(info.name.split(" ").slice(0,3).join(" "));
+        }
+        if (result?.patients?.length > 0) {
+          const p = result.patients[0];
+          setPaciente(p);
+          if (p.id) {
+            const [u, e] = await Promise.all([getUploads(p.id), getEvolutions(p.id)]);
+            setUploads(u?.uploads || []);
+            setEvols(e?.evolutions || []);
+          }
+        } else {
+          setEvols([]);
+        }
+      } catch { setEvols([]); }
+      finally { setBuscando(false); }
+    }
+    buscar();
+  }, [chat.id]);
+
   const TABS = [
     { id:"perfil",       label:"Perfil"     },
     { id:"agendamentos", label:"Agenda"     },
@@ -125,49 +158,21 @@ export default function PatientPanel({ chat, operator }) {
       {/* Conteúdo */}
       <div style={{ flex:1, overflowY:"auto", padding:"12px 14px",
         display:"flex", flexDirection:"column", gap:10 }}>
-        {tab === "perfil"       && <PerfilTab chat={chat} />}
+        {tab === "perfil"       && <PerfilTab chat={chat} paciente={paciente} uploads={uploads} evols={evols} buscando={buscando} />}
         {tab === "agendamentos" && <AgendamentosTab />}
-        {tab === "evolucoes"    && <EvolucoeTab chat={chat} />}
+        {tab === "evolucoes"    && <EvolucoeTab chat={chat} paciente={paciente} evols={evols} buscando={buscando} />}
         {tab === "notas"        && <NotasTab chat={chat} operator={operator} />}
       </div>
     </div>
   );
 }
 
-function PerfilTab({ chat }) {
-  const { searchByPhone, searchByName, getUploads, getEvolutions, loading } = useCodental();
-  const { displayInfo } = useContactsCtx();
-  const [paciente, setPaciente] = useState(null);
-  const [uploads, setUploads]   = useState([]);
-  const [evols, setEvols]       = useState([]);
-  const info = displayInfo(chat.id, chat.name);
-
-  useEffect(() => {
-    setPaciente(null); setUploads([]); setEvols([]);
-    async function buscar() {
-      const phone = info.phone.replace(/\D/g, "");
-      let result = phone ? await searchByPhone(phone) : null;
-      if (!result?.patients?.length && info.hasContact) {
-        result = await searchByName(info.name.split(" ").slice(0,3).join(" "));
-      }
-      if (result?.patients?.length > 0) {
-        const p = result.patients[0];
-        setPaciente(p);
-        if (p.id) {
-          const [u, e] = await Promise.all([getUploads(p.id), getEvolutions(p.id)]);
-          setUploads(u?.uploads || []);
-          setEvols(e?.evolutions || []);
-        }
-      }
-    }
-    buscar();
-  }, [chat.id]);
-
+function PerfilTab({ chat, paciente, uploads, evols, buscando }) {
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
       <Section label="Codental">
-        {loading && <div style={{ color:T.sub, fontSize:12 }}>Buscando...</div>}
-        {!loading && !paciente && <ModuleStub name="Paciente não encontrado" icon="📋" />}
+        {buscando && <div style={{ color:T.sub, fontSize:12 }}>Buscando...</div>}
+        {!buscando && !paciente && <ModuleStub name="Paciente não encontrado no Codental" icon="📋" />}
         {paciente && (
           <>
             <Field label="Nome"       value={paciente.name || paciente.fullName} />
@@ -184,36 +189,41 @@ function PerfilTab({ chat }) {
                   border:`1px solid ${T.accent}44`, borderRadius:6,
                   padding:"6px 0", fontSize:11, fontWeight:600,
                   textDecoration:"none" }}>
-                Abrir no Codental →
+                Abrir prontuário no Codental →
               </a>
             )}
           </>
         )}
       </Section>
 
-      {evols.length > 0 && (
+      {evols !== null && evols.length > 0 && (
         <Section label={`Evoluções (${evols.length})`}>
-          {evols.slice(0,5).map((e,i) => (
-            <div key={i} style={{ marginBottom:8, paddingBottom:8,
-              borderBottom: i < Math.min(evols.length,5)-1 ? `1px solid ${T.border}` : "none" }}>
+          {evols.slice(0,3).map((e,i) => (
+            <div key={e.id || i} style={{ marginBottom:8, paddingBottom:8,
+              borderBottom: i < Math.min(evols.length,3)-1 ? `1px solid ${T.border}` : "none" }}>
               <div style={{ display:"flex", justifyContent:"space-between", marginBottom:2 }}>
                 <span style={{ color:T.accent, fontSize:10, fontWeight:700 }}>
-                  {e.dentist || e.professional?.name || "Dentista"}
+                  {e.dentista || e.dentist || e.professional?.name || ""}
                 </span>
                 <span style={{ color:T.sub, fontSize:10 }}>
-                  {e.date ? e.date.split(" ")[0] : ""}
+                  {e.data || (e.date ? e.date.split(" ")[0] : "")}
                 </span>
               </div>
               <div style={{ color:T.text, fontSize:11, lineHeight:1.5 }}>
-                {(e.description || e.notes || "").slice(0,120)}
-                {(e.description || e.notes || "").length > 120 ? "..." : ""}
+                {(e.texto || e.description || e.notes || "").slice(0,100)}
+                {(e.texto || e.description || e.notes || "").length > 100 ? "..." : ""}
               </div>
-              {e.signed && (
+              {(e.assinado || e.signed) && (
                 <span style={{ fontSize:9, color:T.green, fontWeight:700,
-                  marginTop:3, display:"inline-block" }}>✓ Assinado</span>
+                  marginTop:2, display:"inline-block" }}>✓ Assinado</span>
               )}
             </div>
           ))}
+          {evols.length > 3 && (
+            <div style={{ color:T.sub, fontSize:10, textAlign:"center" }}>
+              + {evols.length - 3} na aba Evoluções
+            </div>
+          )}
         </Section>
       )}
 
@@ -228,22 +238,20 @@ function PerfilTab({ chat }) {
               return (
                 <a key={i} href={url} target="_blank" rel="noreferrer" title={name}
                   style={{ display:"block", borderRadius:6, overflow:"hidden",
-                    border:`1px solid ${T.border}`, background:T.stub,
-                    textDecoration:"none", cursor:url?"pointer":"default" }}>
-                  {isImg && url ? (
-                    <img src={url} alt={name}
-                      style={{ width:"100%", aspectRatio:"1", objectFit:"cover", display:"block" }}
-                      onError={e => { e.target.style.display="none"; }} />
-                  ) : (
-                    <div style={{ aspectRatio:"1", display:"flex", alignItems:"center",
-                      justifyContent:"center" }}>
-                      <span style={{ fontSize:22 }}>{isPdf ? "📄" : "📎"}</span>
-                    </div>
-                  )}
-                  <div style={{ padding:"3px 5px", color:T.sub, fontSize:9,
-                    overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
-                    {name}
-                  </div>
+                    background:T.inputBg, border:`1px solid ${T.border}`,
+                    textDecoration:"none", aspectRatio:"1" }}>
+                  {isImg
+                    ? <img src={url} alt={name} style={{ width:"100%", height:"100%", objectFit:"cover" }} />
+                    : <div style={{ width:"100%", height:"100%", display:"flex",
+                        flexDirection:"column", alignItems:"center", justifyContent:"center",
+                        gap:4, padding:4 }}>
+                        <span style={{ fontSize:20 }}>{isPdf ? "📄" : "📎"}</span>
+                        <span style={{ color:T.sub, fontSize:8, textAlign:"center",
+                          overflow:"hidden", textOverflow:"ellipsis", width:"100%" }}>
+                          {name.slice(0,20)}
+                        </span>
+                      </div>
+                  }
                 </a>
               );
             })}
@@ -267,63 +275,26 @@ function AgendamentosTab() {
   );
 }
 
-function EvolucoeTab({ chat }) {
-  const { searchByPhone, searchByName, getEvolutions } = useCodental();
-  const { displayInfo } = useContactsCtx();
-  const [evols, setEvols]         = useState(null); // null = ainda carregando
-  const [paciente, setPaciente]   = useState(null);
-  const [erro, setErro]           = useState(null);
-  const info = displayInfo(chat.id, chat.name);
-
-  useEffect(() => {
-    setEvols(null); setPaciente(null); setErro(null);
-    async function buscar() {
-      try {
-        const phone = info.phone.replace(/\D/g, "");
-        let result = phone ? await searchByPhone(phone) : null;
-        if (!result?.patients?.length && info.hasContact) {
-          result = await searchByName(info.name.split(" ").slice(0,3).join(" "));
-        }
-        if (!result?.patients?.length) {
-          setEvols([]);
-          setErro("Paciente não encontrado no Codental");
-          return;
-        }
-        const p = result.patients[0];
-        setPaciente(p);
-        const e = await getEvolutions(p.id);
-        setEvols(e?.evolutions || []);
-      } catch (err) {
-        setErro(err.message);
-        setEvols([]);
-      }
-    }
-    buscar();
-  }, [chat.id]);
-
+function EvolucoeTab({ chat, paciente, evols, buscando }) {
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-      <Section label={evols !== null ? `Evoluções (${evols.length})` : "Evoluções"}>
+      <Section label={evols !== null ? `Evoluções (${evols?.length ?? 0})` : "Evoluções"}>
 
-        {/* Carregando */}
-        {evols === null && (
+        {buscando && (
           <div style={{ color:T.sub, fontSize:12, textAlign:"center", padding:"16px 0" }}>
             Buscando evoluções...
           </div>
         )}
 
-        {/* Erro / não encontrado */}
-        {evols !== null && erro && (
-          <div style={{ color:T.sub, fontSize:12 }}>{erro}</div>
+        {!buscando && !paciente && (
+          <div style={{ color:T.sub, fontSize:12 }}>Paciente não encontrado no Codental.</div>
         )}
 
-        {/* Vazio */}
-        {evols !== null && !erro && evols.length === 0 && (
+        {!buscando && paciente && evols !== null && evols.length === 0 && (
           <div style={{ color:T.sub, fontSize:12 }}>Nenhuma evolução registrada.</div>
         )}
 
-        {/* Lista de evoluções */}
-        {evols !== null && evols.length > 0 && (
+        {!buscando && paciente && evols !== null && evols.length > 0 && (
           <>
             {paciente?.id && (
               <a href={`https://app.codental.com.br/patients/${paciente.id}/evolutions`}
@@ -341,26 +312,20 @@ function EvolucoeTab({ chat }) {
                 paddingBottom: i < evols.length-1 ? 10 : 0,
                 borderBottom: i < evols.length-1 ? `1px solid ${T.border}` : "none",
               }}>
-                {/* Texto da evolução */}
                 <div style={{ color:T.text, fontSize:13, fontWeight:500,
                   lineHeight:1.5, marginBottom:4 }}>
                   {e.texto || e.description || e.notes || "—"}
                 </div>
-
-                {/* Data + Dentista */}
                 <div style={{ display:"flex", justifyContent:"space-between",
                   alignItems:"center", flexWrap:"wrap", gap:4 }}>
                   <span style={{ color:T.sub, fontSize:10 }}>
                     {[e.data, e.hora].filter(Boolean).join(" ")}
                   </span>
                   <span style={{ color:T.accent, fontSize:10, fontWeight:600,
-                    overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap",
-                    maxWidth:160 }}>
+                    overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:160 }}>
                     {e.dentista || e.dentist || e.professional?.name || ""}
                   </span>
                 </div>
-
-                {/* Badge assinado */}
                 {(e.assinado || e.signed) && (
                   <span style={{ fontSize:9, color:T.green, fontWeight:700,
                     marginTop:4, display:"inline-block",
