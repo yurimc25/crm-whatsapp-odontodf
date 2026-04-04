@@ -111,6 +111,27 @@ export async function getSessionStatus() {
 
 // ── Normalização ──────────────────────────────────────────────────
 
+// Detecta se um ID é um número de telefone válido BR ou internacional
+// IDs longos sem padrão de telefone são grupos/broadcasts/status
+function isValidPhoneId(id) {
+  const digits = id.replace(/@.*$/, "").replace(/\D/g, "");
+  // Telefone BR: 12-13 dígitos (55 + DDD + número)
+  // Internacional: 7-15 dígitos (E.164)
+  // IDs inválidos: >15 dígitos ou padrões estranhos
+  if (digits.length > 15) return false;
+  if (digits.length < 7)  return false;
+  return true;
+}
+
+// Tenta extrair número BR válido de IDs malformados
+// Ex: "5561999611055@c.us" → "5561999611055" (ok)
+// Ex: "276016157200564@c.us" → provavelmente grupo, retorna null
+function extractPhone(rawId) {
+  const cleanId = rawId.replace(/@.*$/, "").replace(/\D/g, "");
+  if (!isValidPhoneId(cleanId)) return null;
+  return cleanId;
+}
+
 export function normalizeChat(wahaChat) {
   const lm = wahaChat.lastMessage
     || wahaChat.messages?.[0]
@@ -118,21 +139,20 @@ export function normalizeChat(wahaChat) {
     || null;
 
   const lastBody = lm?.body || lm?.text || lm?.content || lm?._data?.body || "";
-
-  // timestamp em segundos Unix → converte para ms
-  const lastTs = lm?.timestamp || lm?.t || lm?._data?.t || null;
-
-  const cleanId = wahaChat.id.replace(/@.*$/, "");
+  const lastTs   = lm?.timestamp || lm?.t || lm?._data?.t || null;
+  const cleanId  = wahaChat.id.replace(/@.*$/, "");
+  const phone    = extractPhone(wahaChat.id);
 
   return {
     id:          wahaChat.id,
     name:        wahaChat.name || cleanId,
-    phone:       "+" + cleanId,
+    // Mostra número formatado só se válido, senão usa o nome/id
+    phone:       phone ? ("+" + phone) : (wahaChat.name || cleanId),
+    isValidPhone: !!phone,
     lastMsg:     lastBody,
     lastTime:    lastTs
       ? new Date(lastTs * 1000).toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" })
       : "",
-    // Guarda o timestamp ISO para ordenação correta
     lastTs:      lastTs ? new Date(lastTs * 1000).toISOString() : null,
     unread:      wahaChat.unreadCount ?? wahaChat.unread ?? 0,
     status:      "open",
@@ -140,7 +160,7 @@ export function normalizeChat(wahaChat) {
     tags:        [],
     avatar:      (wahaChat.name || cleanId || "??").slice(0, 2).toUpperCase(),
     avatarColor: stringToColor(wahaChat.id),
-    photoUrl:    null, // carregado em background
+    photoUrl:    null,
   };
 }
 

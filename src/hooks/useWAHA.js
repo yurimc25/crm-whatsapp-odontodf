@@ -19,6 +19,8 @@ const FAREWELL_PATTERNS = [
   /obrigad/i, /agradeç/i, /igualmente/i,
   /disponha/i, /excelente dia/i, /boa noite/i, /boa tarde/i, /bom dia/i,
   /até mais/i, /até logo/i, /tchau/i, /flw/i, /abraço/i,
+  /por nada/i,            // adicionado
+  /fenelon informa/i,     // adicionado
   /👍/, /🤗/, /😊/, /🆗/, /✅/, /🙏/,
 ];
 
@@ -77,7 +79,13 @@ export function useWAHA(operator) {
       if (!cache.get(CHATS_KEY)) setLoading(true);
       try {
         const raw = await getChats();
-        const normalized = raw.filter(c => !c.id.endsWith("@g.us")).map(normalizeChat);
+        const normalized = raw
+          .filter(c => !c.id.endsWith("@g.us")) // sem grupos
+          .filter(c => {                          // sem IDs malformados (>15 dígitos)
+            const digits = c.id.replace(/@.*$/, "").replace(/\D/g, "");
+            return digits.length >= 7 && digits.length <= 15;
+          })
+          .map(normalizeChat);
 
         // Cache local vence tudo — preserva estados manuais (lido, lastPatientTs)
         const prev = cache.get(CHATS_KEY) || [];
