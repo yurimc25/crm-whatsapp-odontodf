@@ -11,7 +11,7 @@ export const OPERATORS = [
   { id: 1, login: "yuri",       name: "Yuri (Gerente)",       role: "gerente",       avatar: "YU", color: "#0d7d62" },
   { id: 2, login: "raquel",        name: "Dra. Raquel Mello",         role: "dentista",      avatar: "AN", color: "#1a5fa8" },
   { id: 3, login: "raquelp",   name: "Recepcnionista Raquel",    role: "recepcao",      avatar: "PA", color: "#b56a00" },
-  { id: 4, login: "mariana",   name: "Recepcnionista Raquel",    role: "recepcao",      avatar: "PA", color: "#b56a00" },
+  { id: 4, login: "mariana",   name: "Recepcnionista Mariana",    role: "recepcao",      avatar: "PA", color: "#b56a00" },
   { id: 5, login: "recepcao",   name: "Recepcnionista",    role: "recepcao",      avatar: "PA", color: "#b56a00" },
   { id: 6, login: "dudu",       name: "Dudu 🤖",     role: "bot",           avatar: "🤖", color: "#5b3db8" },
 
