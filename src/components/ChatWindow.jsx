@@ -317,13 +317,6 @@ function MessageBubble({ msg, currentOperator }) {
   const isBot     = msg.operator?.includes("🤖");
   const isMe      = msg.operator === currentOperator?.name;
   const dateStr   = formatMsgDate(msg.ts);
-  const iKey      = import.meta.env.VITE_INTERNAL_API_KEY || "";
-  const SESSION   = import.meta.env.VITE_WAHA_SESSION || "default";
-
-  // URL de download de mídia via proxy
-  const mediaDownloadUrl = msg.media?.msgId
-    ? `/api/waha?path=/api/${SESSION}/messages/${encodeURIComponent(msg.media.msgId)}/download-media&X-Internal-Key=${iKey}`
-    : null;
 
   return (
     <div style={{ display:"flex", justifyContent:isPatient?"flex-start":"flex-end", marginBottom:2 }}>
@@ -343,7 +336,13 @@ function MessageBubble({ msg, currentOperator }) {
           boxShadow:"0 1px 3px rgba(0,0,0,.3)" }}>
 
           {/* Mídia */}
-          {msg.media && <MediaContent media={msg.media} downloadUrl={mediaDownloadUrl} />}
+          {msg.media && (
+            <MediaContent
+              media={msg.media}
+              msgId={msg.media.msgId || msg.id}
+              chatSession={import.meta.env.VITE_WAHA_SESSION || "default"}
+            />
+          )}
 
           {/* Texto da legenda ou mensagem normal */}
           {msg.text && (
@@ -363,98 +362,146 @@ function MessageBubble({ msg, currentOperator }) {
 }
 
 // ── Renderizador de mídia ──────────────────────────────────────────
-function MediaContent({ media, downloadUrl }) {
-  const [lightbox, setLightbox] = useState(false);
-  const [loaded, setLoaded]     = useState(false);
-  const [error, setError]       = useState(false);
+function MediaContent({ media, msgId, chatSession }) {
+  const [lightbox, setLightbox]     = useState(false);
+  const [fullUrl, setFullUrl]       = useState(media.url || null);
+  const [downloading, setDownload]  = useState(false);
+  const iKey    = import.meta.env.VITE_INTERNAL_API_KEY || "";
+  const SESSION = chatSession || import.meta.env.VITE_WAHA_SESSION || "default";
+
+  // URL do endpoint de download via proxy
+  const downloadPath = msgId
+    ? `/api/waha?path=/api/${SESSION}/messages/${encodeURIComponent(msgId)}/download-media`
+    : null;
 
   const isImage = media.type === "image" || media.type === "sticker" ||
                   (media.mimetype || "").startsWith("image/");
   const isVideo = media.type === "video" || (media.mimetype || "").startsWith("video/");
   const isAudio = media.type === "audio" || media.type === "voice" ||
                   (media.mimetype || "").startsWith("audio/");
-  const isDoc   = media.type === "document";
 
-  // URL para exibir (pode ser URL direta ou o proxy de download)
-  const srcUrl = media.url || downloadUrl;
+  // Baixa a mídia real do WAHA (lazy, só quando necessário)
+  async function fetchMedia() {
+    if (fullUrl || !downloadPath || downloading) return;
+    setDownload(true);
+    try {
+      const r = await fetch(downloadPath, {
+        headers: { "X-Internal-Key": iKey }  // auth no header, não na URL
+      });
+      if (r.ok) {
+        const blob = await r.blob();
+        setFullUrl(URL.createObjectURL(blob));
+      }
+    } catch {}
+    finally { setDownload(false); }
+  }
 
-  if (isImage && srcUrl) {
+  // Thumb base64 que o WAHA já retorna (baixa resolução, mas rápido)
+  const thumbSrc = media.thumbUrl || null;
+  const displaySrc = fullUrl || thumbSrc;
+
+  if (isImage) {
     return (
       <>
-        <div style={{ position:"relative", cursor:"pointer" }} onClick={() => setLightbox(true)}>
-          <img src={srcUrl} alt="imagem"
-            onLoad={() => setLoaded(true)}
-            onError={() => setError(true)}
-            style={{ width:"100%", maxWidth:280, maxHeight:220, objectFit:"cover",
-              borderRadius:8, display: error ? "none" : "block" }} />
-          {!loaded && !error && (
+        <div style={{ position:"relative", cursor:"pointer", minWidth:120, minHeight:80 }}
+          onClick={async () => { await fetchMedia(); setLightbox(true); }}>
+          {displaySrc ? (
+            <img src={displaySrc} alt="imagem"
+              style={{ width:"100%", maxWidth:280, maxHeight:220, objectFit:"cover",
+                borderRadius:8, display:"block",
+                filter: (thumbSrc && !fullUrl) ? "blur(2px)" : "none",
+                transition:"filter .3s" }} />
+          ) : (
             <div style={{ width:200, height:140, background:"#2a2a2a", borderRadius:8,
-              display:"flex", alignItems:"center", justifyContent:"center", color:T.sub }}>
-              🖼️ carregando...
+              display:"flex", alignItems:"center", justifyContent:"center",
+              color:T.sub, fontSize:13, gap:6 }}>
+              {downloading ? <>⏳ baixando...</> : <>🖼️ imagem</>}
             </div>
           )}
-          {error && (
-            <div style={{ padding:"8px 12px", color:T.sub, fontSize:12 }}>🖼️ Imagem</div>
-          )}
-          {loaded && !error && (
+          {/* Overlay de zoom */}
+          {displaySrc && (
             <div style={{ position:"absolute", top:6, right:6, background:"rgba(0,0,0,.5)",
-              borderRadius:6, padding:"3px 7px", fontSize:10, color:"#fff", display:"flex", gap:6 }}>
-              <span>🔍</span>
+              borderRadius:6, padding:"3px 7px", fontSize:11, color:"#fff" }}>
+              {downloading ? "⏳" : "🔍"}
             </div>
           )}
         </div>
         {lightbox && (
-          <ImageLightbox src={srcUrl} downloadUrl={downloadUrl} onClose={() => setLightbox(false)} />
+          <ImageLightbox
+            src={fullUrl || thumbSrc}
+            downloadUrl={downloadPath || null}
+            iKey={iKey}
+            onClose={() => setLightbox(false)} />
         )}
       </>
     );
   }
 
-  if (isVideo && srcUrl) {
+  if (isVideo) {
     return (
-      <video controls style={{ width:"100%", maxWidth:280, borderRadius:8 }}>
-        <source src={srcUrl} type={media.mimetype || "video/mp4"} />
-      </video>
-    );
-  }
-
-  if (isAudio && srcUrl) {
-    return (
-      <div style={{ padding:"8px 6px" }}>
-        <audio controls style={{ width:"100%", minWidth:220 }}>
-          <source src={srcUrl} type={media.mimetype || "audio/ogg"} />
-        </audio>
-      </div>
-    );
-  }
-
-  if (isDoc || (!isImage && !isVideo && !isAudio)) {
-    const filename = media.filename || "arquivo";
-    return (
-      <div style={{ padding:"8px 12px", display:"flex", alignItems:"center", gap:10 }}>
-        <span style={{ fontSize:24 }}>📎</span>
-        <div style={{ flex:1, minWidth:0 }}>
-          <div style={{ color:T.text, fontSize:12, fontWeight:600,
-            overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
-            {filename}
+      <div style={{ padding:"4px" }}>
+        {fullUrl ? (
+          <video controls style={{ width:"100%", maxWidth:280, borderRadius:8 }}>
+            <source src={fullUrl} type={media.mimetype || "video/mp4"} />
+          </video>
+        ) : (
+          <div style={{ width:240, height:140, background:"#2a2a2a", borderRadius:8,
+            display:"flex", flexDirection:"column", alignItems:"center",
+            justifyContent:"center", gap:8, cursor:"pointer" }}
+            onClick={fetchMedia}>
+            {thumbSrc && <img src={thumbSrc} alt="" style={{ position:"absolute",
+              width:"100%", height:"100%", objectFit:"cover", borderRadius:8,
+              filter:"blur(3px)", opacity:.5 }} />}
+            <span style={{ fontSize:28, position:"relative" }}>▶️</span>
+            <span style={{ color:T.sub, fontSize:11, position:"relative" }}>
+              {downloading ? "baixando..." : "Toque para ver vídeo"}
+            </span>
           </div>
-          <div style={{ color:T.sub, fontSize:10 }}>{media.mimetype || "arquivo"}</div>
-        </div>
-        {downloadUrl && (
-          <a href={downloadUrl} download={filename} target="_blank" rel="noreferrer"
-            style={{ color:T.accent, fontSize:18, textDecoration:"none" }} title="Baixar">
-            ⬇
-          </a>
         )}
       </div>
     );
   }
 
-  return null;
+  if (isAudio) {
+    if (!fullUrl && !downloading) fetchMedia();
+    return (
+      <div style={{ padding:"8px 6px", minWidth:220 }}>
+        {fullUrl ? (
+          <audio controls style={{ width:"100%", minWidth:220 }}>
+            <source src={fullUrl} type={media.mimetype || "audio/ogg"} />
+          </audio>
+        ) : (
+          <div style={{ color:T.sub, fontSize:12, padding:"4px 8px" }}>
+            {downloading ? "🎵 carregando áudio..." : "🎵 áudio"}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Documento / arquivo genérico
+  const filename = media.filename || "arquivo";
+  return (
+    <div style={{ padding:"8px 12px", display:"flex", alignItems:"center", gap:10 }}>
+      <span style={{ fontSize:24 }}>📎</span>
+      <div style={{ flex:1, minWidth:0 }}>
+        <div style={{ color:T.text, fontSize:12, fontWeight:600,
+          overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+          {filename}
+        </div>
+        <div style={{ color:T.sub, fontSize:10 }}>{media.mimetype || "documento"}</div>
+      </div>
+      <button onClick={fetchMedia} disabled={downloading}
+        style={{ color:T.accent, fontSize:20, background:"none", border:"none",
+          cursor:"pointer", padding:0 }} title="Baixar">
+        {downloading ? "⏳" : "⬇"}
+      </button>
+    </div>
+  );
 }
 
 // ── Lightbox de imagem com zoom ───────────────────────────────────
-function ImageLightbox({ src, downloadUrl, onClose }) {
+function ImageLightbox({ src, downloadUrl, iKey, onClose }) {
   const [zoom, setZoom] = useState(1);
   const [pos, setPos]   = useState({ x:0, y:0 });
   const [drag, setDrag] = useState(null);
@@ -464,6 +511,19 @@ function ImageLightbox({ src, downloadUrl, onClose }) {
     window.addEventListener("keydown", k);
     return () => window.removeEventListener("keydown", k);
   }, [onClose]);
+
+  async function handleDownload() {
+    if (!downloadUrl) return;
+    try {
+      const r = await fetch(downloadUrl, { headers: { "X-Internal-Key": iKey || "" } });
+      if (!r.ok) return;
+      const blob = await r.blob();
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href = url; a.download = "imagem"; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch {}
+  }
 
   function onWheel(e) {
     e.preventDefault();
@@ -494,18 +554,14 @@ function ImageLightbox({ src, downloadUrl, onClose }) {
       </div>
       {/* Controles */}
       <div style={{ position:"fixed", top:16, right:16, display:"flex", gap:8 }}>
-        <button onClick={() => setZoom(z => Math.min(5, z+0.5))}
-          style={btnStyle}>🔍+</button>
-        <button onClick={() => { setZoom(1); setPos({x:0,y:0}); }}
-          style={btnStyle}>↺</button>
-        <button onClick={() => setZoom(z => Math.max(1, z-0.5))}
-          style={btnStyle}>🔍−</button>
+        <button onClick={() => setZoom(z => Math.min(5, z+0.5))} style={btnStyle}>🔍+</button>
+        <button onClick={() => { setZoom(1); setPos({x:0,y:0}); }} style={btnStyle}>↺</button>
+        <button onClick={() => setZoom(z => Math.max(1, z-0.5))} style={btnStyle}>🔍−</button>
         {downloadUrl && (
-          <a href={downloadUrl} download target="_blank" rel="noreferrer" style={btnStyle}>⬇</a>
+          <button onClick={handleDownload} style={btnStyle} title="Baixar">⬇</button>
         )}
         <button onClick={onClose} style={{ ...btnStyle, background:"#c0412c44" }}>✕</button>
       </div>
-      {/* Hint */}
       <div style={{ position:"fixed", bottom:16, left:"50%", transform:"translateX(-50%)",
         color:"rgba(255,255,255,.4)", fontSize:11 }}>
         Scroll para zoom · Arraste para mover · Esc para fechar

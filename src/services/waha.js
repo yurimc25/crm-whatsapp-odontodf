@@ -143,11 +143,14 @@ export function normalizeChat(wahaChat) {
   const cleanId  = wahaChat.id.replace(/@.*$/, "");
   const phone    = extractPhone(wahaChat.id);
 
+  // pushname = nome público que o contato definiu no WhatsApp
+  const pushname = wahaChat.name || wahaChat.pushname || wahaChat._data?.pushname || null;
+
   return {
     id:          wahaChat.id,
-    name:        wahaChat.name || cleanId,
-    // Mostra número formatado só se válido, senão usa o nome/id
-    phone:       phone ? ("+" + phone) : (wahaChat.name || cleanId),
+    name:        pushname || cleanId,
+    pushname:    pushname,
+    phone:       phone ? ("+" + phone) : (pushname || cleanId),
     isValidPhone: !!phone,
     lastMsg:     lastBody,
     lastTime:    lastTs
@@ -158,7 +161,7 @@ export function normalizeChat(wahaChat) {
     status:      "open",
     assignedTo:  null,
     tags:        [],
-    avatar:      (wahaChat.name || cleanId || "??").slice(0, 2).toUpperCase(),
+    avatar:      (pushname || cleanId || "??").slice(0, 2).toUpperCase(),
     avatarColor: stringToColor(wahaChat.id),
     photoUrl:    null,
   };
@@ -171,49 +174,124 @@ export function normalizeMessage(wahaMsg) {
     || wahaMsg._data?.body
     || "";
 
-  // Timestamp SEMPRE do WhatsApp (segundos Unix), nunca do servidor
-  const tsRaw = wahaMsg.timestamp || wahaMsg.t || wahaMsg._data?.t || null;
+  const tsRaw = wahaMsg.timestamp || wahaMsg._data?.messageTimestamp || wahaMsg.t || null;
   const tsMs  = tsRaw ? tsRaw * 1000 : Date.now();
   const ts    = new Date(tsMs).toISOString();
 
-  // chatId: pode vir em vários campos
   const chatId = wahaMsg.chatId
-    || wahaMsg.from?.replace(/:.*@/, "@") // normaliza @c.us
+    || wahaMsg.from?.replace(/:.*@/, "@")
     || null;
+
+  // ── Detecção de mídia (NOWEB engine) ────────────────────────────
+  // NOWEB: hasMedia=true, media=null, type="image", _data.message.imageMessage={...}
+  const type     = wahaMsg.type || "text";
+  const hasMedia = wahaMsg.hasMedia === true ||
+                   ["image","video","audio","voice","document","sticker"].includes(type);
+
+  let media = null;
+  if (hasMedia) {
+    // Tenta extrair de _data.message.* (NOWEB)
+    const msgData = wahaMsg._data?.message || {};
+    const imgMsg  = msgData.imageMessage  || {};
+    const vidMsg  = msgData.videoMessage  || {};
+    const audMsg  = msgData.audioMessage  || {};
+    const docMsg  = msgData.documentMessage || {};
+    const sticMsg = msgData.stickerMessage || {};
+
+    // Pega o objeto certo dependendo do tipo
+    const mediaData = imgMsg.mimetype  ? imgMsg
+                    : vidMsg.mimetype  ? vidMsg
+                    : audMsg.mimetype  ? audMsg
+                    : docMsg.mimetype  ? docMsg
+                    : sticMsg.mimetype ? sticMsg
+                    : {};
+
+    // Mimetype real
+    const mimetype = wahaMsg.media?.mimetype
+                  || mediaData.mimetype
+                  || wahaMsg._data?.mimetype
+                  || null;
+
+    // Thumbnail em base64 (NOWEB retorna jpegThumbnail como Buffer)
+    const thumbBuf  = mediaData.jpegThumbnail?.data || mediaData.jpegThumbnail || null;
+    const thumbB64  = thumbBuf
+      ? (typeof thumbBuf === "string" ? thumbBuf : btoa(String.fromCharCode(...new Uint8Array(thumbBuf))))
+      : null;
+    const thumbUrl  = thumbB64 ? `data:image/jpeg;base64,${thumbB64}` : null;
+
+    // Detecta o tipo real a partir do mimetype
+    const realType = mimetype?.startsWith("image/") ? "image"
+                   : mimetype?.startsWith("video/") ? "video"
+                   : mimetype?.startsWith("audio/") ? "audio"
+                   : type;
+
+    media = {
+      type:      realType,
+      mimetype:  mimetype,
+      filename:  wahaMsg.media?.filename || mediaData.fileName || mediaData.title || null,
+      thumbUrl,              // miniatura base64 para exibir antes do download
+      url:       wahaMsg.media?.url || null, // URL direta (raro no NOWEB)
+      msgId:     wahaMsg.id || null,         // ID para usar no endpoint de download
+      hasMedia:  true,
+    };
+  }
 
   return {
     id:       wahaMsg.id || `tmp-${tsMs}`,
     from:     wahaMsg.fromMe ? "operator" : "patient",
     text:     body,
-    // Hora formatada a partir do timestamp do WhatsApp
     time:     new Date(tsMs).toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" }),
-    ts,       // ISO string para ordenação e separadores de dia
+    ts,
     chatId,
-    type:     wahaMsg.type || "text",
-    operator: wahaMsg.fromMe ? (wahaMsg.senderName || "Você") : null,
-    hasPatientCard: detectPatientCard(body),
+    type,
+    media,
+    operator: wahaMsg.fromMe ? (wahaMsg.senderName || wahaMsg._data?.pushName || "Você") : null,
+    hasPatientCard: !hasMedia && detectPatientCard(body),
   };
 }
 
 function detectPatientCard(text) {
   if (!text) return false;
+
+  // NUNCA detecta se é mensagem do operador/bot (começa com prefixo "Nome: texto")
+  // Heurística: se a PRIMEIRA linha tem ":" com conteúdo substantivo (>20 chars), é operador
+  const firstLine = text.split("\n")[0] || "";
+  const firstColon = firstLine.indexOf(":");
+  if (firstColon > 0 && firstColon < 30) {
+    const afterColon = firstLine.slice(firstColon + 1).trim();
+    // Se tem conteúdo depois dos dois pontos na primeira linha e não parece dado de paciente
+    if (afterColon.length > 20 && !RE_CPF_SIMPLE.test(afterColon) && !RE_EMAIL.test(afterColon)) {
+      return false; // ex: "Recepcionista: Para agendamento..."
+    }
+  }
+
   const t = text.toLowerCase();
 
-  // Formato estruturado: tem labels de formulário
+  // Formato estruturado: template de formulário com labels
   const temLabels = (t.includes("nome") || t.includes("cpf")) &&
-    (t.includes("email") || t.includes("telefone") || t.includes("nascimento") || t.includes("convênio") || t.includes("convenio"));
-  if (temLabels) return true;
+    (t.includes("email") || t.includes("telefone") || t.includes("nascimento") ||
+     t.includes("convênio") || t.includes("convenio"));
 
-  // Formato livre: detecta combinação de dados numa mesma mensagem
-  const temEmail   = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/.test(text);
-  const temCpf     = /\b\d{3}[\s.]?\d{3}[\s.]?\d{3}[-\s.]?\d{2}\b/.test(text);
-  const temData    = /\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b/.test(text);
+  if (temLabels) {
+    // Só dispara se NÃO for template vazio
+    if (isTemplateVazio(text)) return false;
+    return true;
+  }
+
+  // Formato livre: texto corrido com dados misturados
+  const temEmail    = RE_EMAIL.test(text);
+  const temCpf      = RE_CPF_SIMPLE.test(text);
+  const temData     = /\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b/.test(text);
   const temTelefone = /(?:\(?\d{2}\)?\s?)(?:9\s?\d{4}|\d{4})[\s\-]?\d{4}/.test(text);
+  const temNome     = /[A-ZÀ-Ú][a-zà-ú]+ [A-ZÀ-Ú][a-zà-ú]+/.test(text);
 
-  // Considera card se tiver 3+ campos identificáveis
+  // Precisa de nome + pelo menos 2 outros dados
   const score = [temEmail, temCpf, temData, temTelefone].filter(Boolean).length;
-  return score >= 3;
+  return temNome && score >= 2;
 }
+
+const RE_CPF_SIMPLE = /\b\d{3}[\s.]?\d{3}[\s.]?\d{3}[-\s.]?\d{2}\b/;
+const RE_EMAIL      = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/;
 
 function stringToColor(str) {
   const colors = ["#0d7d62","#1a5fa8","#b56a00","#c0412c","#5b3db8","#2d7d8c"];
