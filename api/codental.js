@@ -125,10 +125,53 @@ module.exports = async function handler(req, res) {
 
     if (action === "uploads") {
       if (!id) return res.status(400).json({ error: "id obrigatório" });
-      const r = await codentalFetch(`/patients/${id}/uploads.json`, session);
+
+      // Tenta JSON direto primeiro
+      const rJson = await codentalFetch(`/patients/${id}/uploads.json`, session);
+      if (rJson.ok) {
+        const ct = rJson.headers.get("content-type") || "";
+        if (ct.includes("json")) {
+          const data = await rJson.json();
+          return res.json({ uploads: Array.isArray(data) ? data : (data.uploads || []) });
+        }
+      }
+
+      // Fallback: busca página HTML e extrai uploads do JSON embutido
+      const r = await codentalFetchHtml(`/patients/${id}/uploads`, session);
       if (!r.ok) return res.status(r.status).json({ error: `Codental: ${r.status}` });
-      const data = await r.json();
-      return res.json({ uploads: Array.isArray(data) ? data : (data.uploads || []) });
+
+      const ct = r.headers.get("content-type") || "";
+      if (ct.includes("json")) {
+        const data = await r.json();
+        return res.json({ uploads: Array.isArray(data) ? data : (data.uploads || []) });
+      }
+
+      // Parse HTML para extrair os uploads
+      const html = await r.text();
+      const uploads = [];
+
+      // O Codental embute os uploads como JSON no HTML ou em cards
+      // Tenta extrair de data attributes ou JSON inline
+      const jsonMatch = html.match(/window\.uploads\s*=\s*(\[[\s\S]*?\]);/) ||
+                        html.match(/"uploads"\s*:\s*(\[[\s\S]*?\])/);
+      if (jsonMatch) {
+        try {
+          const list = JSON.parse(jsonMatch[1]);
+          return res.json({ uploads: list });
+        } catch {}
+      }
+
+      // Extrai cards de upload do HTML
+      const cardReg = /href="([^"]+(?:jpg|jpeg|png|gif|pdf|webp|bmp|doc|docx|mp4)[^"]*)"[^>]*>[\s\S]*?<[^>]*>([^<]+)</gi;
+      let m;
+      while ((m = cardReg.exec(html)) !== null) {
+        const url  = m[1].startsWith("http") ? m[1] : `https://app.codental.com.br${m[1]}`;
+        const name = m[2].trim();
+        if (name) uploads.push({ url, name });
+      }
+
+      console.log(`[uploads] id=${id} parsed ${uploads.length} from HTML`);
+      return res.json({ uploads });
     }
 
     if (action === "evolutions") {
