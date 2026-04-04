@@ -50,24 +50,20 @@ export function useWAHA(operator) {
           .map(normalizeChat);
 
         // Preserva campos locais do cache
-        // IMPORTANTE: usa ?? para preservar null e 0 intencionais
         const prev = cache.get(CHATS_KEY) || [];
         const merged = normalized.map(c => {
           const old = prev.find(p => p.id === c.id);
           if (!old) return c;
           return {
             ...c,
-            status:        old.status     || c.status,
-            assignedTo:    old.assignedTo || c.assignedTo,
-            tags:          old.tags       || c.tags,
-            // unread: preserva 0 (marcado como lido pelo usuário)
-            unread:        old.unread     ?? c.unread,
-            // lastPatientTs: preserva null (marcado como respondido)
-            // "id" in old verifica se a chave existe (null é diferente de ausente)
-            lastPatientTs: "lastPatientTs" in old ? old.lastPatientTs : c.lastPatientTs,
-            lastMsg:       old.lastMsg    || c.lastMsg,
-            lastTime:      old.lastTime   || c.lastTime,
-            photoUrl:      old.photoUrl   || c.photoUrl,
+            status:        old.status        || c.status,
+            assignedTo:    old.assignedTo    || c.assignedTo,
+            tags:          old.tags          || c.tags,
+            unread:        old.unread        ?? c.unread,
+            lastPatientTs: old.lastPatientTs || c.lastPatientTs,
+            lastMsg:       old.lastMsg       || c.lastMsg,
+            lastTime:      old.lastTime      || c.lastTime,
+            photoUrl:      old.photoUrl      || c.photoUrl,
           };
         });
 
@@ -84,15 +80,10 @@ export function useWAHA(operator) {
               const meta = dbMeta?.[c.id];
               if (!meta) return c;
               return {
-                ...meta, ...c, // cache local vence o MongoDB
-                // Só usa MongoDB para campos que não existem no cache
-                status:     c.status     || meta.status,
-                assignedTo: c.assignedTo || meta.assignedTo,
-                tags:       c.tags?.length ? c.tags : (meta.tags || []),
-                photoUrl:   c.photoUrl   || meta.photoUrl,
-                // unread e lastPatientTs: cache local SEMPRE vence
-                unread:        c.unread,
-                lastPatientTs: "lastPatientTs" in c ? c.lastPatientTs : meta.lastPatientTs,
+                ...c, ...meta,
+                unread:        c.unread        ?? meta.unread,
+                lastPatientTs: c.lastPatientTs || meta.lastPatientTs,
+                photoUrl:      c.photoUrl      || meta.photoUrl,
               };
             });
           }
@@ -153,36 +144,15 @@ export function useWAHA(operator) {
           setChats(prev => {
             const updated = prev.map(x => {
               if (x.id !== c.id) return x;
-
-              // NUNCA sobrescreve se o usuário já zerou manualmente (lastPatientTs === null)
-              // Isso preserva o estado de "respondido" e "lido" após recarregar
-              const novaLastPatientTs = lastAny?.from === "patient"
-                ? (lastPatient?.ts || null) : null;
-
-              // Se o cache já tem lastPatientTs null (marcado como respondido),
-              // só atualiza se as mensagens são MAIS NOVAS que o que estava salvo
-              const cachedPatientTs = x.lastPatientTs;
-              const msgPatientTs    = lastPatient?.ts || null;
-
-              // Mantém null se foi zerado pelo usuário e não chegou msg nova
-              const finalPatientTs = cachedPatientTs === null
-                ? (msgPatientTs && msgPatientTs > (c.lastPatientTs || "")
-                    ? msgPatientTs : null)
-                : novaLastPatientTs;
-
-              // unread: mantém 0 se foi zerado, só incrementa com msgs novas
-              const finalUnread = x.id === activeChatRef.current
-                ? 0
-                : x.unread === 0
-                  ? 0  // usuário já leu, não volta para não-lido
-                  : Math.max(x.unread || 0, unreadCount);
-
               return {
                 ...x,
-                lastMsg:       lastAny?.text || x.lastMsg,
-                lastTime:      lastAny?.time || x.lastTime,
-                lastPatientTs: finalPatientTs,
-                unread:        finalUnread,
+                lastMsg:       lastAny?.text  || x.lastMsg,
+                lastTime:      lastAny?.time  || x.lastTime,
+                // Só conta espera se paciente foi o ÚLTIMO a falar
+                lastPatientTs: lastAny?.from === "patient"
+                  ? (lastPatient?.ts || null) : null,
+                unread: x.id === activeChatRef.current
+                  ? 0 : Math.max(x.unread || 0, unreadCount),
               };
             });
             cache.set(CHATS_KEY, updated, CHATS_TTL);
@@ -402,19 +372,15 @@ export function useWAHA(operator) {
     persistChat(chatId, { assignedTo: toRole, status: "open" });
   }, []);
 
-  // Resolver = zera contagem de espera + marca como lido
-  // NÃO muda status para "resolved" — chat fica visível em "Todos"
   const resolveChat = useCallback((chatId) => {
     setChats(prev => {
       const updated = prev.map(c => c.id !== chatId ? c : {
-        ...c,
-        unread:        0,
-        lastPatientTs: null, // zera contagem de tempo sem resposta
+        ...c, status:"resolved", unread:0, lastPatientTs:null,
       });
       cache.set(CHATS_KEY, updated, CHATS_TTL);
       return updated;
     });
-    // Não persiste status "resolved" no DB — só localmente
+    persistChat(chatId, { status: "resolved" });
   }, []);
 
   const addTag = useCallback((chatId, tag) => {
