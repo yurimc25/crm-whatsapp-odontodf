@@ -40,20 +40,24 @@ export default async function handler(req, res) {
   }
   const { access_token } = await tokenRes.json();
 
-  // ── Busca individual por número ──────────────────────────────────
-  // GET /api/contacts?action=search&phone=61981411141
+// ── Busca individual por número ──────────────────────────────────
   if (req.query.action === "search") {
     const phone = (req.query.phone || "").replace(/\D/g, "");
     if (!phone) return res.status(400).json({ error: "phone obrigatório" });
 
-    // Gera variantes para tentar na busca
     const variants = makeVariants(phone);
-    // Também tenta o número formatado como o usuário pode ter salvo
-    const formatted = formatForSearch(phone);
 
-    const results = new Map(); // nome → encontrado
+    // Cria um Set de queries para buscar na API do Google
+    // Isso garante que ele tente achar tanto (61) 98141-1141 quanto (61) 8141-1141
+    const searchQueries = new Set();
+    variants.forEach(v => {
+      searchQueries.add(v);
+      searchQueries.add(formatForSearch(v));
+    });
 
-    for (const query of [phone, formatted, ...variants.slice(0, 3)]) {
+    const results = new Map();
+
+    for (const query of searchQueries) {
       try {
         const r = await fetch(
           `https://people.googleapis.com/v1/people:searchContacts` +
@@ -132,32 +136,32 @@ function formatForSearch(digits) {
   return digits;
 }
 
-// Gera variações do número para cobrir diferentes formatos do WhatsApp
+// Gera variações do número para cobrir todos os formatos do WhatsApp
 function makeVariants(digits) {
   const variants = new Set();
-  variants.add(digits);
+  const d = digits.replace(/\D/g, "");
+  variants.add(d);
 
-  // Sem DDI Brasil (55)
-  if (digits.startsWith("55") && digits.length >= 12) {
-    const local = digits.slice(2);
+  // Isola o número local (sem 55)
+  const isBR = d.startsWith("55") && d.length >= 12;
+  const local = isBR ? d.slice(2) : d;
+
+  if (local.length >= 10) {
     variants.add(local);
+    variants.add("55" + local);
 
-    // Com/sem 9 extra (celular BR)
+    // Lida com o 9º dígito
     if (local.length === 11 && local[2] === "9") {
-      variants.add(local.slice(0, 2) + local.slice(3)); // remove o 9
+      // Tem o 9: gera a versão sem o 9
+      const sem9 = local.slice(0, 2) + local.slice(3);
+      variants.add(sem9);
+      variants.add("55" + sem9); // O bug estava aqui: faltava essa linha
+    } else if (local.length === 10) {
+      // Não tem o 9: gera a versão com o 9
+      const com9 = local.slice(0, 2) + "9" + local.slice(2);
+      variants.add(com9);
+      variants.add("55" + com9);
     }
-    if (local.length === 10) {
-      variants.add(local.slice(0, 2) + "9" + local.slice(2)); // adiciona o 9
-    }
-  }
-
-  // Com DDI se não tiver
-  if (!digits.startsWith("55") && digits.length === 10) {
-    variants.add("55" + digits);
-    variants.add("55" + digits.slice(0, 2) + "9" + digits.slice(2));
-  }
-  if (!digits.startsWith("55") && digits.length === 11) {
-    variants.add("55" + digits);
   }
 
   return [...variants];
