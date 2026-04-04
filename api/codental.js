@@ -370,7 +370,7 @@ module.exports = async function handler(req, res) {
       console.log("[codental/create]", JSON.stringify({ nome, cpfFmt, phoneFmt, email, birthdayFmt, dentalPlanId }));
 
       // Monta o form como URLSearchParams
-      function buildForm({ nome, cpf, phone, email, birthday, planId }) {
+      function buildForm({ nome, cpf, phone, email, birthday, planId, carteirinha }) {
         const f = new URLSearchParams();
         f.append("authenticity_token",              session.csrf);
         f.append("patient[full_name]",              nome);
@@ -378,11 +378,11 @@ module.exports = async function handler(req, res) {
           f.append("patient[cellphone_formated]",    phone);
           f.append("patient[cellphone_country_code]", "+55");
         }
-        if (cpf)     f.append("patient[cpf]",       cpf);
-        if (email)   f.append("patient[email]",     email);
-        if (birthday) f.append("patient[birthday]", birthday);
-        if (planId)  f.append("patient[dental_plan_id]", planId);
-        // Campo obrigatório para o form Rails
+        if (cpf)          f.append("patient[cpf]",                    cpf);
+        if (email)        f.append("patient[email]",                  email);
+        if (birthday)     f.append("patient[birthday]",               birthday);
+        if (planId)       f.append("patient[dental_plan_id]",         planId);
+        if (carteirinha)  f.append("patient[dental_plan_card_number]", carteirinha);
         f.append("patient[reminder_preference]", "whatsapp");
         return f;
       }
@@ -415,28 +415,30 @@ module.exports = async function handler(req, res) {
         return m && !url.includes("/new") && !url.includes("/edit") ? m[1] : null;
       }
 
+      const carteirinha = (body.carteirinha || "").trim();
+
       // Tentativas em cascata
       let r, patientId;
 
       // 1. Tentativa completa
-      r = await tryCreate({ nome, cpf: cpfFmt, phone: phoneFmt, email, birthday: birthdayFmt, planId: dentalPlanId });
+      r = await tryCreate({ nome, cpf: cpfFmt, phone: phoneFmt, email, birthday: birthdayFmt, planId: dentalPlanId, carteirinha });
       patientId = extractId(r.finalUrl);
 
       // 2. Sem CPF (CPF duplicado ou inválido)
       if (!patientId && cpfFmt) {
-        r = await tryCreate({ nome, cpf: "", phone: phoneFmt, email, birthday: birthdayFmt, planId: dentalPlanId });
+        r = await tryCreate({ nome, cpf: "", phone: phoneFmt, email, birthday: birthdayFmt, planId: dentalPlanId, carteirinha });
         patientId = extractId(r.finalUrl);
       }
 
       // 3. Só nome e telefone (sem dados opcionais)
       if (!patientId) {
-        r = await tryCreate({ nome, cpf: "", phone: phoneFmt, email: "", birthday: "", planId: "" });
+        r = await tryCreate({ nome, cpf: "", phone: phoneFmt, email: "", birthday: "", planId: "", carteirinha: "" });
         patientId = extractId(r.finalUrl);
       }
 
       // 4. Só nome
       if (!patientId) {
-        r = await tryCreate({ nome, cpf: "", phone: "", email: "", birthday: "", planId: "" });
+        r = await tryCreate({ nome, cpf: "", phone: "", email: "", birthday: "", planId: "", carteirinha: "" });
         patientId = extractId(r.finalUrl);
       }
 

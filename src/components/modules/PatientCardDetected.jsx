@@ -25,7 +25,7 @@ const RE_DATE     = /\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})\b/;
 const RE_PHONE    = /(?:\+?55\s?)?(?:\(?\d{2}\)?\s?)(?:9\s?\d{4}|\d{4})[\s\-]?\d{4}/g;
 const RE_CONVENIO_KNOWN = /bradesco|amil|unimed|sulam[eé]rica|metlife|porto\s?seguro|itaú\s?seguro|hapvida|notredame|gndi|sami|prevent\s?senior|alian[çc]a|quallity|qualit[yi]|odontoprev|interodonto|uniodonto|fenelon|funo|omint|b[- ]?dental/i;
 
-const CAMPOS = ["nome","cpf","convenio","nascimento","email","telefone"];
+const CAMPOS = ["nome","cpf","convenio","carteirinha","nascimento","email","telefone"];
 
 function parsePatientData(text) {
   const fields = {};
@@ -63,8 +63,10 @@ function parsePatientData(text) {
       if (k.includes("e-mail") || k.includes("email"))                fields.email     = val;
       if (k.includes("convênio") || k.includes("convenio") ||
           k.includes("particular") || k.includes("plano"))            fields.convenio  = val;
-      if (k.includes("telefone") || k.includes("celular") ||
-          k.includes("número do") || k.includes("carteirinha"))       fields.telefone  = val;
+      if (k.includes("carteirinha") || k.includes("número da cart") ||
+          k.includes("num. cart") || k.includes("número do cart"))    fields.carteirinha = val;
+      if ((k.includes("telefone") || k.includes("celular")) &&
+          !k.includes("carteirinha"))                                  fields.telefone  = val;
       if (k.includes("nascimento") || k.includes("data de") ||
           k.includes("nasc"))                                          fields.nascimento = val;
     }
@@ -141,7 +143,7 @@ function parsePatientData(text) {
 }
 
 function isTemplateVazio(text) {
-  const labels = ["Nome completo:","CPF:","E-mail:","Convênio","Telefone:","Data de nascimento:","Número do cartão"];
+  const labels = ["Nome completo:","CPF:","E-mail:","Convênio","Número da carteirinha:","Telefone:","Data de nascimento:"];
   const temLabels = labels.filter(l => text.includes(l)).length >= 3;
   if (!temLabels) return false;
   // Checa se todas as linhas com ":" de formulário têm valor vazio depois
@@ -282,7 +284,7 @@ export default function PatientCardDetected({ msg }) {
             {/* Grid de dados */}
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr",
               gap:"5px 12px", marginBottom:10 }}>
-              {[["nome","Nome"],["cpf","CPF"],["convenio","Convênio"],
+              {[["nome","Nome"],["cpf","CPF"],["convenio","Convênio"],["carteirinha","Carteirinha"],
                 ["nascimento","Nascimento"],["email","Email"],["telefone","Telefone"]
               ].map(([k,l]) => (
                 <div key={k}>
@@ -389,8 +391,9 @@ function Modal({ data, camposVazios, action, onConfirm, onClose }) {
 
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"10px 16px", marginBottom:20 }}>
           {[["nome","Nome completo","span 2"],["cpf","CPF","span 1"],
-            ["convenio","Convênio / Plano","span 1"],["nascimento","Data de nascimento","span 1"],
-            ["telefone","Telefone","span 1"],["email","E-mail","span 2"]
+            ["convenio","Convênio / Plano","span 1"],["carteirinha","Nº da carteirinha","span 1"],
+            ["nascimento","Data de nascimento","span 1"],["telefone","Telefone","span 1"],
+            ["email","E-mail","span 2"]
           ].map(([k,l,col]) => (
             <div key={k} style={{ gridColumn:col }}>
               <label style={{ display:"block", fontSize:10, fontWeight:700,

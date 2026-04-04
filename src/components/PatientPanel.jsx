@@ -84,13 +84,23 @@ export default function PatientPanel({ chat, operator }) {
     buscar();
   }, [chat.id]);
 
-  // Carrega uploads e evoluções do paciente selecionado
+  // Carrega perfil completo + uploads + evoluções do paciente selecionado
   async function carregarPaciente(p) {
     setPaciente(p);
     setUploads([]); setEvols(null); setBuscandoDados(true);
     try {
       if (p.id) {
-        const [u, e] = await Promise.all([getUploads(p.id), getEvolutions(p.id)]);
+        // Busca perfil completo, uploads e evoluções em paralelo
+        const [full, u, e] = await Promise.all([
+          getPatient(p.id),
+          getUploads(p.id),
+          getEvolutions(p.id),
+        ]);
+        // Mescla dados da busca (nome, id) com perfil completo (email, birthday, etc.)
+        if (full && !full.error) {
+          const merged = { ...p, ...full };
+          setPaciente(merged);
+        }
         setUploads(u?.uploads || []);
         if (e?.error) { console.warn("[evoluções]", e.error); setEvols([]); }
         else setEvols(e?.evolutions || []);
@@ -206,6 +216,31 @@ export default function PatientPanel({ chat, operator }) {
 
 // ── Aba Perfil ────────────────────────────────────────────────────
 function PerfilTab({ paciente, uploads, evols, buscando }) {
+  // Extrai últimos dentistas únicos das evoluções (até 3)
+  const ultimosDentistas = evols?.length > 0
+    ? [...new Map(
+        evols
+          .filter(e => e.dentista || e.dentist)
+          .map(e => {
+            const nome = e.dentista || e.dentist || "";
+            return [nome, nome];
+          })
+      ).values()].slice(0, 3)
+    : [];
+
+  // Normaliza campos do Codental (API retorna diferentes formatos)
+  const p = paciente || {};
+  const nome       = p.name || p.full_name || p.fullName || "—";
+  const cpf        = p.cpf || "—";
+  const email      = p.email || "—";
+  const telefone   = p.cellphone_formated || p.phone || p.cellphone || "—";
+  const nascimento = p.birthday || p.birthdate || p.birth_date || "—";
+  // Convênio: pode vir como string ou objeto
+  const convenio   = p.health_insurance_name || p.health_insurance ||
+                     p.dental_plan?.name || p.dentalPlan?.name ||
+                     p.convenio || "—";
+  const carteirinha = p.dental_plan_card_number || p.card_number || p.carteirinha || "—";
+
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
       <Section label="Codental">
@@ -213,16 +248,34 @@ function PerfilTab({ paciente, uploads, evols, buscando }) {
         {!buscando && !paciente && <div style={{ color:T.sub, fontSize:12 }}>Paciente não encontrado no Codental.</div>}
         {paciente && (
           <>
-            <Field label="Nome"       value={paciente.name || paciente.fullName} />
-            <Field label="CPF"        value={paciente.cpf} />
-            <Field label="Email"      value={paciente.email} />
-            <Field label="Convênio"   value={paciente.health_insurance || paciente.convenio} />
-            <Field label="Nascimento" value={paciente.birthdate || paciente.birthday} />
-            <Field label="Dentista"   value={paciente.professional?.name} />
-            {paciente.id && (
-              <a href={`https://app.codental.com.br/patients/${paciente.id}`}
+            <Field label="Nome"        value={nome !== "—" ? nome : null} />
+            <Field label="CPF"         value={cpf !== "—" ? cpf : null} />
+            <Field label="Email"       value={email !== "—" ? email : null} />
+            <Field label="Telefone"    value={telefone !== "—" ? telefone : null} />
+            <Field label="Nascimento"  value={nascimento !== "—" ? nascimento : null} />
+            <Field label="Convênio"    value={convenio !== "—" ? convenio : null} />
+            <Field label="Carteirinha" value={carteirinha !== "—" ? carteirinha : null} />
+
+            {/* Últimos dentistas das evoluções */}
+            {ultimosDentistas.length > 0 && (
+              <div style={{ marginTop:4 }}>
+                <div style={{ color:T.sub, fontSize:9, fontWeight:700,
+                  textTransform:"uppercase", letterSpacing:.5, marginBottom:4 }}>
+                  Últimos dentistas
+                </div>
+                {ultimosDentistas.map((d, i) => (
+                  <div key={i} style={{ color:T.accent, fontSize:12,
+                    fontWeight:500, marginBottom:2 }}>
+                    {d}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {p.id && (
+              <a href={`https://app.codental.com.br/patients/${p.id}`}
                 target="_blank" rel="noreferrer"
-                style={{ display:"block", marginTop:8, textAlign:"center",
+                style={{ display:"block", marginTop:10, textAlign:"center",
                   background:T.accentBg, color:T.accent, border:`1px solid ${T.accent}44`,
                   borderRadius:6, padding:"6px 0", fontSize:11, fontWeight:600,
                   textDecoration:"none" }}>
