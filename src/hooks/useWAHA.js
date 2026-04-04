@@ -175,12 +175,20 @@ export function useWAHA(operator) {
 
         setChats(prev => {
           let changed = false;
+          const prevIds = new Set(prev.map(c => c.id));
+
+          // Atualiza chats existentes
           const updated = prev.map(c => {
             const fresh = freshChats.find(f => f.id === c.id);
             if (!fresh) return c;
-            const msgNova = fresh.lastMsg && fresh.lastMsg !== c.lastMsg;
+
+            // Sempre atualiza se o WAHA tem uma msg mais recente (mesmo que seja igual)
+            // Compara também por lastTs para detectar msgs novas no mesmo chat
+            const msgNova    = fresh.lastMsg !== undefined && fresh.lastMsg !== c.lastMsg;
             const unreadNovo = (fresh.unread ?? 0) > (c.unread || 0);
-            if (!msgNova && !unreadNovo) return c;
+            const temLastTs  = fresh.lastTs && fresh.lastTs !== c.lastTs;
+            if (!msgNova && !unreadNovo && !temLastTs) return c;
+
             changed = true;
             const jaRespondido = "lastPatientTs" in c && c.lastPatientTs === null && c.unread === 0;
             const wahaUnread   = fresh.unread ?? 0;
@@ -188,8 +196,9 @@ export function useWAHA(operator) {
             const autoRes      = isFarewell(fresh.lastMsg);
             return {
               ...c,
-              lastMsg:       fresh.lastMsg  || c.lastMsg,
-              lastTime:      fresh.lastTime || c.lastTime,
+              lastMsg:       fresh.lastMsg  !== undefined ? fresh.lastMsg  : c.lastMsg,
+              lastTime:      fresh.lastTime !== undefined ? fresh.lastTime : c.lastTime,
+              lastTs:        fresh.lastTs   || c.lastTs,
               lastPatientTs: jaRespondido ? null
                 : isPatient && !autoRes ? (fresh.lastTs || c.lastPatientTs)
                 : c.lastPatientTs,
@@ -198,6 +207,14 @@ export function useWAHA(operator) {
                 : Math.max(c.unread || 0, wahaUnread),
             };
           });
+
+          // Adiciona chats novos que vieram no top 10 e não existem no estado
+          const novos = freshChats.filter(f => !prevIds.has(f.id));
+          if (novos.length > 0) {
+            changed = true;
+            updated.push(...novos);
+          }
+
           if (!changed) return prev;
           cache.set(CHATS_KEY, updated, CHATS_TTL);
           return updated;
