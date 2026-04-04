@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   getChats, getMessages, sendText, getSessionStatus,
-  normalizeChat, normalizeMessage, createWAHASocket,
+  normalizeChat, normalizeMessage, createWAHASocket, getProfilePicture,
 } from "../services/waha";
 import { MOCK_CHATS, MOCK_MESSAGES } from "../data/mock";
 import { cache } from "../utils/cache";
@@ -22,7 +22,7 @@ export function useWAHA(operator) {
 
   const activeChatRef = useRef(null);
   const socketRef     = useRef(null);
-  const bgScanRef     = useRef(false); // evita varredura dupla
+  const bgScanDone    = useRef(false);
 
   // ── 1. Status da sessão ─────────────────────────────────────────
   useEffect(() => {
@@ -36,21 +36,25 @@ export function useWAHA(operator) {
       .catch(e => { setSessionOk(false); setError(e.message); });
   }, []);
 
-  // ── 2. Carrega chats ────────────────────────────────────────────
+  // ── 2. Carrega TODOS os chats ───────────────────────────────────
   useEffect(() => {
     if (!sessionOk) return;
+
     async function load() {
       if (!cache.get(CHATS_KEY)) setLoading(true);
       try {
+        // getChats agora pagina até trazer todos
         const raw = await getChats();
         const normalized = raw
           .filter(c => !c.id.endsWith("@g.us"))
           .map(normalizeChat);
 
+        // Preserva campos locais do cache
         const prev = cache.get(CHATS_KEY) || [];
         const merged = normalized.map(c => {
           const old = prev.find(p => p.id === c.id);
-          return old ? {
+          if (!old) return c;
+          return {
             ...c,
             status:        old.status        || c.status,
             assignedTo:    old.assignedTo    || c.assignedTo,
@@ -59,9 +63,11 @@ export function useWAHA(operator) {
             lastPatientTs: old.lastPatientTs || c.lastPatientTs,
             lastMsg:       old.lastMsg       || c.lastMsg,
             lastTime:      old.lastTime      || c.lastTime,
-          } : c;
+            photoUrl:      old.photoUrl      || c.photoUrl,
+          };
         });
 
+        // Metadata do MongoDB (status, tags, assignedTo)
         let finalList = merged;
         try {
           const ikey = import.meta.env.VITE_INTERNAL_API_KEY || "";
@@ -72,10 +78,13 @@ export function useWAHA(operator) {
             const { chats: dbMeta } = await dbRes.json();
             finalList = merged.map(c => {
               const meta = dbMeta?.[c.id];
-              return meta ? { ...c, ...meta,
+              if (!meta) return c;
+              return {
+                ...c, ...meta,
                 unread:        c.unread        ?? meta.unread,
                 lastPatientTs: c.lastPatientTs || meta.lastPatientTs,
-              } : c;
+                photoUrl:      c.photoUrl      || meta.photoUrl,
+              };
             });
           }
         } catch {}
@@ -83,9 +92,9 @@ export function useWAHA(operator) {
         setChats(finalList);
         cache.set(CHATS_KEY, finalList, CHATS_TTL);
 
-        // Inicia varredura em background (1 vez por sessão)
-        if (!bgScanRef.current) {
-          bgScanRef.current = true;
+        // Varredura em background (1 vez por sessão)
+        if (!bgScanDone.current) {
+          bgScanDone.current = true;
           bgScan(finalList);
         }
       } catch (e) {
@@ -94,77 +103,103 @@ export function useWAHA(operator) {
         setLoading(false);
       }
     }
+
     load();
     const iv = setInterval(load, 5 * 60 * 1000);
     return () => clearInterval(iv);
   }, [sessionOk]);
 
-  // ── Varredura sequencial de todos os chats ──────────────────────
-  // Percorre a lista do primeiro ao último, buscando 5 mensagens por chat
-  // para calcular lastMsg e lastPatientTs corretamente
+  // ── Varredura sequencial ────────────────────────────────────────
+  // Para cada chat: busca 5 mensagens, calcula lastMsg/lastPatientTs,
+  // busca foto de perfil. Delay de 200ms entre cada para não sobrecarregar.
   async function bgScan(chatList) {
     for (const c of chatList) {
       try {
-        // Usa cache se já tiver mensagens
-        const cached = cache.get(MSGS_PREFIX + c.id);
-        let msgs = cached;
+        // 1. Mensagens
+        const cachedMsgs = cache.get(MSGS_PREFIX + c.id);
+        let msgs = cachedMsgs;
 
         if (!msgs || msgs.length === 0) {
           const raw = await getMessages(c.id, 5);
-          if (!raw?.length) continue;
-          msgs = raw.map(normalizeMessage).reverse();
-          cache.set(MSGS_PREFIX + c.id, msgs, MSGS_TTL);
-          setMessages(prev => ({ ...prev, [c.id]: msgs }));
+          if (raw?.length) {
+            // Ordena pelo timestamp real do WhatsApp
+            msgs = raw
+              .map(normalizeMessage)
+              .sort((a, b) => new Date(a.ts) - new Date(b.ts));
+            cache.set(MSGS_PREFIX + c.id, msgs, MSGS_TTL);
+            setMessages(prev => ({ ...prev, [c.id]: msgs }));
+          }
         }
 
-        const lastAny     = msgs[msgs.length - 1];
-        const lastPatient = [...msgs].reverse().find(m => m.from === "patient");
+        if (msgs?.length) {
+          const lastAny     = msgs[msgs.length - 1];
+          const lastPatient = [...msgs].reverse().find(m => m.from === "patient");
 
-        // Calcula unread real: mensagens do paciente depois da última do operador
-        const lastOpIdx = msgs.map(m => m.from).lastIndexOf("operator");
-        const unreadCount = lastOpIdx === -1
-          ? msgs.filter(m => m.from === "patient").length
-          : msgs.slice(lastOpIdx + 1).filter(m => m.from === "patient").length;
+          // Conta unread: mensagens do paciente após última do operador
+          const lastOpIdx   = msgs.map(m => m.from).lastIndexOf("operator");
+          const unreadCount = lastOpIdx === -1
+            ? msgs.filter(m => m.from === "patient").length
+            : msgs.slice(lastOpIdx + 1).filter(m => m.from === "patient").length;
 
-        setChats(prev => {
-          const updated = prev.map(x => x.id !== c.id ? x : {
-            ...x,
-            lastMsg:       lastAny?.text        || x.lastMsg,
-            lastTime:      lastAny?.time        || x.lastTime,
-            // lastPatientTs só seta se o PACIENTE foi o último a falar
-            lastPatientTs: lastPatient && lastAny?.from === "patient"
-              ? lastPatient.ts : null,
-            // unread: mantém o do cache se o chat está ativo
-            unread: c.id === activeChatRef.current ? 0 : (x.unread || unreadCount),
+          setChats(prev => {
+            const updated = prev.map(x => {
+              if (x.id !== c.id) return x;
+              return {
+                ...x,
+                lastMsg:       lastAny?.text  || x.lastMsg,
+                lastTime:      lastAny?.time  || x.lastTime,
+                // Só conta espera se paciente foi o ÚLTIMO a falar
+                lastPatientTs: lastAny?.from === "patient"
+                  ? (lastPatient?.ts || null) : null,
+                unread: x.id === activeChatRef.current
+                  ? 0 : Math.max(x.unread || 0, unreadCount),
+              };
+            });
+            cache.set(CHATS_KEY, updated, CHATS_TTL);
+            return updated;
           });
-          cache.set(CHATS_KEY, updated, CHATS_TTL);
-          return updated;
-        });
+        }
 
-        // Pequeno delay para não sobrecarregar o WAHA
-        await new Promise(r => setTimeout(r, 150));
+        // 2. Foto de perfil (se ainda não tem)
+        if (!c.photoUrl) {
+          const url = await getProfilePicture(c.id);
+          if (url) {
+            setChats(prev => {
+              const updated = prev.map(x =>
+                x.id === c.id ? { ...x, photoUrl: url } : x
+              );
+              cache.set(CHATS_KEY, updated, CHATS_TTL);
+              return updated;
+            });
+          }
+        }
+
+        await new Promise(r => setTimeout(r, 200));
       } catch {}
     }
   }
 
-  // ── 3. WebSocket — atualiza só o chat correto ──────────────────
+  // ── 3. WebSocket ────────────────────────────────────────────────
   useEffect(() => {
     if (!sessionOk || USE_MOCK) return;
+
     socketRef.current = createWAHASocket({
       onMessage: (msg) => {
         const msgChatId = msg.chatId;
         if (!msgChatId) return;
 
-        // Adiciona mensagem só no chat correto
+        // Adiciona mensagem ao chat correto
         setMessages(prev => {
           const existing = prev[msgChatId] || [];
           if (existing.find(m => m.id === msg.id)) return prev;
-          const updated = [...existing, msg];
+          // Insere em ordem cronológica pelo timestamp real
+          const updated = [...existing, msg]
+            .sort((a, b) => new Date(a.ts) - new Date(b.ts));
           cache.set(MSGS_PREFIX + msgChatId, updated, MSGS_TTL);
           return { ...prev, [msgChatId]: updated };
         });
 
-        // Atualiza SOMENTE o chat que recebeu a mensagem
+        // Atualiza APENAS o chat que recebeu a mensagem
         setChats(prev => {
           const updated = prev.map(c => {
             if (c.id !== msgChatId) return c;
@@ -174,10 +209,9 @@ export function useWAHA(operator) {
               ...c,
               lastMsg:       msg.text,
               lastTime:      msg.time,
-              // Só atualiza lastPatientTs se foi o paciente
               lastPatientTs: isPatient ? msg.ts : c.lastPatientTs,
-              // Badge: incrementa só se não está ativo e é do paciente
-              unread: isPatient && !isActive ? (c.unread || 0) + 1 : c.unread,
+              unread: isPatient && !isActive
+                ? (c.unread || 0) + 1 : c.unread,
             };
           });
           cache.set(CHATS_KEY, updated, CHATS_TTL);
@@ -187,6 +221,7 @@ export function useWAHA(operator) {
       onStatus: setWsStatus,
       onError:  (e) => console.warn("[WS]", e),
     });
+
     return () => socketRef.current?.close();
   }, [sessionOk]);
 
@@ -201,6 +236,7 @@ export function useWAHA(operator) {
       return updated;
     });
 
+    // Exibe cache imediatamente
     const cached = cache.get(MSGS_PREFIX + chatId);
     if (cached) setMessages(prev => ({ ...prev, [chatId]: cached }));
 
@@ -211,7 +247,11 @@ export function useWAHA(operator) {
 
     try {
       const raw = await getMessages(chatId, 20);
-      const normalized = raw.map(normalizeMessage).reverse();
+      // Ordena pelo timestamp real do WhatsApp
+      const normalized = raw
+        .map(normalizeMessage)
+        .sort((a, b) => new Date(a.ts) - new Date(b.ts));
+
       setMessages(prev => ({ ...prev, [chatId]: normalized }));
       cache.set(MSGS_PREFIX + chatId, normalized, MSGS_TTL);
 
@@ -223,9 +263,10 @@ export function useWAHA(operator) {
           ...c,
           lastMsg:       lastAny?.text || c.lastMsg,
           lastTime:      lastAny?.time || c.lastTime,
-          // Só conta tempo se paciente foi o último
-          lastPatientTs: lastAny?.from === "patient" ? lastPatient?.ts : null,
-          unread:        0,
+          // Zera lastPatientTs se operador foi o último a falar
+          lastPatientTs: lastAny?.from === "patient"
+            ? (lastPatient?.ts || null) : null,
+          unread: 0,
         });
         cache.set(CHATS_KEY, updated, CHATS_TTL);
         return updated;
@@ -233,7 +274,7 @@ export function useWAHA(operator) {
     } catch (e) { console.error("loadMessages", e); }
   }, []);
 
-  // ── 5. loadMoreMessages ─────────────────────────────────────────
+  // ── 5. loadMoreMessages (scroll infinito) ───────────────────────
   const loadMoreMessages = useCallback(async (chatId, beforeDate) => {
     try {
       const ikey = import.meta.env.VITE_INTERNAL_API_KEY || "";
@@ -253,7 +294,8 @@ export function useWAHA(operator) {
         ts:       m.ts,
         type:     "text",
         operator: m.role !== "user" ? (m.author || "Operador") : null,
-      }));
+      })).sort((a, b) => new Date(a.ts) - new Date(b.ts));
+
       setMessages(prev => {
         const current = prev[chatId] || [];
         const ids = new Set(current.map(m => m.id));
@@ -264,7 +306,7 @@ export function useWAHA(operator) {
     } catch { return { hasMore: false }; }
   }, []);
 
-  // ── 6. Envia mensagem ──────────────────────────────────────────
+  // ── 6. Envia mensagem ───────────────────────────────────────────
   const send = useCallback(async (chatId, text, operatorName) => {
     const now = new Date();
     const formatted = `${operatorName}: ${text}`;
@@ -278,22 +320,26 @@ export function useWAHA(operator) {
       type:     "text",
       operator: operatorName,
     };
+
     setMessages(prev => {
-      const updated = [...(prev[chatId] || []), tmpMsg];
+      const updated = [...(prev[chatId] || []), tmpMsg]
+        .sort((a, b) => new Date(a.ts) - new Date(b.ts));
       cache.set(MSGS_PREFIX + chatId, updated, MSGS_TTL);
       return { ...prev, [chatId]: updated };
     });
-    // Operador enviou: zera lastPatientTs (não precisa mais de resposta)
+
+    // Operador respondeu: zera lastPatientTs
     setChats(prev => {
       const updated = prev.map(c => c.id !== chatId ? c : {
         ...c,
         lastMsg:       formatted,
         lastTime:      tmpMsg.time,
-        lastPatientTs: null, // operador respondeu, zera contagem
+        lastPatientTs: null,
       });
       cache.set(CHATS_KEY, updated, CHATS_TTL);
       return updated;
     });
+
     if (USE_MOCK) return;
     try { await sendText(chatId, formatted); }
     catch (e) {
@@ -314,7 +360,7 @@ export function useWAHA(operator) {
     }).catch(() => {});
   }
 
-  // ── 7. Ações ───────────────────────────────────────────────────
+  // ── 7. Ações ────────────────────────────────────────────────────
   const forwardChat = useCallback((chatId, toRole) => {
     setChats(prev => {
       const updated = prev.map(c =>
@@ -326,18 +372,19 @@ export function useWAHA(operator) {
     persistChat(chatId, { assignedTo: toRole, status: "open" });
   }, []);
 
+  // Resolver = zera contagem de espera + marca como lido
+  // NÃO muda status para "resolved" — chat fica visível em "Todos"
   const resolveChat = useCallback((chatId) => {
     setChats(prev => {
       const updated = prev.map(c => c.id !== chatId ? c : {
         ...c,
-        status:        "resolved",
         unread:        0,
-        lastPatientTs: null, // zera contagem ao resolver
+        lastPatientTs: null, // zera contagem de tempo sem resposta
       });
       cache.set(CHATS_KEY, updated, CHATS_TTL);
       return updated;
     });
-    persistChat(chatId, { status: "resolved" });
+    // Não persiste status "resolved" no DB — só localmente
   }, []);
 
   const addTag = useCallback((chatId, tag) => {

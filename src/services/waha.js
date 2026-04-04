@@ -8,15 +8,82 @@ const headers = () => ({
   "X-Api-Key": WAHA_KEY,
 });
 
-// ── REST ─────────────────────────────────────────────────────────
+// ── Cache de fotos de perfil ──────────────────────────────────────
+const PHOTO_KEY = "waha_photos";
+const PHOTO_TTL = 24 * 60 * 60 * 1000; // 24h
 
-export async function getChats() {
-  const r = await fetch(`${WAHA_URL}/api/${SESSION}/chats?limit=50&lastMessageLimit=1`, { headers: headers() });
-  if (!r.ok) throw new Error(`WAHA getChats: ${r.status}`);
-  return r.json();
+function getPhotoCache() {
+  try {
+    const raw = localStorage.getItem(PHOTO_KEY);
+    if (!raw) return {};
+    const p = JSON.parse(raw);
+    if (Date.now() > p.expires) { localStorage.removeItem(PHOTO_KEY); return {}; }
+    return p.value || {};
+  } catch { return {}; }
 }
 
-export async function getMessages(chatId, limit = 40) {
+function setPhotoCache(map) {
+  try {
+    localStorage.setItem(PHOTO_KEY, JSON.stringify({
+      value: map, expires: Date.now() + PHOTO_TTL,
+    }));
+  } catch {}
+}
+
+// Busca foto de perfil de um contato (com cache 24h)
+export async function getProfilePicture(chatId) {
+  const cache = getPhotoCache();
+  if (chatId in cache) return cache[chatId]; // null = sem foto (também cacheado)
+
+  try {
+    const id = encodeURIComponent(chatId);
+    const r = await fetch(
+      `${WAHA_URL}/api/contacts/profile-picture?contactId=${id}&session=${SESSION}`,
+      { headers: headers() }
+    );
+    if (!r.ok) {
+      const updated = { ...cache, [chatId]: null };
+      setPhotoCache(updated);
+      return null;
+    }
+    const data = await r.json();
+    const url = data?.profilePictureURL || data?.pictureUrl || data?.url || null;
+    const updated = { ...cache, [chatId]: url };
+    setPhotoCache(updated);
+    return url;
+  } catch {
+    const updated = { ...cache, [chatId]: null };
+    setPhotoCache(updated);
+    return null;
+  }
+}
+
+// ── REST ──────────────────────────────────────────────────────────
+
+// Carrega TODOS os chats paginando até não ter mais
+export async function getChats() {
+  const allChats = [];
+  let limit = 100;
+  let offset = 0;
+
+  while (true) {
+    const r = await fetch(
+      `${WAHA_URL}/api/${SESSION}/chats?limit=${limit}&offset=${offset}`,
+      { headers: headers() }
+    );
+    if (!r.ok) throw new Error(`WAHA getChats: ${r.status}`);
+    const batch = await r.json();
+    if (!Array.isArray(batch) || batch.length === 0) break;
+    allChats.push(...batch);
+    if (batch.length < limit) break; // última página
+    offset += limit;
+    if (allChats.length > 1000) break; // safety
+  }
+
+  return allChats;
+}
+
+export async function getMessages(chatId, limit = 20) {
   const id = encodeURIComponent(chatId);
   const r = await fetch(
     `${WAHA_URL}/api/${SESSION}/chats/${id}/messages?limit=${limit}&downloadMedia=false`,
@@ -43,24 +110,18 @@ export async function getSessionStatus() {
 }
 
 // ── Normalização ──────────────────────────────────────────────────
-// Cobre NOWEB, WEBJS e GOWS que retornam campos diferentes
 
 export function normalizeChat(wahaChat) {
-  // lastMessage varia por engine
   const lm = wahaChat.lastMessage
     || wahaChat.messages?.[0]
     || wahaChat.msgs?.[0]
     || null;
 
-  const lastBody = lm?.body
-    || lm?.text
-    || lm?.content
-    || lm?._data?.body
-    || "";
+  const lastBody = lm?.body || lm?.text || lm?.content || lm?._data?.body || "";
 
+  // timestamp em segundos Unix → converte para ms
   const lastTs = lm?.timestamp || lm?.t || lm?._data?.t || null;
 
-  // ID pode vir como @c.us ou @s.whatsapp.net
   const cleanId = wahaChat.id.replace(/@.*$/, "");
 
   return {
@@ -69,32 +130,47 @@ export function normalizeChat(wahaChat) {
     phone:       "+" + cleanId,
     lastMsg:     lastBody,
     lastTime:    lastTs
-      ? new Date(lastTs * 1000).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
+      ? new Date(lastTs * 1000).toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" })
       : "",
+    // Guarda o timestamp ISO para ordenação correta
+    lastTs:      lastTs ? new Date(lastTs * 1000).toISOString() : null,
     unread:      wahaChat.unreadCount ?? wahaChat.unread ?? 0,
     status:      "open",
     assignedTo:  null,
     tags:        [],
     avatar:      (wahaChat.name || cleanId || "??").slice(0, 2).toUpperCase(),
     avatarColor: stringToColor(wahaChat.id),
+    photoUrl:    null, // carregado em background
   };
 }
 
 export function normalizeMessage(wahaMsg) {
-  const body = wahaMsg.body || wahaMsg.text || wahaMsg.content || wahaMsg._data?.body || "";
+  const body = wahaMsg.body
+    || wahaMsg.text
+    || wahaMsg.content
+    || wahaMsg._data?.body
+    || "";
+
+  // Timestamp SEMPRE do WhatsApp (segundos Unix), nunca do servidor
   const tsRaw = wahaMsg.timestamp || wahaMsg.t || wahaMsg._data?.t || null;
-  const ts = tsRaw ? new Date(tsRaw * 1000).toISOString() : new Date().toISOString();
-  const chatId = wahaMsg.chatId || wahaMsg.from || wahaMsg.to || null;
+  const tsMs  = tsRaw ? tsRaw * 1000 : Date.now();
+  const ts    = new Date(tsMs).toISOString();
+
+  // chatId: pode vir em vários campos
+  const chatId = wahaMsg.chatId
+    || wahaMsg.from?.replace(/:.*@/, "@") // normaliza @c.us
+    || null;
 
   return {
-    id:       wahaMsg.id || String(Date.now()),
+    id:       wahaMsg.id || `tmp-${tsMs}`,
     from:     wahaMsg.fromMe ? "operator" : "patient",
     text:     body,
-    time:     new Date(ts).toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" }),
-    ts,
+    // Hora formatada a partir do timestamp do WhatsApp
+    time:     new Date(tsMs).toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" }),
+    ts,       // ISO string para ordenação e separadores de dia
     chatId,
     type:     wahaMsg.type || "text",
-    operator: wahaMsg.fromMe ? "Você" : null,
+    operator: wahaMsg.fromMe ? (wahaMsg.senderName || "Você") : null,
     hasPatientCard: detectPatientCard(body),
   };
 }
@@ -115,7 +191,8 @@ function stringToColor(str) {
 
 export function createWAHASocket({ onMessage, onStatus, onError }) {
   const wsUrl = WAHA_URL.replace(/^http/, "ws");
-  const url = `${wsUrl}/ws?session=${SESSION}&events=message&x-api-key=${WAHA_KEY}`;
+  // Escuta message e message.any (enviadas por mim também)
+  const url = `${wsUrl}/ws?session=${SESSION}&events=message,message.any&x-api-key=${WAHA_KEY}`;
 
   let ws, reconnectTimer;
   let dead = false;
@@ -123,20 +200,25 @@ export function createWAHASocket({ onMessage, onStatus, onError }) {
   function connect() {
     if (dead) return;
     ws = new WebSocket(url);
-
-    ws.onopen = () => { onStatus?.("connected"); };
-
+    ws.onopen  = () => { onStatus?.("connected"); };
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        if (data.event === "message" && data.payload) {
-          onMessage?.(normalizeMessage(data.payload));
+        if (
+          (data.event === "message" || data.event === "message.any") &&
+          data.payload
+        ) {
+          const msg = normalizeMessage(data.payload);
+          // Injeta chatId se vier em data.payload.from ou data.payload.chatId
+          if (!msg.chatId && data.payload.from) {
+            msg.chatId = data.payload.from.replace(/:.*@/, "@");
+          }
+          onMessage?.(msg);
         }
       } catch (e) {
         console.warn("[WAHA WS] parse error", e);
       }
     };
-
     ws.onerror  = (e) => { onError?.(e); };
     ws.onclose  = () => {
       if (dead) return;
@@ -151,24 +233,4 @@ export function createWAHASocket({ onMessage, onStatus, onError }) {
     send:  (data) => ws?.readyState === WebSocket.OPEN && ws.send(JSON.stringify(data)),
     close: () => { dead = true; clearTimeout(reconnectTimer); ws?.close(); },
   };
-}
-// Adiciona no final do arquivo, antes do createWAHASocket:
-
-export function calcTimeSinceLastPatientMsg(messages) {
-  if (!messages || messages.length === 0) return null;
-  // Pega a última mensagem do paciente (não do operador/bot)
-  const lastPatient = [...messages].reverse().find(m => m.from === "patient");
-  if (!lastPatient) return null;
-  return lastPatient.ts || null; // timestamp ISO string
-}
-
-export function formatTimeSince(isoTs) {
-  if (!isoTs) return null;
-  const diff = Date.now() - new Date(isoTs).getTime();
-  const mins  = Math.floor(diff / 60000);
-  const hours = Math.floor(mins / 60);
-  const days  = Math.floor(hours / 24);
-  if (days > 0)  return `${days}d ${hours % 24}h`;
-  if (hours > 0) return `${hours}h ${mins % 60}m`;
-  return `${mins}m`;
 }

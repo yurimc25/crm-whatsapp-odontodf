@@ -16,6 +16,7 @@ const T = {
   bubbleBot: "#1e1a3a",
   borderMe:  "#2d5a3a",
   borderBot: "#2d2a5a",
+  hover:     "#2a2a2a",
 };
 
 function formatMsgDate(ts) {
@@ -105,7 +106,7 @@ export default function ChatWindow({ chat, messages, operator, onSend, onForward
     ...(canForwardToAdmin ? [{ label:"Administrativo 🔒", value:"admin" }] : []),
   ].filter(t => t.value !== chat.assignedTo);
 
-  // Insere separadores de dia
+  // Insere separadores de dia entre mensagens
   const msgsWithSeps = [];
   let lastDay = null;
   for (const msg of messages) {
@@ -117,6 +118,8 @@ export default function ChatWindow({ chat, messages, operator, onSend, onForward
     msgsWithSeps.push(msg);
   }
 
+  const photoUrl = info.photoUrl || chat.photoUrl || null;
+
   return (
     <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden",
       background:T.bg, fontFamily:"'DM Sans', sans-serif" }}>
@@ -126,11 +129,12 @@ export default function ChatWindow({ chat, messages, operator, onSend, onForward
         background:T.header, display:"flex", alignItems:"center",
         gap:10, flexShrink:0, boxShadow:"0 1px 4px rgba(0,0,0,.3)" }}>
 
-        {/* Avatar */}
-        {(info.photoUrl || chat.photoUrl) ? (
-          <img src={info.photoUrl || chat.photoUrl} alt=""
+        {/* Avatar com foto */}
+        {photoUrl ? (
+          <img src={photoUrl} alt=""
             style={{ width:38, height:38, borderRadius:"50%", objectFit:"cover",
-              flexShrink:0, border:`2px solid ${T.border}` }} />
+              flexShrink:0, border:`2px solid ${T.border}` }}
+            onError={e => { e.target.style.display="none"; }} />
         ) : (
           <div style={{ width:38, height:38, borderRadius:"50%", flexShrink:0,
             background:chat.avatarColor+"33", color:chat.avatarColor,
@@ -138,7 +142,7 @@ export default function ChatWindow({ chat, messages, operator, onSend, onForward
             fontSize:12, fontWeight:700, border:`2px solid ${chat.avatarColor}44` }}>
             {info.hasContact
               ? info.name.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase()
-              : chat.avatar}
+              : chat.avatar || "?"}
           </div>
         )}
 
@@ -160,7 +164,7 @@ export default function ChatWindow({ chat, messages, operator, onSend, onForward
             background:"transparent", border:`1px solid ${T.border}`,
             borderRadius:6, padding:"5px 10px", color:T.sub, fontSize:11,
             cursor:"pointer", transition:"all .15s" }}
-            onMouseEnter={e => { e.currentTarget.style.background=T.inputBg; e.currentTarget.style.color=T.text; }}
+            onMouseEnter={e => { e.currentTarget.style.background=T.hover; e.currentTarget.style.color=T.text; }}
             onMouseLeave={e => { e.currentTarget.style.background="transparent"; e.currentTarget.style.color=T.sub; }}>
             ↗ Encaminhar
           </button>
@@ -183,24 +187,16 @@ export default function ChatWindow({ chat, messages, operator, onSend, onForward
           )}
         </div>
 
-        {/* Resolver */}
-        {chat.status !== "resolved" ? (
-          <button onClick={onResolve} style={{
-            background:T.green+"22", border:`1px solid ${T.green}44`,
-            borderRadius:6, padding:"5px 12px", color:T.green, fontSize:11,
-            fontWeight:600, cursor:"pointer", transition:"all .15s" }}
-            onMouseEnter={e => { e.currentTarget.style.background=T.green; e.currentTarget.style.color="#fff"; }}
-            onMouseLeave={e => { e.currentTarget.style.background=T.green+"22"; e.currentTarget.style.color=T.green; }}>
-            ✓ Resolver
-          </button>
-        ) : (
-          <button onClick={onResolve} style={{
-            background:"transparent", border:`1px solid ${T.border}`,
-            borderRadius:6, padding:"5px 12px", color:T.sub, fontSize:11,
-            cursor:"pointer" }}>
-            ↩ Reabrir
-          </button>
-        )}
+        {/* Marcar respondido — NÃO fecha o chat, só zera a contagem */}
+        <button onClick={onResolve} style={{
+          background:T.green+"22", border:`1px solid ${T.green}44`,
+          borderRadius:6, padding:"5px 12px", color:T.green, fontSize:11,
+          fontWeight:600, cursor:"pointer", transition:"all .15s" }}
+          title="Zera o contador de espera e marca como lido"
+          onMouseEnter={e => { e.currentTarget.style.background=T.green; e.currentTarget.style.color="#fff"; }}
+          onMouseLeave={e => { e.currentTarget.style.background=T.green+"22"; e.currentTarget.style.color=T.green; }}>
+          ✓ Respondido
+        </button>
       </div>
 
       {/* Mensagens */}
@@ -227,7 +223,7 @@ export default function ChatWindow({ chat, messages, operator, onSend, onForward
         {msgsWithSeps.map((item, i) => {
           if (item.__sep) {
             return (
-              <div key={`sep-${item.ts}`} style={{ display:"flex", alignItems:"center",
+              <div key={`sep-${item.ts}-${i}`} style={{ display:"flex", alignItems:"center",
                 gap:10, margin:"12px 0 8px" }}>
                 <div style={{ flex:1, height:1, background:T.border }} />
                 <span style={{ fontSize:11, color:T.sub, fontWeight:500,
@@ -245,43 +241,33 @@ export default function ChatWindow({ chat, messages, operator, onSend, onForward
       </div>
 
       {/* Input */}
-      {chat.status !== "resolved" ? (
-        <div style={{ padding:"10px 14px", borderTop:`1px solid ${T.border}`,
-          background:T.header, display:"flex", gap:8, alignItems:"flex-end", flexShrink:0 }}>
-          <div style={{ flex:1, position:"relative" }}>
-            <div style={{ position:"absolute", top:-18, left:2,
-              fontSize:10, color:T.accent, fontWeight:600 }}>
-              {operator.name}:
-            </div>
-            <textarea value={text} onChange={e => setText(e.target.value)}
-              onKeyDown={e => { if (e.key==="Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-              placeholder="Enter para enviar · Shift+Enter para nova linha"
-              rows={2} style={{ width:"100%", background:T.inputBg,
-                border:`1px solid ${T.border}`, borderRadius:8,
-                padding:"10px 12px", color:T.text, fontSize:13,
-                outline:"none", resize:"none", boxSizing:"border-box",
-                transition:"border-color .15s" }}
-              onFocus={e => e.target.style.borderColor=T.accent}
-              onBlur={e => e.target.style.borderColor=T.border} />
+      <div style={{ padding:"10px 14px", borderTop:`1px solid ${T.border}`,
+        background:T.header, display:"flex", gap:8, alignItems:"flex-end", flexShrink:0 }}>
+        <div style={{ flex:1, position:"relative" }}>
+          <div style={{ position:"absolute", top:-18, left:2,
+            fontSize:10, color:T.accent, fontWeight:600 }}>
+            {operator.name}:
           </div>
-          <button onClick={handleSend} disabled={sending || !text.trim()} style={{
-            background:(sending||!text.trim()) ? "#333" : T.accent,
-            border:"none", borderRadius:8, width:42, height:42, color:"#fff",
-            fontSize:18, cursor:sending?"not-allowed":"pointer", flexShrink:0,
-            display:"flex", alignItems:"center", justifyContent:"center",
-            transition:"background .15s" }}>
-            {sending ? "…" : "↑"}
-          </button>
+          <textarea value={text} onChange={e => setText(e.target.value)}
+            onKeyDown={e => { if (e.key==="Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+            placeholder="Enter para enviar · Shift+Enter para nova linha"
+            rows={2} style={{ width:"100%", background:T.inputBg,
+              border:`1px solid ${T.border}`, borderRadius:8,
+              padding:"10px 12px", color:T.text, fontSize:13,
+              outline:"none", resize:"none", boxSizing:"border-box",
+              transition:"border-color .15s" }}
+            onFocus={e => e.target.style.borderColor=T.accent}
+            onBlur={e => e.target.style.borderColor=T.border} />
         </div>
-      ) : (
-        <div style={{ padding:12, textAlign:"center", borderTop:`1px solid ${T.border}`,
-          background:T.header, color:T.sub, fontSize:12 }}>
-          Chat resolvido ·{" "}
-          <span style={{ color:T.accent, cursor:"pointer" }} onClick={onResolve}>
-            Reabrir
-          </span>
-        </div>
-      )}
+        <button onClick={handleSend} disabled={sending || !text.trim()} style={{
+          background:(sending||!text.trim()) ? "#333" : T.accent,
+          border:"none", borderRadius:8, width:42, height:42, color:"#fff",
+          fontSize:18, cursor:sending?"not-allowed":"pointer", flexShrink:0,
+          display:"flex", alignItems:"center", justifyContent:"center",
+          transition:"background .15s" }}>
+          {sending ? "…" : "↑"}
+        </button>
+      </div>
     </div>
   );
 }
