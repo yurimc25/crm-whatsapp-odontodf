@@ -18,23 +18,39 @@ const T = {
   fieldBg:  "#1a1a1a",
 };
 
-const CAMPOS = ["nome","cpf","convenio","nascimento","email","telefone"];
-
-// ── Regex helpers ────────────────────────────────────────────────
 const RE_CPF      = /\b\d{3}[\s.]?\d{3}[\s.]?\d{3}[-\s.]?\d{2}\b/;
 const RE_CNPJ     = /\b\d{2}[\s.]?\d{3}[\s.]?\d{3}[/\s]?\d{4}[-\s.]?\d{2}\b/;
 const RE_EMAIL    = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/;
 const RE_DATE     = /\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})\b/;
 const RE_PHONE    = /(?:\+?55\s?)?(?:\(?\d{2}\)?\s?)(?:9\s?\d{4}|\d{4})[\s\-]?\d{4}/g;
-const RE_CONVENIO = /bradesco|amil|unimed|sulam[eé]rica|metlife|porto\s?seguro|itaú\s?seguro|hapvida|notredame|gndi|particular|particular|sami|prevent\s?senior|alian[çc]a/i;
+// Convênios conhecidos + qualquer palavra após "convênio:" ou "plano:" ou "Convênio:"
+const RE_CONVENIO_KNOWN = /bradesco|amil|unimed|sulam[eé]rica|metlife|porto\s?seguro|itaú\s?seguro|hapvida|notredame|gndi|sami|prevent\s?senior|alian[çc]a|quallity|qualit[yi]|odontoprev|interodonto|uniodonto|fenelon|funo|omint|b[- ]?dental/i;
 
 function parsePatientData(text) {
   const fields = {};
-  const lines  = text.split("\n").map(l => l.trim()).filter(Boolean);
+
+  // Normaliza: se tudo numa linha só, tenta quebrar por delimitadores comuns
+  let normalized = text;
+  const lineCount = text.split("\n").filter(l => l.trim()).length;
+  if (lineCount <= 2) {
+    // Texto corrido — tenta quebrar por "  " (dois espaços) ou "\t"
+    normalized = text
+      .replace(/\s{2,}/g, "\n")  // múltiplos espaços → nova linha
+      .replace(/\t/g, "\n");
+  }
+
+  const lines = normalized.split("\n").map(l => l.trim()).filter(Boolean);
 
   // ── Modo estruturado: tem labels com ":" ─────────────────────────
-  const temLabels = lines.some(l => /:/.test(l) && l.split(":")[0].length < 30);
-  if (temLabels) {
+  const labelLines = lines.filter(l => /:/.test(l) && l.split(":")[0].length < 30);
+  // Só usa modo estruturado se tiver pelo menos 2 labels reais de formulário
+  const temLabelsFormulario = labelLines.some(l => {
+    const k = l.split(":")[0].toLowerCase();
+    return k.includes("nome") || k.includes("cpf") || k.includes("email") ||
+           k.includes("convênio") || k.includes("telefone") || k.includes("nascimento");
+  });
+
+  if (temLabelsFormulario && labelLines.length >= 2) {
     for (const line of lines) {
       const idx = line.indexOf(":");
       if (idx === -1) continue;
@@ -54,53 +70,66 @@ function parsePatientData(text) {
     return fields;
   }
 
-  // ── Modo livre: extrai por padrão do texto puro ──────────────────
+  // ── Modo livre: extrai por padrão do texto (inclui texto corrido) ──
+  const fullText = text; // usa texto original para regex
+
   // Email
-  const emailM = text.match(RE_EMAIL);
+  const emailM = fullText.match(RE_EMAIL);
   if (emailM) fields.email = emailM[0];
 
   // CPF (11 dígitos) — extrai e formata
-  const cpfM = text.replace(RE_EMAIL, "").match(RE_CPF);
+  const textSemEmail = emailM ? fullText.replace(emailM[0], "") : fullText;
+  const cpfM = textSemEmail.match(RE_CPF);
   if (cpfM) fields.cpf = cpfM[0].replace(/\D/g, "");
 
   // Data de nascimento
-  const dateMatches = [...text.matchAll(new RegExp(RE_DATE.source, "g"))];
+  const dateMatches = [...fullText.matchAll(new RegExp(RE_DATE.source, "g"))];
   if (dateMatches.length > 0) {
-    // Pega a última data (geralmente nascimento vem no final)
-    const dm = dateMatches[dateMatches.length - 1];
-    fields.nascimento = dm[0];
+    fields.nascimento = dateMatches[dateMatches.length - 1][0];
   }
 
-  // Telefones — pega todos, remove o que pode ser CPF
-  const textSemCpf = fields.cpf ? text.replace(fields.cpf, "") : text;
-  const phones     = [...textSemCpf.matchAll(RE_PHONE)].map(m => m[0].replace(/\D/g, ""));
-  // Filtra por tamanho de telefone BR (10-13 dígitos)
+  // Telefones — pega todos, remove o que pode ser CPF/data
+  const textSemCpf = fields.cpf ? textSemEmail.replace(
+    new RegExp(fields.cpf.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, "$1.?$2.?$3-?$4")), ""
+  ) : textSemEmail;
+  const phones = [...textSemCpf.matchAll(RE_PHONE)].map(m => m[0].replace(/\D/g, ""));
   const validPhones = phones.filter(p => p.length >= 10 && p.length <= 13);
   if (validPhones.length > 0) fields.telefone = validPhones[0];
-
-  // Convênio — detecta por palavra-chave
-  const convenioM = text.match(RE_CONVENIO);
-  if (convenioM) {
-    // Pega a palavra e seus vizinhos na linha
-    const linha = lines.find(l => RE_CONVENIO.test(l));
-    if (linha) fields.convenio = linha.trim();
+  // Segundo telefone diferente do primeiro
+  if (validPhones.length > 1 && validPhones[1] !== validPhones[0]) {
+    if (!fields.telefone2) fields.telefone2 = validPhones[1];
   }
 
-  // Nome — o que sobra depois de remover dados extraídos
-  // Heurística: primeira linha que parece um nome (só letras, 2+ palavras, <50 chars)
-  const RE_NAME = /^[A-ZÀ-Ú][a-zà-ú]+(\s[A-ZÀ-Úa-zà-ú]+){1,5}$/;
+  // Convênio — detecta convênios conhecidos OU palavra após "Convênio:"
+  const convenioLabelM = fullText.match(/(?:convênio|convênio\/particular|plano)\s*[:\-]?\s*([^\n,]{2,30})/i);
+  if (convenioLabelM) {
+    fields.convenio = convenioLabelM[1].trim();
+  } else {
+    const convenioM = fullText.match(RE_CONVENIO_KNOWN);
+    if (convenioM) {
+      // Pega a linha/trecho que contém o convênio
+      for (const line of lines) {
+        if (RE_CONVENIO_KNOWN.test(line)) { fields.convenio = line.trim(); break; }
+      }
+    }
+  }
+
+  // Nome — primeira linha que parece nome próprio (Maiúscula Maiúscula, sem números)
+  const RE_NAME = /^[A-ZÀ-Ú][a-zà-ú]+(\s+[A-ZÀ-Úa-zà-ú]+){1,6}$/;
   for (const line of lines) {
     const clean = line.trim();
-    if (clean.length > 5 && clean.length < 60 && RE_NAME.test(clean)) {
+    if (clean.length > 5 && clean.length < 60 && RE_NAME.test(clean) &&
+        !RE_EMAIL.test(clean) && !/\d{5,}/.test(clean)) {
       fields.nome = clean;
       break;
     }
   }
-  // Se não achou com regex, tenta a primeira linha que não é dado
+  // Fallback: primeira linha sem muitos números
   if (!fields.nome) {
     for (const line of lines) {
       const digits = line.replace(/\D/g, "");
-      if (digits.length < 5 && line.length > 5 && line.length < 60) {
+      if (digits.length < 4 && line.length > 5 && line.length < 70 &&
+          !RE_EMAIL.test(line)) {
         fields.nome = line.trim();
         break;
       }
@@ -114,14 +143,21 @@ function isTemplateVazio(text) {
   const labels = ["Nome completo:","CPF:","E-mail:","Convênio","Telefone:","Data de nascimento:","Número do cartão"];
   const temLabels = labels.filter(l => text.includes(l)).length >= 3;
   if (!temLabels) return false;
-  // Checa se todas as linhas com ":" têm valor vazio depois
+  // Checa se todas as linhas com ":" de formulário têm valor vazio depois
   const linhas = text.split("\n").map(l => l.trim()).filter(Boolean);
-  const comValor = linhas.filter(l => {
+  const labelsFormulario = linhas.filter(l => {
+    const k = (l.split(":")[0] || "").toLowerCase();
+    return k.includes("nome") || k.includes("cpf") || k.includes("e-mail") ||
+           k.includes("email") || k.includes("telefone") || k.includes("convênio") ||
+           k.includes("nascimento") || k.includes("cartão");
+  });
+  if (labelsFormulario.length < 3) return false;
+  const comValor = labelsFormulario.filter(l => {
     const idx = l.indexOf(":");
     if (idx === -1) return false;
-    const val = l.slice(idx+1).trim();
-    return val.length > 0;
+    return l.slice(idx+1).trim().length > 0;
   });
+  // Template vazio = menos de 1 campo preenchido
   return comValor.length === 0;
 }
 
