@@ -53,7 +53,7 @@ async function codentalFetchHtml(path, session) {
 
 module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Internal-Key");
   if (req.method === "OPTIONS") return res.status(200).end();
 
@@ -150,42 +150,67 @@ module.exports = async function handler(req, res) {
       const html = await r.text();
       const uploads = [];
 
-      // Extrai cada <li data-id="XXXX"> com imagem e nome do arquivo
-      const liReg = /data-id="(\d+)"[\s\S]*?data-url="([^"]+)"[\s\S]*?(?:src="([^"]+?)")?[\s\S]*?<\/li>/g;
+      // Estrutura real do Codental:
+      // <li ... data-upload-id="4591194" ...>
+      //   <input ... value="4591194" data-url='{"filename":"254_...jpg","download":"https://..."}'>
+      //   <img src="https://codental-static.com/?...&url=https%3A%2F%2F...s3...&...">
+      // </li>
+      //
+      // Extrai cada <li> que tem data-upload-id (específico de uploads, não confunde com outros elements)
+      const liReg = /<li[^>]*\bdata-upload-id="(\d+)"[^>]*>([\s\S]*?)<\/li>/g;
       let m;
       while ((m = liReg.exec(html)) !== null) {
         try {
-          const uploadId = m[1];
-          const dataUrl  = m[2].replace(/&amp;/g, "&").replace(/&quot;/g, '"');
-          const thumbSrc = m[3] ? m[3].replace(/&amp;/g, "&") : null;
+          const uploadId  = m[1];
+          const liContent = m[2];
 
-          // data-url é JSON com filename e download URL
+          // data-url usa aspas simples: data-url='{"filename":"...","download":"..."}'
+          const dataUrlM = liContent.match(/data-url='([^']+)'/);
+          if (!dataUrlM) continue;
+
+          const dataUrlRaw = dataUrlM[1]
+            .replace(/&quot;/g, '"')
+            .replace(/&amp;/g, "&")
+            .replace(/&#39;/g, "'");
+
           let parsed = {};
-          try { parsed = JSON.parse(dataUrl); } catch {}
+          try { parsed = JSON.parse(dataUrlRaw); } catch { continue; }
 
-          const filename = parsed.filename || `arquivo_${uploadId}`;
+          const filename    = parsed.filename || `arquivo_${uploadId}`;
           const downloadUrl = parsed.download || null;
 
-          // Extrai URL real da miniatura (codental-static.com usa ?url=...)
+          // Miniatura: <img src="https://codental-static.com/?...url=ENCODED_S3_URL...">
+          const imgM = liContent.match(/\bsrc="(https:\/\/codental-static\.com[^"]+)"/);
           let previewUrl = null;
-          if (thumbSrc && thumbSrc.includes("codental-static")) {
-            const urlMatch = thumbSrc.match(/url=([^&]+)/);
-            if (urlMatch) previewUrl = decodeURIComponent(urlMatch[1]);
-          } else if (thumbSrc && thumbSrc.startsWith("http")) {
-            previewUrl = thumbSrc;
+          if (imgM) {
+            const urlMatch = imgM[1].match(/[?&]url=([^&"]+)/);
+            if (urlMatch) {
+              previewUrl = decodeURIComponent(urlMatch[1]);
+            } else {
+              previewUrl = imgM[1].replace(/&amp;/g, "&");
+            }
           }
 
+          // Determina content_type pelo nome do arquivo
+          const ext = filename.split(".").pop().toLowerCase();
+          const mimeMap = {
+            jpg:"image/jpeg", jpeg:"image/jpeg", png:"image/png",
+            gif:"image/gif", webp:"image/webp", pdf:"application/pdf",
+            mp4:"video/mp4", mov:"video/quicktime",
+          };
+
           uploads.push({
-            id:          uploadId,
-            name:        filename,
-            url:         downloadUrl || previewUrl,
-            preview_url: previewUrl,
+            id:           uploadId,
+            name:         filename,
+            url:          downloadUrl || previewUrl,
+            preview_url:  previewUrl,
             download_url: downloadUrl,
+            content_type: mimeMap[ext] || null,
           });
         } catch {}
       }
 
-      console.log(`[uploads] id=${id} parsed ${uploads.length} from HTML`);
+      console.log(`[uploads] id=${id} parsed ${uploads.length} items`);
       return res.json({ uploads });
     }
 
@@ -242,6 +267,71 @@ module.exports = async function handler(req, res) {
       }
 
       return res.status(status).json({ error: `Codental: ${status}` });
+    }
+
+    // ── Criar paciente ───────────────────────────────────────────────
+    if (action === "create") {
+      const session = await getSession();
+      const body    = req.body || {};
+
+      // Formata CPF: remove não-dígitos
+      const cpf = (body.cpf || "").replace(/\D/g, "");
+      // Formata telefone: remove não-dígitos
+      const phone = (body.telefone || body.phone || "").replace(/\D/g, "");
+
+      // Payload no formato que o Codental espera
+      const payload = {
+        patient: {
+          name:       body.nome || body.name || "",
+          cpf:        cpf || null,
+          email:      body.email || null,
+          phone:      phone || null,
+          birthdate:  body.nascimento || body.birthdate || null,
+          health_insurance_name: body.convenio || body.health_insurance || null,
+        }
+      };
+
+      console.log("[codental/create]", JSON.stringify(payload.patient));
+
+      const r = await fetch(`${APP_BASE}/patients.json`, {
+        method: "POST",
+        headers: {
+          ...authHeaders(session),
+          "Content-Type": "application/json",
+          "Accept": "application/json",
+          "Referer": `${APP_BASE}/patients/new`,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const ct = r.headers.get("content-type") || "";
+      let data = {};
+      if (ct.includes("json")) {
+        data = await r.json().catch(() => ({}));
+      } else {
+        const text = await r.text();
+        console.log(`[codental/create] status=${r.status} resp=${text.slice(0, 200)}`);
+        // Codental pode redirecionar para o paciente criado (302 → /patients/ID)
+        if (r.status === 302 || r.redirected) {
+          const location = r.headers.get("location") || r.url || "";
+          const idMatch  = location.match(/\/patients\/(\d+)/);
+          if (idMatch) {
+            return res.json({ ok: true, patient_id: idMatch[1], url: location });
+          }
+        }
+      }
+
+      if (!r.ok && r.status !== 302) {
+        console.error(`[codental/create] erro ${r.status}:`, JSON.stringify(data));
+        return res.status(r.status).json({ error: data.error || `Codental: ${r.status}`, details: data });
+      }
+
+      // Extrai ID do paciente criado
+      const patientId = data.id || data.patient?.id || null;
+      const patientUrl = patientId ? `${APP_BASE}/patients/${patientId}` : null;
+      console.log(`[codental/create] paciente criado id=${patientId}`);
+
+      return res.json({ ok: true, patient_id: patientId, url: patientUrl, data });
     }
 
     return res.status(400).json({ error: `Ação desconhecida: ${action}` });

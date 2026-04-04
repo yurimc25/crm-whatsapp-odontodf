@@ -164,9 +164,12 @@ function isTemplateVazio(text) {
 
 export default function PatientCardDetected({ msg }) {
   const [showModal, setShowModal] = useState(false);
-  const [modalAction, setModalAction] = useState(null); // "codental" | "doctoralia"
+  const [modalAction, setModalAction] = useState(null);
   const [status, setStatus]  = useState("idle");
+  const [result, setResult]  = useState(null); // { patient_id, url }
+  const [error, setError]    = useState(null);
   const data = parsePatientData(msg.text);
+  const iKey = import.meta.env.VITE_INTERNAL_API_KEY || "";
 
   // Não exibe card se template vazio
   if (isTemplateVazio(msg.text)) {
@@ -190,6 +193,12 @@ export default function PatientCardDetected({ msg }) {
   const algumDado    = CAMPOS.some(c => data[c] && data[c].trim() !== "");
 
   function handleAction(action) {
+    setError(null);
+    if (action === "doctoralia") {
+      // Doctoralia: abre o site com os dados pré-preenchidos (futuro)
+      window.open("https://www.doctoralia.com.br", "_blank");
+      return;
+    }
     if (camposVazios.length > 0) {
       setModalAction(action);
       setShowModal(true);
@@ -198,15 +207,34 @@ export default function PatientCardDetected({ msg }) {
     }
   }
 
-  function executar(action, formData) {
+  async function executar(action, formData) {
+    if (action !== "codental") return;
     setStatus("loading");
-    setTimeout(() => {
-      console.log(`[${action}] dados:`, formData);
-      setStatus("success_" + action);
-    }, 1000);
+    setError(null);
+    try {
+      const r = await fetch("/api/codental?action=create", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Internal-Key": iKey,
+        },
+        body: JSON.stringify(formData),
+      });
+      const json = await r.json();
+      if (!r.ok) {
+        throw new Error(json.error || `Erro ${r.status}`);
+      }
+      setResult(json);
+      setStatus("success_codental");
+    } catch (e) {
+      setError(e.message);
+      setStatus("error");
+    }
   }
 
-  const isSuccess = status.startsWith("success");
+  const isSuccess = status === "success_codental";
+  const isLoading = status === "loading";
+  const isError   = status === "error";
 
   return (
     <>
@@ -276,25 +304,41 @@ export default function PatientCardDetected({ msg }) {
               <div style={{ background:T.greenBg, border:`1px solid ${T.green}44`,
                 borderRadius:6, padding:"8px 12px", color:T.green,
                 fontSize:12, fontWeight:600, textAlign:"center" }}>
-                ✓ {status.includes("codental") ? "Adicionado ao Codental" : "Adicionado ao Doctoralia"}
+                ✓ Paciente adicionado ao Codental!
+                {result?.url && (
+                  <a href={result.url} target="_blank" rel="noreferrer"
+                    style={{ display:"block", marginTop:4, color:T.accent,
+                      fontSize:11, textDecoration:"underline" }}>
+                    Ver prontuário →
+                  </a>
+                )}
               </div>
             ) : (
-              <div style={{ display:"flex", gap:6 }}>
-                <button onClick={() => handleAction("codental")} disabled={status==="loading"}
-                  style={{ flex:1, background:T.accentBg, border:`1px solid ${T.accent}44`,
-                    borderRadius:6, padding:"7px 8px", color:T.accent,
-                    fontSize:11, fontWeight:600, cursor:"pointer",
-                    opacity: status==="loading" ? .6 : 1 }}>
-                  {camposVazios.length > 0 ? "✏️ Completar + Codental" : "+ Prontuário Codental"}
-                </button>
-                <button onClick={() => handleAction("doctoralia")} disabled={status==="loading"}
-                  style={{ flex:1, background:"#1a1e3a", border:"1px solid #3a4a8a44",
-                    borderRadius:6, padding:"7px 8px", color:"#7a9af8",
-                    fontSize:11, fontWeight:600, cursor:"pointer",
-                    opacity: status==="loading" ? .6 : 1 }}>
-                  🗓 Doctoralia
-                </button>
-              </div>
+              <>
+                {isError && (
+                  <div style={{ background:"#2a1010", border:"1px solid #c0412c44",
+                    borderRadius:6, padding:"6px 10px", color:"#e57373",
+                    fontSize:11, marginBottom:6 }}>
+                    ⚠ {error}
+                  </div>
+                )}
+                <div style={{ display:"flex", gap:6 }}>
+                  <button onClick={() => handleAction("codental")} disabled={isLoading}
+                    style={{ flex:1, background:T.accentBg, border:`1px solid ${T.accent}44`,
+                      borderRadius:6, padding:"7px 8px", color:T.accent,
+                      fontSize:11, fontWeight:600, cursor: isLoading ? "not-allowed" : "pointer",
+                      opacity: isLoading ? .6 : 1 }}>
+                    {isLoading ? "⏳ Adicionando..." : camposVazios.length > 0 ? "✏️ Completar + Codental" : "+ Prontuário Codental"}
+                  </button>
+                  <button onClick={() => handleAction("doctoralia")} disabled={isLoading}
+                    style={{ flex:1, background:"#1a1e3a", border:"1px solid #3a4a8a44",
+                      borderRadius:6, padding:"7px 8px", color:"#7a9af8",
+                      fontSize:11, fontWeight:600, cursor:"pointer",
+                      opacity: isLoading ? .6 : 1 }}>
+                    🗓 Doctoralia
+                  </button>
+                </div>
+              </>
             )}
           </div>
         </div>
