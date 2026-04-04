@@ -182,9 +182,10 @@ export function useWAHA(operator) {
             const fresh = freshChats.find(f => f.id === c.id);
             if (!fresh) return c;
 
-            // Sempre atualiza se o WAHA tem uma msg mais recente (mesmo que seja igual)
-            // Compara também por lastTs para detectar msgs novas no mesmo chat
-            const msgNova    = fresh.lastMsg !== undefined && fresh.lastMsg !== c.lastMsg;
+            // Só atualiza lastMsg se o fresh tem conteúdo real
+            // (evita sobrescrever com vazio quando WAHA não embute lastMessage)
+            const freshMsg   = fresh.lastMsg || ""; // garante string
+            const msgNova    = freshMsg !== "" && freshMsg !== c.lastMsg;
             const unreadNovo = (fresh.unread ?? 0) > (c.unread || 0);
             const temLastTs  = fresh.lastTs && fresh.lastTs !== c.lastTs;
             if (!msgNova && !unreadNovo && !temLastTs) return c;
@@ -193,11 +194,12 @@ export function useWAHA(operator) {
             const jaRespondido = "lastPatientTs" in c && c.lastPatientTs === null && c.unread === 0;
             const wahaUnread   = fresh.unread ?? 0;
             const isPatient    = wahaUnread > (c.unread || 0) || wahaUnread > 0;
-            const autoRes      = isFarewell(fresh.lastMsg);
+            const autoRes      = isFarewell(freshMsg);
             return {
               ...c,
-              lastMsg:       fresh.lastMsg  !== undefined ? fresh.lastMsg  : c.lastMsg,
-              lastTime:      fresh.lastTime !== undefined ? fresh.lastTime : c.lastTime,
+              // NUNCA substitui por vazio — mantém o valor anterior se fresh está vazio
+              lastMsg:       freshMsg || c.lastMsg,
+              lastTime:      fresh.lastTime || c.lastTime,
               lastTs:        fresh.lastTs   || c.lastTs,
               lastPatientTs: jaRespondido ? null
                 : isPatient && !autoRes ? (fresh.lastTs || c.lastPatientTs)
@@ -208,8 +210,25 @@ export function useWAHA(operator) {
             };
           });
 
-          // Adiciona chats novos que vieram no top 10 e não existem no estado
-          const novos = freshChats.filter(f => !prevIds.has(f.id));
+          // Adiciona chats novos — mescla com cache do localStorage para não perder lastMsg
+          const cachedAll = cache.get(CHATS_KEY) || [];
+          const novos = freshChats.filter(f => !prevIds.has(f.id)).map(fresh => {
+            const cached = cachedAll.find(c => c.id === fresh.id);
+            if (!cached) return fresh;
+            // Preserva lastMsg/lastTime do cache se o fresh veio sem lastMessage
+            return {
+              ...fresh,
+              lastMsg:       fresh.lastMsg  || cached.lastMsg  || "",
+              lastTime:      fresh.lastTime || cached.lastTime || "",
+              lastTs:        fresh.lastTs   || cached.lastTs   || null,
+              unread:        cached.unread  ?? fresh.unread,
+              lastPatientTs: "lastPatientTs" in cached ? cached.lastPatientTs : fresh.lastPatientTs,
+              status:        cached.status  || fresh.status,
+              assignedTo:    cached.assignedTo || fresh.assignedTo,
+              tags:          cached.tags    || fresh.tags,
+              photoUrl:      cached.photoUrl || fresh.photoUrl,
+            };
+          });
           if (novos.length > 0) {
             changed = true;
             updated.push(...novos);
