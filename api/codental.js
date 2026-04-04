@@ -269,69 +269,203 @@ module.exports = async function handler(req, res) {
       return res.status(status).json({ error: `Codental: ${status}` });
     }
 
+    // ── Buscar planos do convênio ────────────────────────────────────
+    if (action === "dental_plans") {
+      const session = await getSession();
+      // Busca a página de novo paciente para extrair os planos disponíveis
+      const r = await codentalFetchHtml("/patients/new", session);
+      if (!r.ok) return res.status(r.status).json({ error: "Falha ao buscar planos" });
+      const html = await r.text();
+      const plans = [];
+      // Extrai <option value="ID">Nome</option> dentro do select de dental_plan_id
+      const selectM = html.match(/id="patient_dental_plan_id"[^>]*>([\s\S]*?)<\/select>/);
+      if (selectM) {
+        const optReg = /<option[^>]*value="(\d+)"[^>]*>([^<]+)<\/option>/g;
+        let m;
+        while ((m = optReg.exec(selectM[1])) !== null) {
+          plans.push({ id: m[1], name: m[2].trim() });
+        }
+      }
+      return res.json({ plans });
+    }
+
     // ── Criar paciente ───────────────────────────────────────────────
     if (action === "create") {
       const session = await getSession();
       const body    = req.body || {};
 
-      // Formata CPF: remove não-dígitos
-      const cpf = (body.cpf || "").replace(/\D/g, "");
-      // Formata telefone: remove não-dígitos
-      const phone = (body.telefone || body.phone || "").replace(/\D/g, "");
+      const nome      = (body.nome || body.name || "").trim();
+      const cpfRaw    = (body.cpf  || "").replace(/\D/g, "");
+      const phoneRaw  = (body.telefone || body.phone || "").replace(/\D/g, "");
+      const email     = (body.email || "").trim();
+      const convenio  = (body.convenio || "").trim();
+      const nascimento = (body.nascimento || "").trim();
 
-      // Payload no formato que o Codental espera
-      const payload = {
-        patient: {
-          name:       body.nome || body.name || "",
-          cpf:        cpf || null,
-          email:      body.email || null,
-          phone:      phone || null,
-          birthdate:  body.nascimento || body.birthdate || null,
-          health_insurance_name: body.convenio || body.health_insurance || null,
+      // Formata CPF: 000.000.000-00
+      const cpfFmt = cpfRaw.length === 11
+        ? `${cpfRaw.slice(0,3)}.${cpfRaw.slice(3,6)}.${cpfRaw.slice(6,9)}-${cpfRaw.slice(9)}`
+        : cpfRaw;
+
+      // Telefone: remove DDI 55 se vier
+      let phoneFmt = phoneRaw;
+      if (phoneFmt.startsWith("55") && phoneFmt.length >= 12) phoneFmt = phoneFmt.slice(2);
+
+      // Normaliza data para DD/MM/YYYY
+      let birthdayFmt = "";
+      if (nascimento) {
+        // Aceita DD/MM/YYYY, DD-MM-YYYY, YYYY-MM-DD
+        const parts = nascimento.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/) ||
+                      nascimento.match(/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+        if (parts) {
+          const [, a, b, c] = parts;
+          if (a.length === 4) birthdayFmt = `${b.padStart(2,"0")}/${c.padStart(2,"0")}/${a}`;
+          else birthdayFmt = `${a.padStart(2,"0")}/${b.padStart(2,"0")}/${c.length===2?"20"+c:c}`;
         }
-      };
+      }
 
-      console.log("[codental/create]", JSON.stringify(payload.patient));
-
-      const r = await fetch(`${APP_BASE}/patients.json`, {
-        method: "POST",
-        headers: {
-          ...authHeaders(session),
-          "Content-Type": "application/json",
-          "Accept": "application/json",
-          "Referer": `${APP_BASE}/patients/new`,
-        },
-        body: JSON.stringify(payload),
-      });
-
-      const ct = r.headers.get("content-type") || "";
-      let data = {};
-      if (ct.includes("json")) {
-        data = await r.json().catch(() => ({}));
-      } else {
-        const text = await r.text();
-        console.log(`[codental/create] status=${r.status} resp=${text.slice(0, 200)}`);
-        // Codental pode redirecionar para o paciente criado (302 → /patients/ID)
-        if (r.status === 302 || r.redirected) {
-          const location = r.headers.get("location") || r.url || "";
-          const idMatch  = location.match(/\/patients\/(\d+)/);
-          if (idMatch) {
-            return res.json({ ok: true, patient_id: idMatch[1], url: location });
+      // ── Resolve dental_plan_id a partir do nome do convênio ──────
+      let dentalPlanId = "";
+      if (convenio) {
+        // Busca os planos da página de novo paciente
+        try {
+          const pr = await codentalFetchHtml("/patients/new", session);
+          if (pr.ok) {
+            const html = await pr.text();
+            const plans = [];
+            const selectM = html.match(/id="patient_dental_plan_id"[^>]*>([\s\S]*?)<\/select>/);
+            if (selectM) {
+              const optReg = /<option[^>]*value="(\d+)"[^>]*>([^<]+)<\/option>/g;
+              let m;
+              while ((m = optReg.exec(selectM[1])) !== null) {
+                plans.push({ id: m[1], name: m[2].trim() });
+              }
+            }
+            // Match fuzzy: normaliza e compara
+            const norm = s => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]/g,"");
+            const convNorm = norm(convenio);
+            // Match exato primeiro
+            let match = plans.find(p => norm(p.name) === convNorm);
+            // Match parcial: convenio contém parte do nome do plano ou vice-versa
+            if (!match) match = plans.find(p => norm(p.name).includes(convNorm) || convNorm.includes(norm(p.name)));
+            // Match por palavras-chave (ex: "quality" → "Quallity Pró Saúde")
+            if (!match) {
+              const words = convNorm.split(/\s+/).filter(w => w.length > 3);
+              match = plans.find(p => words.some(w => norm(p.name).includes(w)));
+            }
+            if (match) {
+              dentalPlanId = match.id;
+              console.log(`[codental/create] convênio "${convenio}" → id=${match.id} (${match.name})`);
+            } else {
+              // Default: Particular (19304)
+              const particular = plans.find(p => norm(p.name).includes("particular"));
+              dentalPlanId = particular?.id || "19304";
+              console.log(`[codental/create] convênio "${convenio}" não encontrado, usando Particular`);
+            }
           }
+        } catch (e) {
+          console.warn("[codental/create] Erro ao buscar planos:", e.message);
         }
       }
 
-      if (!r.ok && r.status !== 302) {
-        console.error(`[codental/create] erro ${r.status}:`, JSON.stringify(data));
-        return res.status(r.status).json({ error: data.error || `Codental: ${r.status}`, details: data });
+      console.log("[codental/create]", JSON.stringify({ nome, cpfFmt, phoneFmt, email, birthdayFmt, dentalPlanId }));
+
+      // Monta o form como URLSearchParams
+      function buildForm({ nome, cpf, phone, email, birthday, planId }) {
+        const f = new URLSearchParams();
+        f.append("authenticity_token",              session.csrf);
+        f.append("patient[full_name]",              nome);
+        if (phone) {
+          f.append("patient[cellphone_formated]",    phone);
+          f.append("patient[cellphone_country_code]", "+55");
+        }
+        if (cpf)     f.append("patient[cpf]",       cpf);
+        if (email)   f.append("patient[email]",     email);
+        if (birthday) f.append("patient[birthday]", birthday);
+        if (planId)  f.append("patient[dental_plan_id]", planId);
+        // Campo obrigatório para o form Rails
+        f.append("patient[reminder_preference]", "whatsapp");
+        return f;
       }
 
-      // Extrai ID do paciente criado
-      const patientId = data.id || data.patient?.id || null;
-      const patientUrl = patientId ? `${APP_BASE}/patients/${patientId}` : null;
-      console.log(`[codental/create] paciente criado id=${patientId}`);
+      async function tryCreate(params) {
+        const r = await fetch(`${APP_BASE}/patients`, {
+          method:      "POST",
+          redirect:    "follow",
+          headers: {
+            "Content-Type":    "application/x-www-form-urlencoded",
+            "X-CSRF-Token":    session.csrf,
+            "X-Requested-With": "XMLHttpRequest",
+            "Accept":          "text/html,application/xhtml+xml,application/json",
+            "Cookie":          session.cookie,
+            "Origin":          APP_BASE,
+            "Referer":         `${APP_BASE}/patients/new`,
+            "User-Agent":      UA,
+          },
+          body: buildForm(params).toString(),
+        });
+        const finalUrl = r.url || "";
+        const status   = r.status;
+        const bodyText = await r.text().catch(() => "");
+        console.log(`[codental/create] status=${status} url=${finalUrl.slice(0,80)}`);
+        return { status, finalUrl, bodyText };
+      }
 
-      return res.json({ ok: true, patient_id: patientId, url: patientUrl, data });
+      function extractId(url) {
+        const m = url?.match(/\/patients\/(\d+)/);
+        return m && !url.includes("/new") && !url.includes("/edit") ? m[1] : null;
+      }
+
+      // Tentativas em cascata
+      let r, patientId;
+
+      // 1. Tentativa completa
+      r = await tryCreate({ nome, cpf: cpfFmt, phone: phoneFmt, email, birthday: birthdayFmt, planId: dentalPlanId });
+      patientId = extractId(r.finalUrl);
+
+      // 2. Sem CPF (CPF duplicado ou inválido)
+      if (!patientId && cpfFmt) {
+        r = await tryCreate({ nome, cpf: "", phone: phoneFmt, email, birthday: birthdayFmt, planId: dentalPlanId });
+        patientId = extractId(r.finalUrl);
+      }
+
+      // 3. Só nome e telefone (sem dados opcionais)
+      if (!patientId) {
+        r = await tryCreate({ nome, cpf: "", phone: phoneFmt, email: "", birthday: "", planId: "" });
+        patientId = extractId(r.finalUrl);
+      }
+
+      // 4. Só nome
+      if (!patientId) {
+        r = await tryCreate({ nome, cpf: "", phone: "", email: "", birthday: "", planId: "" });
+        patientId = extractId(r.finalUrl);
+      }
+
+      // 5. Fallback: busca por nome (pode ter sido criado com 422 falso)
+      if (!patientId && nome) {
+        const sr = await codentalFetch(
+          `/patients/search.json?query=${encodeURIComponent(nome.split(" ")[0])}`, session
+        );
+        if (sr.ok) {
+          const data = await sr.json().catch(() => ({}));
+          const list = Array.isArray(data) ? data : (data.patients || data.data || []);
+          const sorted = list.sort((a, b) => Number(b.id) - Number(a.id));
+          const firstName = nome.split(" ")[0].toLowerCase();
+          const match = sorted.find(p => (p.name || p.fullName || "").toLowerCase().includes(firstName));
+          if (match?.id) patientId = String(match.id);
+        }
+      }
+
+      if (patientId) {
+        const url = `${APP_BASE}/patients/${patientId}`;
+        console.log(`[codental/create] ✓ paciente criado/encontrado id=${patientId}`);
+        return res.json({ ok: true, patient_id: patientId, url });
+      }
+
+      console.error(`[codental/create] ✗ falhou após todas as tentativas. last status=${r.status}`);
+      return res.status(422).json({
+        error: "Não foi possível criar o paciente no Codental. Verifique se os dados são válidos.",
+        debug: r.bodyText?.slice(0, 300),
+      });
     }
 
     return res.status(400).json({ error: `Ação desconhecida: ${action}` });
