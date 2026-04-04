@@ -26,7 +26,7 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
   const { displayName } = useContactsCtx();
   const {
     chats, messages, loadMessages, loadMoreMessages, send,
-    forwardChat, resolveChat, setChats,
+    forwardChat, resolveChat, markRead, markUnread,
     loading, error, wsStatus,
   } = useWAHA(operator);
 
@@ -83,12 +83,6 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
     setScreen("chat");
   }
 
-  function markRead(chatId) {
-    setChats(prev => prev.map(c => c.id !== chatId ? c : { ...c, unread: 0 }));
-  }
-  function markUnread(chatId) {
-    setChats(prev => prev.map(c => c.id !== chatId ? c : { ...c, unread: 1 }));
-  }
   function handleForwardFromList(chatId, toRole) {
     forwardChat(chatId, toRole);
   }
