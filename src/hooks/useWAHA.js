@@ -109,6 +109,49 @@ export function useWAHA(operator) {
     return () => clearInterval(iv);
   }, [sessionOk]);
 
+  // ── Auto-refresh de mensagens a cada 5s ────────────────────────
+  // Fallback para quando o WebSocket não captura alguma mensagem
+  useEffect(() => {
+    if (!sessionOk || USE_MOCK) return;
+    const iv = setInterval(async () => {
+      const chatId = activeChatRef.current;
+      if (!chatId) return;
+      try {
+        const raw = await getMessages(chatId, 20);
+        const normalized = raw
+          .map(normalizeMessage)
+          .sort((a, b) => new Date(a.ts) - new Date(b.ts));
+
+        setMessages(prev => {
+          const current = prev[chatId] || [];
+          // Só atualiza se há mensagens novas
+          const ids = new Set(current.map(m => m.id));
+          const novos = normalized.filter(m => !ids.has(m.id));
+          if (novos.length === 0) return prev;
+          const updated = [...current, ...novos]
+            .sort((a,b) => new Date(a.ts) - new Date(b.ts));
+          cache.set(MSGS_PREFIX + chatId, updated, MSGS_TTL);
+          return { ...prev, [chatId]: updated };
+        });
+
+        // Atualiza lastMsg do chat ativo
+        const lastAny = normalized[normalized.length - 1];
+        if (lastAny) {
+          setChats(prev => {
+            const updated = prev.map(c => c.id !== chatId ? c : {
+              ...c,
+              lastMsg:  lastAny.text || c.lastMsg,
+              lastTime: lastAny.time || c.lastTime,
+            });
+            cache.set(CHATS_KEY, updated, CHATS_TTL);
+            return updated;
+          });
+        }
+      } catch {}
+    }, 5000);
+    return () => clearInterval(iv);
+  }, [sessionOk]);
+
   // ── Varredura sequencial ────────────────────────────────────────
   // Para cada chat: busca 5 mensagens, calcula lastMsg/lastPatientTs,
   // busca foto de perfil. Delay de 200ms entre cada para não sobrecarregar.
@@ -372,15 +415,19 @@ export function useWAHA(operator) {
     persistChat(chatId, { assignedTo: toRole, status: "open" });
   }, []);
 
+  // Resolver = só zera contagem e unread. NÃO muda status, NÃO bloqueia input.
   const resolveChat = useCallback((chatId) => {
     setChats(prev => {
       const updated = prev.map(c => c.id !== chatId ? c : {
-        ...c, status:"resolved", unread:0, lastPatientTs:null,
+        ...c,
+        unread:        0,
+        lastPatientTs: null, // para a contagem de tempo sem resposta
+        // status permanece como estava (não muda para "resolved")
       });
       cache.set(CHATS_KEY, updated, CHATS_TTL);
       return updated;
     });
-    persistChat(chatId, { status: "resolved" });
+    // Não persiste no DB — é só um estado local de "respondido"
   }, []);
 
   const addTag = useCallback((chatId, tag) => {
