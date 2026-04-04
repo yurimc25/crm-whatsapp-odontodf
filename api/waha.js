@@ -20,6 +20,8 @@ export default async function handler(req, res) {
   if (!path) return res.status(400).json({ error: "path obrigatório" });
 
   const params = new URLSearchParams(rest);
+  // Adiciona timestamp para garantir que o WAHA nunca use cache/ETag
+  params.set("_t", Date.now().toString());
   const qs = params.toString() ? `?${params.toString()}` : "";
   const url = `${WAHA_URL}${path}${qs}`;
 
@@ -37,10 +39,10 @@ export default async function handler(req, res) {
         ? { body: JSON.stringify(req.body) } : {}),
     });
 
-    // Nunca repassa 304 para o browser — converte em 200 com array vazio
-    // O browser vai ignorar se não tiver dados novos
+    // 304 = sem mudança — retorna null para o frontend manter estado anterior
     if (wahaRes.status === 304) {
-      return res.status(200).json([]);
+      res.setHeader("Cache-Control", "no-store");
+      return res.status(200).json(null);
     }
 
     const ct = wahaRes.headers.get("content-type") || "";

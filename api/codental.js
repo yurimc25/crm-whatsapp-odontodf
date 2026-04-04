@@ -33,9 +33,21 @@ function authHeaders(session) {
 
 async function codentalFetch(path, session) {
   const r = await fetch(`${APP_BASE}${path}`, { headers: authHeaders(session) });
-  if (r.status === 401 || r.status === 403) {
-    throw new Error("Sessão Codental expirada");
-  }
+  if (r.status === 401 || r.status === 403) throw new Error("Sessão Codental expirada");
+  return r;
+}
+
+// Para endpoints que retornam HTML (evolutions, uploads) — Accept: text/html
+async function codentalFetchHtml(path, session) {
+  const r = await fetch(`${APP_BASE}${path}`, {
+    headers: {
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "Cookie": session.cookie,
+      "User-Agent": UA,
+      "Referer": `${APP_BASE}/patients`,
+    },
+  });
+  if (r.status === 401 || r.status === 403) throw new Error("Sessão Codental expirada");
   return r;
 }
 
@@ -122,12 +134,11 @@ module.exports = async function handler(req, res) {
     if (action === "evolutions") {
       if (!id) return res.status(400).json({ error: "id obrigatório" });
 
-      // Tenta HTML direto (o .json retorna 422 no Codental atual)
-      const r = await codentalFetch(`/patients/${id}/evolutions`, session);
-      const ct = r.headers.get("content-type") || "";
+      // Usa headers de HTML — o Codental rejeita com Accept: application/json
+      const r = await codentalFetchHtml(`/patients/${id}/evolutions`, session);
       const status = r.status;
-
-      console.log(`[evolutions] id=${id} status=${status} ct=${ct.slice(0,40)}`);
+      const ct = r.headers.get("content-type") || "";
+      console.log(`[evolutions] id=${id} status=${status} ct=${ct.slice(0,50)}`);
 
       // Se retornou JSON real
       if (r.ok && ct.includes("json")) {

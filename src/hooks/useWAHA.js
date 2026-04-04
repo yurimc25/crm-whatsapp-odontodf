@@ -163,6 +163,9 @@ export function useWAHA(operator) {
         if (!r.ok) return;
         const raw = await r.json();
 
+        // null = 304 Not Modified, sem dados novos — mantém estado atual
+        if (!raw) return;
+
         const freshChats = (Array.isArray(raw) ? raw : [])
           .filter(c => !c.id.endsWith("@g.us"))
           .filter(c => {
