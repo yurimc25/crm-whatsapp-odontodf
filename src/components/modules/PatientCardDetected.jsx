@@ -23,8 +23,9 @@ const RE_CNPJ     = /\b\d{2}[\s.]?\d{3}[\s.]?\d{3}[/\s]?\d{4}[-\s.]?\d{2}\b/;
 const RE_EMAIL    = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/;
 const RE_DATE     = /\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})\b/;
 const RE_PHONE    = /(?:\+?55\s?)?(?:\(?\d{2}\)?\s?)(?:9\s?\d{4}|\d{4})[\s\-]?\d{4}/g;
-// Convênios conhecidos + qualquer palavra após "convênio:" ou "plano:" ou "Convênio:"
 const RE_CONVENIO_KNOWN = /bradesco|amil|unimed|sulam[eé]rica|metlife|porto\s?seguro|itaú\s?seguro|hapvida|notredame|gndi|sami|prevent\s?senior|alian[çc]a|quallity|qualit[yi]|odontoprev|interodonto|uniodonto|fenelon|funo|omint|b[- ]?dental/i;
+
+const CAMPOS = ["nome","cpf","convenio","nascimento","email","telefone"];
 
 function parsePatientData(text) {
   const fields = {};
