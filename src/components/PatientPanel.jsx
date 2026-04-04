@@ -58,7 +58,7 @@ function Field({ label, value }) {
 
 export default function PatientPanel({ chat, operator }) {
   const [tab, setTab] = useState("perfil");
-  const { displayInfo } = useContactsCtx();
+  const { displayInfo, addLocalContact } = useContactsCtx();
   const info = displayInfo(chat.id, chat.name);
 
   // Estado compartilhado entre Perfil e Evoluções
@@ -80,6 +80,13 @@ export default function PatientPanel({ chat, operator }) {
         if (result?.patients?.length > 0) {
           const p = result.patients[0];
           setPaciente(p);
+
+          // Registra o nome no mapa de contatos para exibir no ChatList
+          const patientName = p.name || p.fullName;
+          const chatPhone   = info.phone.replace(/\D/g, "");
+          if (patientName && chatPhone) {
+            addLocalContact({ phone: chatPhone, name: patientName });
+          }
           if (p.id) {
             const [u, e] = await Promise.all([getUploads(p.id), getEvolutions(p.id)]);
             setUploads(u?.uploads || []);

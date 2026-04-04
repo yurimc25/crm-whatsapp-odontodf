@@ -5,7 +5,7 @@ import CRMLayoutMobile from "./components/CRMLayoutMobile";
 import { useContacts } from "./hooks/useContacts";
 import { OPERATORS } from "./data/mock";
 
-export const ContactsContext = createContext({ displayName: (id) => id, displayInfo: () => ({ hasContact: false, line1: id, line2: id, phone: id }), contactMap: {} });
+export const ContactsContext = createContext({ displayName: (id) => id, displayInfo: () => ({ hasContact: false, line1: id, line2: id, phone: id }), contactMap: {}, addLocalContact: () => {} });
 export const useContactsCtx = () => useContext(ContactsContext);
 
 function useIsMobile() {
