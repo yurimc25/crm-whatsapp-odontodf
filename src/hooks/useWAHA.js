@@ -190,21 +190,38 @@ export function useWAHA(operator) {
             const msgs = await rm.json();
             if (!msgs || !Array.isArray(msgs) || msgs.length === 0) continue;
 
-            // Ordena por timestamp e pega a última mensagem
+            // Ordena por timestamp real do WhatsApp (mais antiga → mais nova)
             const normalized = msgs
               .map(normalizeMessage)
               .sort((a, b) => new Date(a.ts) - new Date(b.ts));
 
-            const lastAny     = normalized[normalized.length - 1];
-            const lastPatient = [...normalized].reverse().find(m => m.from === "patient");
+            // Última mensagem (qualquer remetente) — para exibir no ChatList
+            const lastAny = normalized[normalized.length - 1];
 
-            // Conta unread: mensagens do paciente após última do operador
-            const lastOpIdx   = normalized.map(m => m.from).lastIndexOf("operator");
-            const unreadCount = lastOpIdx === -1
-              ? normalized.filter(m => m.from === "patient").length
-              : normalized.slice(lastOpIdx + 1).filter(m => m.from === "patient").length;
+            // Último operador e último paciente
+            const lastOpIdx      = normalized.map(m => m.from).lastIndexOf("operator");
+            const lastPatientIdx = normalized.map(m => m.from).lastIndexOf("patient");
+
+            // Mensagens do paciente sem resposta (após o último operador)
+            const semResposta = lastOpIdx === -1
+              ? normalized.filter(m => m.from === "patient")
+              : normalized.slice(lastOpIdx + 1).filter(m => m.from === "patient");
+
+            // unread = quantas msgs do paciente ficaram sem resposta
+            const unreadCount = semResposta.length;
+
+            // lastPatientTs = timestamp da PRIMEIRA msg sem resposta (início da espera)
+            // Se operador foi o último a falar → null (não tem espera)
+            const primeiroSemResposta = semResposta[0] || null;
+            const ultimoFoiOperador   = lastOpIdx > lastPatientIdx || lastPatientIdx === -1;
 
             const autoRes = detectAutoResolve(normalized);
+
+            // novoLastPatientTs: null se operador respondeu, null se despedida,
+            // senão = timestamp da primeira mensagem sem resposta
+            const novoLastPatientTs = (ultimoFoiOperador || autoRes)
+              ? null
+              : (primeiroSemResposta?.ts || null);
 
             setChats(prev => {
               const existing = prev.find(c => c.id === chatId);
@@ -212,7 +229,6 @@ export function useWAHA(operator) {
 
               let updated;
               if (existing) {
-                // Chat já existe — atualiza
                 const jaRespondido = "lastPatientTs" in existing
                   && existing.lastPatientTs === null && existing.unread === 0;
 
@@ -220,29 +236,34 @@ export function useWAHA(operator) {
                   if (c.id !== chatId) return c;
                   return {
                     ...c,
+                    // lastMsg sempre a última mensagem, seja do paciente ou operador
                     lastMsg:  lastAny?.text || c.lastMsg,
                     lastTime: lastAny?.time || c.lastTime,
                     lastTs:   lastAny?.ts   || c.lastTs,
-                    lastPatientTs: jaRespondido ? null
-                      : (autoRes || lastAny?.from !== "patient") ? c.lastPatientTs
-                      : (lastPatient?.ts || c.lastPatientTs),
-                    unread: c.id === activeChatRef.current ? 0
-                      : jaRespondido ? 0
-                      : Math.max(c.unread || 0, unreadCount),
+                    // lastPatientTs: preserva null se usuário marcou como respondido
+                    // e não chegou mensagem nova do paciente depois
+                    lastPatientTs: jaRespondido && novoLastPatientTs === null
+                      ? null
+                      : novoLastPatientTs,
+                    // unread: 0 se chat ativo ou operador respondeu
+                    // senão usa o maior entre o acumulado e o novo count
+                    unread: c.id === activeChatRef.current
+                      ? 0
+                      : ultimoFoiOperador || autoRes
+                        ? 0
+                        : Math.max(c.unread || 0, unreadCount),
                   };
                 });
               } else {
-                // Chat novo — adiciona a partir do cache ou cria do zero
-                const cached  = cachedAll.find(c => c.id === chatId);
+                const cached   = cachedAll.find(c => c.id === chatId);
                 const baseChat = cached || normalizeChat(chat);
                 const newChat  = {
                   ...baseChat,
                   lastMsg:       lastAny?.text  || baseChat.lastMsg  || "",
                   lastTime:      lastAny?.time  || baseChat.lastTime || "",
                   lastTs:        lastAny?.ts    || baseChat.lastTs   || null,
-                  lastPatientTs: autoRes ? null
-                    : lastAny?.from === "patient" ? (lastPatient?.ts || null) : null,
-                  unread: unreadCount,
+                  lastPatientTs: novoLastPatientTs,
+                  unread:        unreadCount,
                 };
                 updated = [...prev, newChat];
               }
