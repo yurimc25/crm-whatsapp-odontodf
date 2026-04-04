@@ -118,9 +118,82 @@ module.exports = async function handler(req, res) {
 
     if (action === "patient") {
       if (!id) return res.status(400).json({ error: "id obrigatório" });
-      const r = await codentalFetch(`/patients/${id}.json`, session);
-      if (!r.ok) return res.status(r.status).json({ error: `Codental: ${r.status}` });
-      return res.json(await r.json());
+
+      // Tenta JSON primeiro
+      const rJson = await codentalFetch(`/patients/${id}.json`, session);
+      let jsonData = {};
+      if (rJson.ok) {
+        try { jsonData = await rJson.json(); } catch {}
+      }
+
+      // Busca página HTML para extrair campos que o JSON pode não ter
+      const rHtml = await codentalFetchHtml(`/patients/${id}`, session);
+      let htmlData = {};
+      if (rHtml.ok) {
+        const html = await rHtml.text();
+
+        // Extrai campos do HTML usando os padrões da página de detalhes do paciente
+        function extractField(label, html) {
+          const patterns = [
+            // <h4 class="patient-base-subtitle">LABEL</h4>\n<...>VALUE<...>
+            new RegExp(`patient-base-subtitle">[^<]*${label}[^<]*<\/h4>[\\s\\S]*?<[^>]+>([^<]{2,200})<`, 'i'),
+            // Padrão de span com classe patient-base-info
+            new RegExp(`${label}[^<]{0,50}<\/h4>[\\s\\S]{0,200}patient-base-info[^>]*>([^<]{2,200})<`, 'i'),
+          ];
+          for (const re of patterns) {
+            const m = html.match(re);
+            if (m) return m[1].trim();
+          }
+          return null;
+        }
+
+        // Celular — extrai do elemento com class "phone"
+        const phoneM = html.match(/class="phone[^"]*"[^>]*>\s*([^<]+?)\s*<\/span>/i) ||
+                       html.match(/wa\.me\/[^"]*"[^>]*>[^<]*<\/a>\s*([^<]{7,20})/i);
+        if (phoneM) htmlData.cellphone_formated = phoneM[1].trim();
+
+        // Email
+        const emailM = html.match(/patient-base-subtitle[^>]*>Email<\/h4>[\s\S]{0,100}patient-base-info[^>]*>\s*([^\s<@]{2,}@[^\s<]{2,})\s*</i);
+        if (emailM) htmlData.email = emailM[1].trim();
+
+        // Data de nascimento — padrão DD/MM/YYYY
+        const birthdayM = html.match(/nascimento[\s\S]{0,200}patient-base-info[^>]*>[\s\S]*?(\d{2}\/\d{2}\/\d{4})/i);
+        if (birthdayM) htmlData.birthday = birthdayM[1].trim();
+
+        // CPF — padrão 000.000.000-00
+        const cpfM = html.match(/patient-base-subtitle[^>]*>CPF<\/h4>[\s\S]{0,200}patient-base-info[^>]*>\s*([\d]{3}\.[\d]{3}\.[\d]{3}-[\d]{2})\s*</i);
+        if (cpfM) htmlData.cpf = cpfM[1].trim();
+
+        // Convênio — extrai do aria-label="Convênio"
+        const convenioM = html.match(/aria-label="Conv[^"]*"[\s\S]{0,300}patient-base-info[^>]*>\s*([^<]{2,80}?)\s*</i) ||
+                          html.match(/patient-base-subtitle[^>]*>Conv[^<]*<\/h4>[\s\S]{0,200}patient-base-info[^>]*[^>]*>([^<]{2,80})</i);
+        if (convenioM) htmlData.health_insurance_name = convenioM[1].trim();
+
+        // Carteirinha do convênio
+        const cardM = html.match(/carteirinha[\s\S]{0,200}patient-base-info[^>]*>([^<]{3,80})</i);
+        if (cardM) htmlData.dental_plan_card_number = cardM[1].trim();
+
+        // Nome completo — do <h2> na página
+        const nameM = html.match(/<h2[^>]*tw-text-ugray-900[^>]*>([^<]{3,100})<\/h2>/i);
+        if (nameM) htmlData.full_name = nameM[1].trim();
+
+        // ID do paciente
+        htmlData.id = id;
+
+        console.log(`[patient] id=${id} html fields:`, Object.keys(htmlData).join(","));
+      }
+
+      // Mescla: JSON tem prioridade, HTML preenche o que faltou
+      const merged = { ...htmlData, ...jsonData };
+      // Garante que campos HTML importantes não sejam sobrescritos por valores vazios do JSON
+      if (!merged.email && htmlData.email)                           merged.email = htmlData.email;
+      if (!merged.birthday && htmlData.birthday)                     merged.birthday = htmlData.birthday;
+      if (!merged.cellphone_formated && htmlData.cellphone_formated) merged.cellphone_formated = htmlData.cellphone_formated;
+      if (!merged.health_insurance_name && htmlData.health_insurance_name) merged.health_insurance_name = htmlData.health_insurance_name;
+      if (!merged.cpf && htmlData.cpf)                               merged.cpf = htmlData.cpf;
+      if (!merged.full_name && htmlData.full_name)                   merged.full_name = htmlData.full_name;
+
+      return res.json(merged);
     }
 
     if (action === "uploads") {
