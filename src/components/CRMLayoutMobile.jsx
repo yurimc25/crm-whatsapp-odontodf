@@ -25,33 +25,42 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
 
   const { displayName } = useContactsCtx();
   const {
-    chats, messages, loadMessages, loadMoreMessages, send,
+    chats, messages, loadMessages, loadOlderMessages, send,
     forwardChat, resolveChat, markRead, markUnread,
     loading, error, wsStatus,
   } = useWAHA(operator);
 
   const perms = ROLE_PERMISSIONS[operator.role] || {};
 
-  // Intercepta botão voltar do browser → volta para a lista em vez de sair
+  const screenRef = useRef(screen);
+  useEffect(() => { screenRef.current = screen; }, [screen]);
+
+  // Botão voltar: nunca sai do CRM — precisa estar no chatlist e pressionar 2x
   useEffect(() => {
-    function handlePopState(e) {
-      if (screen === "patient") {
-        e.preventDefault();
+    // Empurra 3 estados extras no histórico ao montar (uma para cada sub-tela possível)
+    // Assim o browser tem 3 "voltas" antes de sair
+    window.history.pushState({ crm: "list" },   "", window.location.href);
+    window.history.pushState({ crm: "chat" },   "", window.location.href);
+    window.history.pushState({ crm: "patient" }, "", window.location.href);
+
+    function handlePopState() {
+      const cur = screenRef.current;
+      if (cur === "patient") {
         setScreen("chat");
-        window.history.pushState(null, "", window.location.href);
-      } else if (screen === "chat") {
-        e.preventDefault();
+        // Repõe um estado para a próxima vez
+        window.history.pushState({ crm: "patient" }, "", window.location.href);
+      } else if (cur === "chat") {
         setScreen("list");
-        window.history.pushState(null, "", window.location.href);
+        window.history.pushState({ crm: "chat" }, "", window.location.href);
+      } else {
+        // Está na list — repõe o estado para não sair do app
+        window.history.pushState({ crm: "list" }, "", window.location.href);
       }
     }
-    // Empurra estado extra ao entrar em sub-telas
-    if (screen !== "list") {
-      window.history.pushState(null, "", window.location.href);
-    }
+
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
-  }, [screen]);
+  }, []); // só monta uma vez — usa screenRef para ler o estado atual
 
   function canSeeChat(chat) {
     if (perms.verTodos) return true;
@@ -224,7 +233,7 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
             onForward={toRole => forwardChat(activeChat.id, toRole)}
             onResolve={() => resolveChat(activeChat.id)}
             canForwardToAdmin={perms.verAdmin}
-            onLoadMore={loadMoreMessages}
+            onLoadOlder={loadOlderMessages}
           />
         )}
 

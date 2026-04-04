@@ -36,8 +36,8 @@ export default function CRMLayout({ operator, onLogout }) {
   const { displayName, loading: contactsLoading } = useContactsCtx();
 
   const {
-    chats, messages, loadMessages, loadMoreMessages, send,
-    forwardChat, resolveChat,
+    chats, messages, loadMessages, loadOlderMessages, send,
+    forwardChat, resolveChat, markRead, markUnread,
     loading, error, wsStatus,
   } = useWAHA(operator);
 
@@ -209,6 +209,9 @@ export default function CRMLayout({ operator, onLogout }) {
             search={search}
             onSearch={setSearch}
             onSelect={c => handleSelectChat(chats.find(x => x.id === c.id) || c)}
+            onForward={(chatId, toRole) => forwardChat(chatId, toRole)}
+            onMarkRead={markRead}
+            onMarkUnread={markUnread}
             loading={loading}
             operator={operator}
           />
@@ -228,7 +231,7 @@ export default function CRMLayout({ operator, onLogout }) {
               onForward={toRole => forwardChat(activeChat.id, toRole)}
               onResolve={() => resolveChat(activeChat.id)}
               canForwardToAdmin={perms.verAdmin}
-              onLoadMore={loadMoreMessages}
+              onLoadOlder={loadOlderMessages}
             />
           ) : (
             <div style={{

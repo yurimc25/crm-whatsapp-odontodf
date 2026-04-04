@@ -150,24 +150,39 @@ module.exports = async function handler(req, res) {
       const html = await r.text();
       const uploads = [];
 
-      // O Codental embute os uploads como JSON no HTML ou em cards
-      // Tenta extrair de data attributes ou JSON inline
-      const jsonMatch = html.match(/window\.uploads\s*=\s*(\[[\s\S]*?\]);/) ||
-                        html.match(/"uploads"\s*:\s*(\[[\s\S]*?\])/);
-      if (jsonMatch) {
-        try {
-          const list = JSON.parse(jsonMatch[1]);
-          return res.json({ uploads: list });
-        } catch {}
-      }
-
-      // Extrai cards de upload do HTML
-      const cardReg = /href="([^"]+(?:jpg|jpeg|png|gif|pdf|webp|bmp|doc|docx|mp4)[^"]*)"[^>]*>[\s\S]*?<[^>]*>([^<]+)</gi;
+      // Extrai cada <li data-id="XXXX"> com imagem e nome do arquivo
+      const liReg = /data-id="(\d+)"[\s\S]*?data-url="([^"]+)"[\s\S]*?(?:src="([^"]+?)")?[\s\S]*?<\/li>/g;
       let m;
-      while ((m = cardReg.exec(html)) !== null) {
-        const url  = m[1].startsWith("http") ? m[1] : `https://app.codental.com.br${m[1]}`;
-        const name = m[2].trim();
-        if (name) uploads.push({ url, name });
+      while ((m = liReg.exec(html)) !== null) {
+        try {
+          const uploadId = m[1];
+          const dataUrl  = m[2].replace(/&amp;/g, "&").replace(/&quot;/g, '"');
+          const thumbSrc = m[3] ? m[3].replace(/&amp;/g, "&") : null;
+
+          // data-url é JSON com filename e download URL
+          let parsed = {};
+          try { parsed = JSON.parse(dataUrl); } catch {}
+
+          const filename = parsed.filename || `arquivo_${uploadId}`;
+          const downloadUrl = parsed.download || null;
+
+          // Extrai URL real da miniatura (codental-static.com usa ?url=...)
+          let previewUrl = null;
+          if (thumbSrc && thumbSrc.includes("codental-static")) {
+            const urlMatch = thumbSrc.match(/url=([^&]+)/);
+            if (urlMatch) previewUrl = decodeURIComponent(urlMatch[1]);
+          } else if (thumbSrc && thumbSrc.startsWith("http")) {
+            previewUrl = thumbSrc;
+          }
+
+          uploads.push({
+            id:          uploadId,
+            name:        filename,
+            url:         downloadUrl || previewUrl,
+            preview_url: previewUrl,
+            download_url: downloadUrl,
+          });
+        } catch {}
       }
 
       console.log(`[uploads] id=${id} parsed ${uploads.length} from HTML`);

@@ -374,30 +374,31 @@ function UploadsGrid({ uploads, paciente, maxItems = 9 }) {
   return (
     <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:6 }}>
       {uploads.slice(0, maxItems).map((u, i) => {
-        const url   = u.url || u.service_url || u.file_url || u.attachment_url;
+        const downloadUrl = u.url || u.download_url || u.service_url || u.file_url;
+        const previewUrl  = u.preview_url || u.url || u.service_url;
         const name  = u.name || u.filename || u.title || `Arquivo ${i+1}`;
         const ct    = u.content_type || u.mime_type || "";
         const isImg = /\.(jpg|jpeg|png|gif|webp|bmp)/i.test(name) || ct.startsWith("image/");
         const isPdf = /\.pdf/i.test(name) || ct === "application/pdf";
 
         return (
-          <a key={u.id || i} href={url || "#"} target="_blank" rel="noreferrer"
+          <a key={u.id || i} href={downloadUrl || "#"} target="_blank" rel="noreferrer"
             title={name}
             style={{ display:"block", borderRadius:8, overflow:"hidden",
               background:T.inputBg, border:`1px solid ${T.border}`,
               textDecoration:"none", aspectRatio:"1",
-              cursor: url ? "pointer" : "default",
+              cursor: downloadUrl ? "pointer" : "default",
               transition:"border-color .15s" }}
             onMouseEnter={e => e.currentTarget.style.borderColor = T.accent}
             onMouseLeave={e => e.currentTarget.style.borderColor = T.border}>
 
-            {isImg && url && (
-              <img src={url} alt={name}
+            {isImg && previewUrl && (
+              <img src={previewUrl} alt={name}
                 style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }}
                 onError={e => { e.target.style.display="none"; }} />
             )}
 
-            {(!isImg || !url) && (
+            {(!isImg || !previewUrl) && (
               <div style={{ width:"100%", height:"100%", display:"flex",
                 flexDirection:"column", alignItems:"center",
                 justifyContent:"center", gap:4, padding:6 }}>

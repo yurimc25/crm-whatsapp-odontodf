@@ -1,6 +1,11 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import PatientCardDetected from "./modules/PatientCardDetected";
 import { useContactsCtx } from "../App";
+import { normalizeMessage } from "../services/waha";
+import { cache } from "../utils/cache";
+
+const MSGS_PREFIX = "waha_msgs_";
+const MSGS_TTL    = 30 * 24 * 60 * 60 * 1000;
 
 const T = {
   bg:        "#1e1e1e",
@@ -46,7 +51,7 @@ function dayLabel(ts) {
 
 export default function ChatWindow({
   chat, messages, operator, onSend, onForward, onResolve,
-  canForwardToAdmin, onLoadMore
+  canForwardToAdmin, onLoadOlder
 }) {
   const [text, setText]               = useState("");
   const [sending, setSending]         = useState(false);
@@ -87,19 +92,18 @@ export default function ChatWindow({
 
   const handleScroll = useCallback(async () => {
     const el = scrollRef.current;
-    if (!el || loadingMore || !hasMore || !onLoadMore) return;
+    if (!el || loadingMore || !hasMore || !onLoadOlder) return;
     if (el.scrollTop > 80) return;
     setLoadingMore(true);
     prevScrollH.current = el.scrollHeight;
-    const result = await onLoadMore(chat.id, oldestDate);
-    setHasMore(result?.hasMore ?? false);
-    setOldestDate(result?.oldest ?? null);
+    const result = await onLoadOlder(chat.id, messages);
+    if (result?.hasMore === false) setHasMore(false);
     requestAnimationFrame(() => {
       if (scrollRef.current)
         scrollRef.current.scrollTop += scrollRef.current.scrollHeight - prevScrollH.current;
       setLoadingMore(false);
     });
-  }, [loadingMore, hasMore, onLoadMore, chat.id, oldestDate]);
+  }, [loadingMore, hasMore, onLoadOlder, chat.id, messages]);
 
   useEffect(() => {
     const el = scrollRef.current;
