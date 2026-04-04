@@ -122,30 +122,26 @@ module.exports = async function handler(req, res) {
     if (action === "evolutions") {
       if (!id) return res.status(400).json({ error: "id obrigatório" });
 
-      // Tenta JSON primeiro
-      const r = await codentalFetch(`/patients/${id}/evolutions.json`, session);
+      // Tenta HTML direto (o .json retorna 422 no Codental atual)
+      const r = await codentalFetch(`/patients/${id}/evolutions`, session);
       const ct = r.headers.get("content-type") || "";
       const status = r.status;
 
-      console.log(`[evolutions] id=${id} status=${status} content-type=${ct}`);
+      console.log(`[evolutions] id=${id} status=${status} ct=${ct.slice(0,40)}`);
 
       // Se retornou JSON real
       if (r.ok && ct.includes("json")) {
         const data = await r.json();
         const list = Array.isArray(data) ? data : (data.evolutions || data.data || []);
-        console.log(`[evolutions] JSON ok, ${list.length} evoluções`);
         return res.json({ evolutions: list });
       }
 
-      // Se retornou HTML (comportamento normal do Codental)
+      // HTML normal do Codental
       if (r.ok) {
         const html = await r.text();
-        console.log(`[evolutions] HTML recebido, tamanho=${html.length}`);
 
-        // Verifica se foi redirecionado para login
-        if (html.includes("sign_in") || html.includes("login") || html.length < 500) {
-          console.error("[evolutions] Possível redirect de sessão expirada");
-          return res.status(401).json({ error: "Sessão Codental expirada — aguarde o GitHub Actions renovar" });
+        if (html.includes("sign_in") || html.length < 500) {
+          return res.status(401).json({ error: "Sessão Codental expirada" });
         }
 
         const evolutions = [];
@@ -155,11 +151,9 @@ module.exports = async function handler(req, res) {
           const eid   = match[1];
           const block = match[2];
 
-          // Descrição: div com tw-text-ugray-900
           const descM = block.match(/<div[^>]*tw-text-ugray-900[^>]*>([\s\S]*?)<\/div>/);
           const desc  = descM ? descM[1].replace(/<[^>]+>/g, "").trim() : "";
 
-          // Data, hora e dentista: div evolution-dentist
           const dentM = block.match(/<div[^>]*evolution-dentist[^>]*>([\s\S]*?)<\/div>/);
           let date = "", dentist = "", signed = false;
           if (dentM) {
@@ -174,12 +168,11 @@ module.exports = async function handler(req, res) {
           evolutions.push({ id: eid, description: desc, date, dentist, signed });
         }
 
-        console.log(`[evolutions] parse concluído: ${evolutions.length} evoluções`);
+        console.log(`[evolutions] parse: ${evolutions.length} itens`);
         return res.json({ evolutions });
       }
 
-      console.error(`[evolutions] erro HTTP ${status}`);
-      return res.status(status).json({ error: `Codental retornou ${status}` });
+      return res.status(status).json({ error: `Codental: ${status}` });
     }
 
     return res.status(400).json({ error: `Ação desconhecida: ${action}` });

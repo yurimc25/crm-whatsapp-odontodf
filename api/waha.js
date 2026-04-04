@@ -4,7 +4,6 @@
 
 const WAHA_URL = process.env.VITE_WAHA_URL || "";
 const WAHA_KEY = process.env.VITE_WAHA_API_KEY || "";
-const SESSION  = process.env.VITE_WAHA_SESSION || "default";
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -17,32 +16,39 @@ export default async function handler(req, res) {
     return res.status(401).json({ error: "Unauthorized" });
   }
 
-  const { path } = req.query;
+  const { path, ...rest } = req.query;
   if (!path) return res.status(400).json({ error: "path obrigatório" });
 
-  // Monta a query string repassando todos os params exceto "path"
-  const params = new URLSearchParams(req.query);
-  params.delete("path");
+  const params = new URLSearchParams(rest);
   const qs = params.toString() ? `?${params.toString()}` : "";
-
   const url = `${WAHA_URL}${path}${qs}`;
 
   try {
     const wahaRes = await fetch(url, {
-      method: req.method === "GET" ? "GET" : req.method,
+      method: req.method,
       headers: {
         "Content-Type": "application/json",
         "X-Api-Key": WAHA_KEY,
+        // Nunca repassa If-None-Match/If-Modified-Since — queremos dados frescos sempre
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
       },
       ...(req.method !== "GET" && req.body
-        ? { body: JSON.stringify(req.body) }
-        : {}),
+        ? { body: JSON.stringify(req.body) } : {}),
     });
+
+    // Nunca repassa 304 para o browser — converte em 200 com array vazio
+    // O browser vai ignorar se não tiver dados novos
+    if (wahaRes.status === 304) {
+      return res.status(200).json([]);
+    }
 
     const ct = wahaRes.headers.get("content-type") || "";
     if (ct.includes("application/json")) {
       const data = await wahaRes.json();
-      return res.status(wahaRes.status).json(data);
+      // Garante que o browser nunca cacheia — sempre dados frescos
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+      return res.status(200).json(data);
     }
     const text = await wahaRes.text();
     return res.status(wahaRes.status).send(text);
