@@ -148,17 +148,17 @@ export function useWAHA(operator) {
   }, [sessionOk]);
 
   // ── Timer 1: ChatList — top 10 chats a cada 5s ─────────────────
+  // Rota pelo proxy /api/waha para evitar bloqueio de CORS
   useEffect(() => {
     if (!sessionOk || USE_MOCK) return;
-    const WAHA_URL = import.meta.env.VITE_WAHA_URL || "";
-    const WAHA_KEY = import.meta.env.VITE_WAHA_API_KEY || "";
-    const SESSION  = import.meta.env.VITE_WAHA_SESSION || "default";
+    const iKey = import.meta.env.VITE_INTERNAL_API_KEY || "";
+    const SESSION = import.meta.env.VITE_WAHA_SESSION || "default";
 
     const iv = setInterval(async () => {
       try {
         const r = await fetch(
-          `${WAHA_URL}/api/${SESSION}/chats?limit=10&offset=0`,
-          { headers: { "Content-Type":"application/json", "X-Api-Key": WAHA_KEY } }
+          `/api/waha?path=/api/${SESSION}/chats&limit=10&offset=0`,
+          { headers: { "X-Internal-Key": iKey } }
         );
         if (!r.ok) return;
         const raw = await r.json();
@@ -244,13 +244,24 @@ export function useWAHA(operator) {
   }, [sessionOk]);
 
   // ── Timer 2: ChatWindow — chat ativo a cada 3s ──────────────────
+  // Usa proxy /api/waha para evitar CORS
   useEffect(() => {
     if (!sessionOk || USE_MOCK) return;
+    const iKey    = import.meta.env.VITE_INTERNAL_API_KEY || "";
+    const SESSION = import.meta.env.VITE_WAHA_SESSION || "default";
+
     const iv = setInterval(async () => {
       const chatId = activeChatRef.current;
       if (!chatId) return;
       try {
-        const raw = await getMessages(chatId, 20);
+        const id  = encodeURIComponent(chatId);
+        const r   = await fetch(
+          `/api/waha?path=/api/${SESSION}/chats/${id}/messages&limit=20&downloadMedia=false`,
+          { headers: { "X-Internal-Key": iKey } }
+        );
+        if (!r.ok) return;
+        const raw = await r.json();
+        if (!Array.isArray(raw)) return;
         const normalized = raw
           .map(normalizeMessage)
           .sort((a,b) => new Date(a.ts)-new Date(b.ts));
