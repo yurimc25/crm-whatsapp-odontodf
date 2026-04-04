@@ -196,8 +196,23 @@ export function normalizeMessage(wahaMsg) {
 }
 
 function detectPatientCard(text) {
-  const t = (text || "").toLowerCase();
-  return t.includes("nome completo") && t.includes("cpf");
+  if (!text) return false;
+  const t = text.toLowerCase();
+
+  // Formato estruturado: tem labels de formulário
+  const temLabels = (t.includes("nome") || t.includes("cpf")) &&
+    (t.includes("email") || t.includes("telefone") || t.includes("nascimento") || t.includes("convênio") || t.includes("convenio"));
+  if (temLabels) return true;
+
+  // Formato livre: detecta combinação de dados numa mesma mensagem
+  const temEmail   = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/.test(text);
+  const temCpf     = /\b\d{3}[\s.]?\d{3}[\s.]?\d{3}[-\s.]?\d{2}\b/.test(text);
+  const temData    = /\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b/.test(text);
+  const temTelefone = /(?:\(?\d{2}\)?\s?)(?:9\s?\d{4}|\d{4})[\s\-]?\d{4}/.test(text);
+
+  // Considera card se tiver 3+ campos identificáveis
+  const score = [temEmail, temCpf, temData, temTelefone].filter(Boolean).length;
+  return score >= 3;
 }
 
 function stringToColor(str) {

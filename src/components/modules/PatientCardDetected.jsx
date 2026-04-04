@@ -20,21 +20,93 @@ const T = {
 
 const CAMPOS = ["nome","cpf","convenio","nascimento","email","telefone"];
 
+// ── Regex helpers ────────────────────────────────────────────────
+const RE_CPF      = /\b\d{3}[\s.]?\d{3}[\s.]?\d{3}[-\s.]?\d{2}\b/;
+const RE_CNPJ     = /\b\d{2}[\s.]?\d{3}[\s.]?\d{3}[/\s]?\d{4}[-\s.]?\d{2}\b/;
+const RE_EMAIL    = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/;
+const RE_DATE     = /\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})\b/;
+const RE_PHONE    = /(?:\+?55\s?)?(?:\(?\d{2}\)?\s?)(?:9\s?\d{4}|\d{4})[\s\-]?\d{4}/g;
+const RE_CONVENIO = /bradesco|amil|unimed|sulam[eé]rica|metlife|porto\s?seguro|itaú\s?seguro|hapvida|notredame|gndi|particular|particular|sami|prevent\s?senior|alian[çc]a/i;
+
 function parsePatientData(text) {
   const fields = {};
-  for (const line of text.split("\n")) {
-    const [key, ...rest] = line.split(":");
-    const val = rest.join(":").trim();
-    const k = key?.toLowerCase().trim() || "";
-    if (k.includes("nome"))                                     fields.nome = val;
-    if (k.includes("cpf"))                                      fields.cpf = val.replace(/\D/g,"");
-    if (k.includes("e-mail") || k.includes("email"))           fields.email = val;
-    if (k.includes("convênio") || k.includes("convenio") ||
-        k.includes("particular") || k.includes("plano"))        fields.convenio = val;
-    if (k.includes("telefone") || k.includes("celular") ||
-        k.includes("carteirinha") || k.includes("número do"))   fields.telefone = val;
-    if (k.includes("nascimento") || k.includes("data de"))      fields.nascimento = val;
+  const lines  = text.split("\n").map(l => l.trim()).filter(Boolean);
+
+  // ── Modo estruturado: tem labels com ":" ─────────────────────────
+  const temLabels = lines.some(l => /:/.test(l) && l.split(":")[0].length < 30);
+  if (temLabels) {
+    for (const line of lines) {
+      const idx = line.indexOf(":");
+      if (idx === -1) continue;
+      const k   = line.slice(0, idx).toLowerCase().trim();
+      const val = line.slice(idx + 1).trim();
+      if (!val) continue;
+      if (k.includes("nome"))                                          fields.nome      = val;
+      if (k.includes("cpf"))                                           fields.cpf       = val.replace(/\D/g,"");
+      if (k.includes("e-mail") || k.includes("email"))                fields.email     = val;
+      if (k.includes("convênio") || k.includes("convenio") ||
+          k.includes("particular") || k.includes("plano"))            fields.convenio  = val;
+      if (k.includes("telefone") || k.includes("celular") ||
+          k.includes("número do") || k.includes("carteirinha"))       fields.telefone  = val;
+      if (k.includes("nascimento") || k.includes("data de") ||
+          k.includes("nasc"))                                          fields.nascimento = val;
+    }
+    return fields;
   }
+
+  // ── Modo livre: extrai por padrão do texto puro ──────────────────
+  // Email
+  const emailM = text.match(RE_EMAIL);
+  if (emailM) fields.email = emailM[0];
+
+  // CPF (11 dígitos) — extrai e formata
+  const cpfM = text.replace(RE_EMAIL, "").match(RE_CPF);
+  if (cpfM) fields.cpf = cpfM[0].replace(/\D/g, "");
+
+  // Data de nascimento
+  const dateMatches = [...text.matchAll(new RegExp(RE_DATE.source, "g"))];
+  if (dateMatches.length > 0) {
+    // Pega a última data (geralmente nascimento vem no final)
+    const dm = dateMatches[dateMatches.length - 1];
+    fields.nascimento = dm[0];
+  }
+
+  // Telefones — pega todos, remove o que pode ser CPF
+  const textSemCpf = fields.cpf ? text.replace(fields.cpf, "") : text;
+  const phones     = [...textSemCpf.matchAll(RE_PHONE)].map(m => m[0].replace(/\D/g, ""));
+  // Filtra por tamanho de telefone BR (10-13 dígitos)
+  const validPhones = phones.filter(p => p.length >= 10 && p.length <= 13);
+  if (validPhones.length > 0) fields.telefone = validPhones[0];
+
+  // Convênio — detecta por palavra-chave
+  const convenioM = text.match(RE_CONVENIO);
+  if (convenioM) {
+    // Pega a palavra e seus vizinhos na linha
+    const linha = lines.find(l => RE_CONVENIO.test(l));
+    if (linha) fields.convenio = linha.trim();
+  }
+
+  // Nome — o que sobra depois de remover dados extraídos
+  // Heurística: primeira linha que parece um nome (só letras, 2+ palavras, <50 chars)
+  const RE_NAME = /^[A-ZÀ-Ú][a-zà-ú]+(\s[A-ZÀ-Úa-zà-ú]+){1,5}$/;
+  for (const line of lines) {
+    const clean = line.trim();
+    if (clean.length > 5 && clean.length < 60 && RE_NAME.test(clean)) {
+      fields.nome = clean;
+      break;
+    }
+  }
+  // Se não achou com regex, tenta a primeira linha que não é dado
+  if (!fields.nome) {
+    for (const line of lines) {
+      const digits = line.replace(/\D/g, "");
+      if (digits.length < 5 && line.length > 5 && line.length < 60) {
+        fields.nome = line.trim();
+        break;
+      }
+    }
+  }
+
   return fields;
 }
 

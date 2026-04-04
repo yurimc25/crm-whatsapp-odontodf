@@ -143,132 +143,93 @@ export function useWAHA(operator) {
       finally { setLoading(false); }
     }
     load();
-    const iv = setInterval(load, 5 * 60 * 1000);
+    const iv = setInterval(load, 5 * 60 * 1000); // recarga completa a cada 5min
     return () => clearInterval(iv);
   }, [sessionOk]);
 
-  // ── Auto-refresh de 5s — ChatWindow + ChatList ─────────────────
-  // 1. Sempre busca mensagens do chat ATIVO (atualiza ChatWindow)
-  // 2. A cada 15s, varre os 20 chats mais recentes (atualiza ChatList)
+  // ── Timer 1: ChatList — top 10 chats a cada 5s ─────────────────
   useEffect(() => {
     if (!sessionOk || USE_MOCK) return;
-
-    let scanCycle = 0; // conta ciclos para varredura da lista
+    const WAHA_URL = import.meta.env.VITE_WAHA_URL || "";
+    const WAHA_KEY = import.meta.env.VITE_WAHA_API_KEY || "";
+    const SESSION  = import.meta.env.VITE_WAHA_SESSION || "default";
 
     const iv = setInterval(async () => {
-      scanCycle++;
+      try {
+        const r = await fetch(
+          `${WAHA_URL}/api/${SESSION}/chats?limit=10&offset=0`,
+          { headers: { "Content-Type":"application/json", "X-Api-Key": WAHA_KEY } }
+        );
+        if (!r.ok) return;
+        const raw = await r.json();
 
-      // ── Chat ativo: sempre (5s) ──────────────────────────────────
-      const chatId = activeChatRef.current;
-      if (chatId) {
-        try {
-          const raw = await getMessages(chatId, 20);
-          const normalized = raw.map(normalizeMessage)
-            .sort((a,b) => new Date(a.ts)-new Date(b.ts));
+        const freshChats = (Array.isArray(raw) ? raw : [])
+          .filter(c => !c.id.endsWith("@g.us"))
+          .filter(c => {
+            const d = c.id.replace(/@.*$/, "").replace(/\D/g, "");
+            return d.length >= 7 && d.length <= 15;
+          })
+          .map(normalizeChat);
 
-          setMessages(prev => {
-            const current = prev[chatId] || [];
-            const ids = new Set(current.map(m => m.id));
-            const novos = normalized.filter(m => !ids.has(m.id));
-            if (novos.length === 0) return prev;
-            const updated = [...current, ...novos]
-              .sort((a,b) => new Date(a.ts)-new Date(b.ts));
-            cache.set(MSGS_PREFIX + chatId, updated, MSGS_TTL);
-            return { ...prev, [chatId]: updated };
+        if (!freshChats.length) return;
+
+        setChats(prev => {
+          let changed = false;
+          const updated = prev.map(c => {
+            const fresh = freshChats.find(f => f.id === c.id);
+            if (!fresh) return c;
+            const msgNova = fresh.lastMsg && fresh.lastMsg !== c.lastMsg;
+            const unreadNovo = (fresh.unread ?? 0) > (c.unread || 0);
+            if (!msgNova && !unreadNovo) return c;
+            changed = true;
+            const jaRespondido = "lastPatientTs" in c && c.lastPatientTs === null && c.unread === 0;
+            const wahaUnread   = fresh.unread ?? 0;
+            const isPatient    = wahaUnread > (c.unread || 0) || wahaUnread > 0;
+            const autoRes      = isFarewell(fresh.lastMsg);
+            return {
+              ...c,
+              lastMsg:       fresh.lastMsg  || c.lastMsg,
+              lastTime:      fresh.lastTime || c.lastTime,
+              lastPatientTs: jaRespondido ? null
+                : isPatient && !autoRes ? (fresh.lastTs || c.lastPatientTs)
+                : c.lastPatientTs,
+              unread: c.id === activeChatRef.current ? 0
+                : jaRespondido ? 0
+                : Math.max(c.unread || 0, wahaUnread),
+            };
           });
-
-          // Atualiza lastMsg do chat ativo no ChatList
-          const lastAny     = normalized[normalized.length - 1];
-          const lastPatient = [...normalized].reverse().find(m => m.from === "patient");
-          const autoRes     = detectAutoResolve(normalized);
-          if (lastAny) {
-            setChats(prev => {
-              const updated = prev.map(c => {
-                if (c.id !== chatId) return c;
-                const jaRespondido = "lastPatientTs" in c && c.lastPatientTs === null && c.unread === 0;
-                return {
-                  ...c,
-                  lastMsg:  lastAny.text || c.lastMsg,
-                  lastTime: lastAny.time || c.lastTime,
-                  lastPatientTs: jaRespondido ? null
-                    : (autoRes || lastAny.from !== "patient") ? null
-                    : (lastPatient?.ts || c.lastPatientTs),
-                };
-              });
-              cache.set(CHATS_KEY, updated, CHATS_TTL);
-              return updated;
-            });
-          }
-        } catch {}
-      }
-
-      // ── Varredura da lista: a cada 3 ciclos (15s) ────────────────
-      // Busca a última mensagem dos chats não ativos com unread>0
-      // ou com lastPatientTs recente (atividade nos últimos 30 min)
-      if (scanCycle % 3 === 0) {
-        try {
-          const currentChats = cache.get(CHATS_KEY) || [];
-          const agora = Date.now();
-          const recentes = currentChats
-            .filter(c => c.id !== chatId) // não o chat ativo (já foi acima)
-            .filter(c => {
-              const temUnread = (c.unread || 0) > 0;
-              const recente   = c.lastPatientTs &&
-                (agora - new Date(c.lastPatientTs).getTime()) < 30 * 60 * 1000;
-              return temUnread || recente;
-            })
-            .slice(0, 15); // máx 15 para não sobrecarregar
-
-          for (const c of recentes) {
-            try {
-              const raw = await getMessages(c.id, 5);
-              if (!raw?.length) continue;
-              const msgs = raw.map(normalizeMessage)
-                .sort((a,b) => new Date(a.ts)-new Date(b.ts));
-              const lastAny     = msgs[msgs.length - 1];
-              const lastPatient = [...msgs].reverse().find(m => m.from === "patient");
-              const lastOpIdx   = msgs.map(m => m.from).lastIndexOf("operator");
-              const unreadCount = lastOpIdx === -1
-                ? msgs.filter(m => m.from === "patient").length
-                : msgs.slice(lastOpIdx + 1).filter(m => m.from === "patient").length;
-              const autoRes     = detectAutoResolve(msgs);
-
-              setChats(prev => {
-                const updated = prev.map(x => {
-                  if (x.id !== c.id) return x;
-                  const jaRespondido = "lastPatientTs" in x && x.lastPatientTs === null && x.unread === 0;
-                  if (jaRespondido) return { ...x, lastMsg: lastAny?.text || x.lastMsg, lastTime: lastAny?.time || x.lastTime };
-                  return {
-                    ...x,
-                    lastMsg:       lastAny?.text || x.lastMsg,
-                    lastTime:      lastAny?.time || x.lastTime,
-                    lastPatientTs: (autoRes || lastAny?.from !== "patient") ? null : (lastPatient?.ts || x.lastPatientTs),
-                    unread: x.id === activeChatRef.current ? 0
-                      : (autoRes ? 0 : Math.max(x.unread || 0, unreadCount)),
-                  };
-                });
-                cache.set(CHATS_KEY, updated, CHATS_TTL);
-                return updated;
-              });
-
-              // Atualiza cache de mensagens
-              setMessages(prev => {
-                const current = prev[c.id] || [];
-                const ids = new Set(current.map(m => m.id));
-                const novos = msgs.filter(m => !ids.has(m.id));
-                if (novos.length === 0) return prev;
-                const updated = [...current, ...novos].sort((a,b) => new Date(a.ts)-new Date(b.ts));
-                cache.set(MSGS_PREFIX + c.id, updated, MSGS_TTL);
-                return { ...prev, [c.id]: updated };
-              });
-
-              await new Promise(r => setTimeout(r, 100)); // throttle
-            } catch {}
-          }
-        } catch {}
-      }
+          if (!changed) return prev;
+          cache.set(CHATS_KEY, updated, CHATS_TTL);
+          return updated;
+        });
+      } catch {}
     }, 5000);
+    return () => clearInterval(iv);
+  }, [sessionOk]);
 
+  // ── Timer 2: ChatWindow — chat ativo a cada 3s ──────────────────
+  useEffect(() => {
+    if (!sessionOk || USE_MOCK) return;
+    const iv = setInterval(async () => {
+      const chatId = activeChatRef.current;
+      if (!chatId) return;
+      try {
+        const raw = await getMessages(chatId, 20);
+        const normalized = raw
+          .map(normalizeMessage)
+          .sort((a,b) => new Date(a.ts)-new Date(b.ts));
+
+        setMessages(prev => {
+          const current = prev[chatId] || [];
+          const ids = new Set(current.map(m => m.id));
+          const novos = normalized.filter(m => !ids.has(m.id));
+          if (novos.length === 0) return prev;
+          const updated = [...current, ...novos].sort((a,b) => new Date(a.ts)-new Date(b.ts));
+          cache.set(MSGS_PREFIX + chatId, updated, MSGS_TTL);
+          return { ...prev, [chatId]: updated };
+        });
+      } catch {}
+    }, 3000);
     return () => clearInterval(iv);
   }, [sessionOk]);
 
