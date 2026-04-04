@@ -317,10 +317,17 @@ export function useWAHA(operator) {
 
         setMessages(prev => {
           const current = prev[chatId] || [];
-          const ids = new Set(current.map(m => m.id));
-          const novos = normalized.filter(m => !ids.has(m.id));
+          const ids     = new Set(current.filter(m => !m.id.startsWith("tmp-")).map(m => m.id));
+          const novos   = normalized.filter(m => !ids.has(m.id));
           if (novos.length === 0) return prev;
-          const updated = [...current, ...novos].sort((a,b) => new Date(a.ts)-new Date(b.ts));
+
+          // Remove mensagens tmp que têm o mesmo texto que uma mensagem real que chegou
+          const textosDasNovas = new Set(novos.map(m => m.text));
+          const semDuplicados  = current.filter(m =>
+            !m.id.startsWith("tmp-") || !textosDasNovas.has(m.text)
+          );
+
+          const updated = [...semDuplicados, ...novos].sort((a,b) => new Date(a.ts)-new Date(b.ts));
           cache.set(MSGS_PREFIX + chatId, updated, MSGS_TTL);
           return { ...prev, [chatId]: updated };
         });
@@ -356,30 +363,31 @@ export function useWAHA(operator) {
           // Auto-resolve por despedida
           const autoResolve = detectAutoResolve(msgs);
 
+          // Mesma lógica do Timer 1:
+          // lastMsg = última mensagem (qualquer remetente)
+          // lastPatientTs = primeira msg sem resposta (ou null se operador respondeu)
+          const lastOpIdx2      = msgs.map(m => m.from).lastIndexOf("operator");
+          const lastPatientIdx2 = msgs.map(m => m.from).lastIndexOf("patient");
+          const semResposta2    = lastOpIdx2 === -1
+            ? msgs.filter(m => m.from === "patient")
+            : msgs.slice(lastOpIdx2 + 1).filter(m => m.from === "patient");
+          const ultimoFoiOp2    = lastOpIdx2 > lastPatientIdx2 || lastPatientIdx2 === -1;
+          const novoLPTs2       = (ultimoFoiOp2 || autoResolve) ? null : (semResposta2[0]?.ts || null);
+          const novoUnread2     = semResposta2.length;
+
           setChats(prev => {
             const updated = prev.map(x => {
               if (x.id !== c.id) return x;
-
-              // Se já foi marcado como lido/respondido (lastPatientTs===null ou unread===0),
-              // NÃO sobrescreve — respeita a ação do usuário
-              const jaRespondido = "lastPatientTs" in x && x.lastPatientTs === null
-                && x.unread === 0;
+              const jaRespondido = "lastPatientTs" in x && x.lastPatientTs === null && x.unread === 0;
               if (jaRespondido) return { ...x, lastMsg: lastAny?.text || x.lastMsg, lastTime: lastAny?.time || x.lastTime };
-
-              const novoLastPatientTs = (autoResolve || lastAny?.from !== "patient")
-                ? null
-                : (lastPatient?.ts || null);
-
-              const novoUnread = x.id === activeChatRef.current
-                ? 0
-                : (autoResolve ? 0 : Math.max(x.unread || 0, unreadCount));
-
               return {
                 ...x,
                 lastMsg:       lastAny?.text || x.lastMsg,
                 lastTime:      lastAny?.time || x.lastTime,
-                lastPatientTs: novoLastPatientTs,
-                unread:        novoUnread,
+                lastPatientTs: novoLPTs2,
+                unread: x.id === activeChatRef.current ? 0
+                  : (ultimoFoiOp2 || autoResolve) ? 0
+                  : Math.max(x.unread || 0, novoUnread2),
               };
             });
             cache.set(CHATS_KEY, updated, CHATS_TTL);
@@ -459,16 +467,22 @@ export function useWAHA(operator) {
       setMessages(prev => ({ ...prev, [chatId]: normalized }));
       cache.set(MSGS_PREFIX + chatId, normalized, MSGS_TTL);
 
-      const lastAny     = normalized[normalized.length - 1];
-      const lastPatient = [...normalized].reverse().find(m => m.from === "patient");
-      const autoResolve = detectAutoResolve(normalized);
+      const lastAny      = normalized[normalized.length - 1];
+      const lastOpIdx    = normalized.map(m => m.from).lastIndexOf("operator");
+      const lastPIdx     = normalized.map(m => m.from).lastIndexOf("patient");
+      const semResp      = lastOpIdx === -1
+        ? normalized.filter(m => m.from === "patient")
+        : normalized.slice(lastOpIdx + 1).filter(m => m.from === "patient");
+      const ultimoFoiOp  = lastOpIdx > lastPIdx || lastPIdx === -1;
+      const autoResolve  = detectAutoResolve(normalized);
+      const novoLPTs     = (ultimoFoiOp || autoResolve) ? null : (semResp[0]?.ts || null);
 
       setChats(prev => {
         const updated = prev.map(c => c.id !== chatId ? c : {
           ...c,
           lastMsg:       lastAny?.text || c.lastMsg,
           lastTime:      lastAny?.time || c.lastTime,
-          lastPatientTs: (autoResolve || lastAny?.from !== "patient") ? null : (lastPatient?.ts || null),
+          lastPatientTs: novoLPTs,
           unread:        0,
         });
         cache.set(CHATS_KEY, updated, CHATS_TTL);
