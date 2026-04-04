@@ -16,8 +16,12 @@ export function useCodental() {
       const r = await fetch(`/api/codental?${qs}`, {
         headers: { "X-Internal-Key": ikey() },
       });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      return await r.json();
+      const data = await r.json();
+      if (!r.ok) {
+        setError(data?.error || `HTTP ${r.status}`);
+        return data; // retorna o objeto de erro para quem chamou tratar
+      }
+      return data;
     } catch (e) {
       setError(e.message);
       return null;

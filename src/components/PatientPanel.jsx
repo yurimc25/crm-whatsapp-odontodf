@@ -83,7 +83,12 @@ export default function PatientPanel({ chat, operator }) {
           if (p.id) {
             const [u, e] = await Promise.all([getUploads(p.id), getEvolutions(p.id)]);
             setUploads(u?.uploads || []);
-            setEvols(e?.evolutions || []);
+            if (e?.error) {
+              console.warn("[evoluções]", e.error);
+              setEvols([]); // mostra vazio com mensagem
+            } else {
+              setEvols(e?.evolutions || []);
+            }
           }
         } else {
           setEvols([]);
