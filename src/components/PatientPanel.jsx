@@ -17,19 +17,6 @@ const T = {
   stub:     "#1e1e1e",
 };
 
-function ModuleStub({ name, icon }) {
-  return (
-    <div style={{ background:T.stub, border:`1px dashed ${T.border}`,
-      borderRadius:8, padding:14, textAlign:"center" }}>
-      <div style={{ fontSize:20, marginBottom:6 }}>{icon}</div>
-      <div style={{ color:"#444", fontSize:11, fontWeight:600,
-        textTransform:"uppercase", letterSpacing:.5 }}>
-        {name}
-      </div>
-    </div>
-  );
-}
-
 function Section({ label, children }) {
   return (
     <div style={{ background:T.section, border:`1px solid ${T.border}`,
@@ -61,11 +48,10 @@ export default function PatientPanel({ chat, operator }) {
   const { displayInfo, addLocalContact } = useContactsCtx();
   const info = displayInfo(chat.id, chat.name);
 
-  // Estado compartilhado entre Perfil e Evoluções
   const { searchByPhone, searchByName, getUploads, getEvolutions } = useCodental();
   const [paciente, setPaciente] = useState(null);
   const [uploads, setUploads]   = useState([]);
-  const [evols, setEvols]       = useState(null); // null = carregando
+  const [evols, setEvols]       = useState(null);
   const [buscando, setBuscando] = useState(false);
 
   useEffect(() => {
@@ -81,21 +67,16 @@ export default function PatientPanel({ chat, operator }) {
           const p = result.patients[0];
           setPaciente(p);
 
-          // Registra o nome no mapa de contatos para exibir no ChatList
+          // Registra no mapa de contatos para exibir no ChatList
           const patientName = p.name || p.fullName;
           const chatPhone   = info.phone.replace(/\D/g, "");
-          if (patientName && chatPhone) {
-            addLocalContact({ phone: chatPhone, name: patientName });
-          }
+          if (patientName && chatPhone) addLocalContact({ phone: chatPhone, name: patientName });
+
           if (p.id) {
             const [u, e] = await Promise.all([getUploads(p.id), getEvolutions(p.id)]);
             setUploads(u?.uploads || []);
-            if (e?.error) {
-              console.warn("[evoluções]", e.error);
-              setEvols([]); // mostra vazio com mensagem
-            } else {
-              setEvols(e?.evolutions || []);
-            }
+            if (e?.error) { console.warn("[evoluções]", e.error); setEvols([]); }
+            else setEvols(e?.evolutions || []);
           }
         } else {
           setEvols([]);
@@ -117,12 +98,10 @@ export default function PatientPanel({ chat, operator }) {
     <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden",
       fontFamily:"'DM Sans', sans-serif", background:T.bg }}>
 
-      {/* Cabeçalho do paciente */}
+      {/* Cabeçalho */}
       <div style={{ padding:"12px 14px 0", background:T.header,
         borderBottom:`1px solid ${T.border}` }}>
         <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12 }}>
-
-          {/* Avatar */}
           {(info.photoUrl || chat.photoUrl) ? (
             <img src={info.photoUrl || chat.photoUrl} alt=""
               style={{ width:40, height:40, borderRadius:"50%", objectFit:"cover",
@@ -137,23 +116,16 @@ export default function PatientPanel({ chat, operator }) {
                 : chat.avatar}
             </div>
           )}
-
           <div style={{ minWidth:0, flex:1 }}>
             <div style={{ color:T.text, fontSize:14, fontWeight:600,
               overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
               {info.hasContact ? info.name : info.phone}
             </div>
-            {info.hasContact ? (
-              <div style={{ color:T.sub, fontSize:11, fontFamily:"'DM Mono', monospace" }}>
-                {info.phone}
-              </div>
-            ) : (
-              <div style={{ color:"#444", fontSize:10 }}>Sem contato cadastrado</div>
-            )}
+            {info.hasContact
+              ? <div style={{ color:T.sub, fontSize:11, fontFamily:"'DM Mono', monospace" }}>{info.phone}</div>
+              : <div style={{ color:"#444", fontSize:10 }}>Sem contato cadastrado</div>}
           </div>
         </div>
-
-        {/* Tabs */}
         <div style={{ display:"flex" }}>
           {TABS.map(t => (
             <button key={t.id} onClick={() => setTab(t.id)} style={{
@@ -170,21 +142,22 @@ export default function PatientPanel({ chat, operator }) {
       {/* Conteúdo */}
       <div style={{ flex:1, overflowY:"auto", padding:"12px 14px",
         display:"flex", flexDirection:"column", gap:10 }}>
-        {tab === "perfil"       && <PerfilTab chat={chat} paciente={paciente} uploads={uploads} evols={evols} buscando={buscando} />}
+        {tab === "perfil"       && <PerfilTab paciente={paciente} uploads={uploads} evols={evols} buscando={buscando} />}
         {tab === "agendamentos" && <AgendamentosTab />}
-        {tab === "evolucoes"    && <EvolucoeTab chat={chat} paciente={paciente} evols={evols} buscando={buscando} />}
+        {tab === "evolucoes"    && <EvolucoeTab paciente={paciente} evols={evols} uploads={uploads} buscando={buscando} />}
         {tab === "notas"        && <NotasTab chat={chat} operator={operator} />}
       </div>
     </div>
   );
 }
 
-function PerfilTab({ chat, paciente, uploads, evols, buscando }) {
+// ── Aba Perfil ────────────────────────────────────────────────────
+function PerfilTab({ paciente, uploads, evols, buscando }) {
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
       <Section label="Codental">
         {buscando && <div style={{ color:T.sub, fontSize:12 }}>Buscando...</div>}
-        {!buscando && !paciente && <ModuleStub name="Paciente não encontrado no Codental" icon="📋" />}
+        {!buscando && !paciente && <div style={{ color:T.sub, fontSize:12 }}>Paciente não encontrado no Codental.</div>}
         {paciente && (
           <>
             <Field label="Nome"       value={paciente.name || paciente.fullName} />
@@ -197,9 +170,8 @@ function PerfilTab({ chat, paciente, uploads, evols, buscando }) {
               <a href={`https://app.codental.com.br/patients/${paciente.id}`}
                 target="_blank" rel="noreferrer"
                 style={{ display:"block", marginTop:8, textAlign:"center",
-                  background:T.accentBg, color:T.accent,
-                  border:`1px solid ${T.accent}44`, borderRadius:6,
-                  padding:"6px 0", fontSize:11, fontWeight:600,
+                  background:T.accentBg, color:T.accent, border:`1px solid ${T.accent}44`,
+                  borderRadius:6, padding:"6px 0", fontSize:11, fontWeight:600,
                   textDecoration:"none" }}>
                 Abrir prontuário no Codental →
               </a>
@@ -208,6 +180,7 @@ function PerfilTab({ chat, paciente, uploads, evols, buscando }) {
         )}
       </Section>
 
+      {/* Últimas 3 evoluções */}
       {evols !== null && evols.length > 0 && (
         <Section label={`Evoluções (${evols.length})`}>
           {evols.slice(0,3).map((e,i) => (
@@ -215,20 +188,16 @@ function PerfilTab({ chat, paciente, uploads, evols, buscando }) {
               borderBottom: i < Math.min(evols.length,3)-1 ? `1px solid ${T.border}` : "none" }}>
               <div style={{ display:"flex", justifyContent:"space-between", marginBottom:2 }}>
                 <span style={{ color:T.accent, fontSize:10, fontWeight:700 }}>
-                  {e.dentista || e.dentist || e.professional?.name || ""}
+                  {e.dentista || e.dentist || ""}
                 </span>
                 <span style={{ color:T.sub, fontSize:10 }}>
                   {e.data || (e.date ? e.date.split(" ")[0] : "")}
                 </span>
               </div>
               <div style={{ color:T.text, fontSize:11, lineHeight:1.5 }}>
-                {(e.texto || e.description || e.notes || "").slice(0,100)}
-                {(e.texto || e.description || e.notes || "").length > 100 ? "..." : ""}
+                {(e.texto || e.description || "").slice(0,100)}
+                {(e.texto || e.description || "").length > 100 ? "..." : ""}
               </div>
-              {(e.assinado || e.signed) && (
-                <span style={{ fontSize:9, color:T.green, fontWeight:700,
-                  marginTop:2, display:"inline-block" }}>✓ Assinado</span>
-              )}
             </div>
           ))}
           {evols.length > 3 && (
@@ -239,73 +208,41 @@ function PerfilTab({ chat, paciente, uploads, evols, buscando }) {
         </Section>
       )}
 
+      {/* Miniaturas de arquivos */}
       {uploads.length > 0 && (
-        <Section label={`Exames (${uploads.length})`}>
-          <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:6 }}>
-            {uploads.slice(0,9).map((u,i) => {
-              const url  = u.url || u.service_url || u.file_url;
-              const name = u.name || u.filename || `Arquivo ${i+1}`;
-              const isImg = /\.(jpg|jpeg|png|gif|webp)/i.test(name);
-              const isPdf = /\.pdf/i.test(name);
-              return (
-                <a key={i} href={url} target="_blank" rel="noreferrer" title={name}
-                  style={{ display:"block", borderRadius:6, overflow:"hidden",
-                    background:T.inputBg, border:`1px solid ${T.border}`,
-                    textDecoration:"none", aspectRatio:"1" }}>
-                  {isImg
-                    ? <img src={url} alt={name} style={{ width:"100%", height:"100%", objectFit:"cover" }} />
-                    : <div style={{ width:"100%", height:"100%", display:"flex",
-                        flexDirection:"column", alignItems:"center", justifyContent:"center",
-                        gap:4, padding:4 }}>
-                        <span style={{ fontSize:20 }}>{isPdf ? "📄" : "📎"}</span>
-                        <span style={{ color:T.sub, fontSize:8, textAlign:"center",
-                          overflow:"hidden", textOverflow:"ellipsis", width:"100%" }}>
-                          {name.slice(0,20)}
-                        </span>
-                      </div>
-                  }
-                </a>
-              );
-            })}
-          </div>
+        <Section label={`Arquivos (${uploads.length})`}>
+          <UploadsGrid uploads={uploads} paciente={paciente} maxItems={6} />
         </Section>
       )}
     </div>
   );
 }
 
+// ── Aba Agenda ────────────────────────────────────────────────────
 function AgendamentosTab() {
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
       <Section label="Próximas consultas">
-        <ModuleStub name="Doctoralia Agendamentos" icon="📅" />
-      </Section>
-      <Section label="Histórico">
-        <ModuleStub name="Doctoralia Histórico" icon="🗂️" />
+        <div style={{ color:T.sub, fontSize:12, textAlign:"center", padding:8 }}>
+          Em breve — integração Doctoralia
+        </div>
       </Section>
     </div>
   );
 }
 
-function EvolucoeTab({ chat, paciente, evols, buscando }) {
+// ── Aba Evoluções ─────────────────────────────────────────────────
+function EvolucoeTab({ paciente, evols, uploads, buscando }) {
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+
+      {/* Evoluções */}
       <Section label={evols !== null ? `Evoluções (${evols?.length ?? 0})` : "Evoluções"}>
-
-        {buscando && (
-          <div style={{ color:T.sub, fontSize:12, textAlign:"center", padding:"16px 0" }}>
-            Buscando evoluções...
-          </div>
-        )}
-
-        {!buscando && !paciente && (
-          <div style={{ color:T.sub, fontSize:12 }}>Paciente não encontrado no Codental.</div>
-        )}
-
+        {buscando && <div style={{ color:T.sub, fontSize:12, textAlign:"center", padding:"16px 0" }}>Buscando...</div>}
+        {!buscando && !paciente && <div style={{ color:T.sub, fontSize:12 }}>Paciente não encontrado no Codental.</div>}
         {!buscando && paciente && evols !== null && evols.length === 0 && (
           <div style={{ color:T.sub, fontSize:12 }}>Nenhuma evolução registrada.</div>
         )}
-
         {!buscando && paciente && evols !== null && evols.length > 0 && (
           <>
             {paciente?.id && (
@@ -324,24 +261,21 @@ function EvolucoeTab({ chat, paciente, evols, buscando }) {
                 paddingBottom: i < evols.length-1 ? 10 : 0,
                 borderBottom: i < evols.length-1 ? `1px solid ${T.border}` : "none",
               }}>
-                <div style={{ color:T.text, fontSize:13, fontWeight:500,
-                  lineHeight:1.5, marginBottom:4 }}>
-                  {e.texto || e.description || e.notes || "—"}
+                <div style={{ color:T.text, fontSize:13, fontWeight:500, lineHeight:1.5, marginBottom:4 }}>
+                  {e.texto || e.description || "—"}
                 </div>
-                <div style={{ display:"flex", justifyContent:"space-between",
-                  alignItems:"center", flexWrap:"wrap", gap:4 }}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:4 }}>
                   <span style={{ color:T.sub, fontSize:10 }}>
                     {[e.data, e.hora].filter(Boolean).join(" ")}
                   </span>
                   <span style={{ color:T.accent, fontSize:10, fontWeight:600,
                     overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:160 }}>
-                    {e.dentista || e.dentist || e.professional?.name || ""}
+                    {e.dentista || e.dentist || ""}
                   </span>
                 </div>
                 {(e.assinado || e.signed) && (
-                  <span style={{ fontSize:9, color:T.green, fontWeight:700,
-                    marginTop:4, display:"inline-block",
-                    background:T.greenBg, padding:"1px 6px", borderRadius:4 }}>
+                  <span style={{ fontSize:9, color:T.green, fontWeight:700, marginTop:4,
+                    display:"inline-block", background:T.greenBg, padding:"1px 6px", borderRadius:4 }}>
                     ✓ Assinado
                   </span>
                 )}
@@ -351,19 +285,91 @@ function EvolucoeTab({ chat, paciente, evols, buscando }) {
         )}
       </Section>
 
-      <Section label="Gmail — exames por email">
-        <ModuleStub name="Gmail Exames" icon="📧" />
+      {/* Arquivos do Paciente */}
+      <Section label={uploads?.length ? `Arquivos do Paciente (${uploads.length})` : "Arquivos do Paciente"}>
+        {buscando && <div style={{ color:T.sub, fontSize:12, textAlign:"center", padding:"8px 0" }}>Buscando arquivos...</div>}
+        {!buscando && !paciente && <div style={{ color:T.sub, fontSize:12 }}>Paciente não encontrado.</div>}
+        {!buscando && paciente && (!uploads || uploads.length === 0) && (
+          <div style={{ color:T.sub, fontSize:12 }}>Nenhum arquivo enviado.</div>
+        )}
+        {!buscando && uploads?.length > 0 && (
+          <>
+            {paciente?.id && (
+              <a href={`https://app.codental.com.br/patients/${paciente.id}/uploads`}
+                target="_blank" rel="noreferrer"
+                style={{ display:"block", marginBottom:10, textAlign:"center",
+                  background:T.accentBg, color:T.accent, border:`1px solid ${T.accent}44`,
+                  borderRadius:6, padding:"5px 0", fontSize:11, fontWeight:600,
+                  textDecoration:"none" }}>
+                Ver todos no Codental →
+              </a>
+            )}
+            <UploadsGrid uploads={uploads} paciente={paciente} maxItems={12} />
+            {uploads.length > 12 && (
+              <div style={{ color:T.sub, fontSize:10, textAlign:"center", marginTop:4 }}>
+                +{uploads.length - 12} arquivos no Codental
+              </div>
+            )}
+          </>
+        )}
       </Section>
     </div>
   );
 }
 
+// ── Grid de uploads reutilizável ──────────────────────────────────
+function UploadsGrid({ uploads, paciente, maxItems = 9 }) {
+  return (
+    <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:6 }}>
+      {uploads.slice(0, maxItems).map((u, i) => {
+        const url   = u.url || u.service_url || u.file_url || u.attachment_url;
+        const name  = u.name || u.filename || u.title || `Arquivo ${i+1}`;
+        const ct    = u.content_type || u.mime_type || "";
+        const isImg = /\.(jpg|jpeg|png|gif|webp|bmp)/i.test(name) || ct.startsWith("image/");
+        const isPdf = /\.pdf/i.test(name) || ct === "application/pdf";
+
+        return (
+          <a key={u.id || i} href={url || "#"} target="_blank" rel="noreferrer"
+            title={name}
+            style={{ display:"block", borderRadius:8, overflow:"hidden",
+              background:T.inputBg, border:`1px solid ${T.border}`,
+              textDecoration:"none", aspectRatio:"1",
+              cursor: url ? "pointer" : "default",
+              transition:"border-color .15s" }}
+            onMouseEnter={e => e.currentTarget.style.borderColor = T.accent}
+            onMouseLeave={e => e.currentTarget.style.borderColor = T.border}>
+
+            {isImg && url && (
+              <img src={url} alt={name}
+                style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }}
+                onError={e => { e.target.style.display="none"; }} />
+            )}
+
+            {(!isImg || !url) && (
+              <div style={{ width:"100%", height:"100%", display:"flex",
+                flexDirection:"column", alignItems:"center",
+                justifyContent:"center", gap:4, padding:6 }}>
+                <span style={{ fontSize:22 }}>
+                  {isPdf ? "📄" : isImg ? "🖼️" : "📎"}
+                </span>
+                <span style={{ color:T.sub, fontSize:8, textAlign:"center",
+                  overflow:"hidden", textOverflow:"ellipsis",
+                  width:"100%", whiteSpace:"nowrap", padding:"0 2px" }}>
+                  {name.length > 18 ? name.slice(0,15)+"..." : name}
+                </span>
+              </div>
+            )}
+          </a>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Aba Notas ─────────────────────────────────────────────────────
 function NotasTab({ chat, operator }) {
   const [nota, setNota]   = useState("");
-  const [notas, setNotas] = useState([
-    { id:1, text:"Paciente prefere horários matutinos às terças.",
-      author:"Patrícia", time:"Ontem 14:32" },
-  ]);
+  const [notas, setNotas] = useState([]);
 
   function addNota() {
     if (!nota.trim()) return;
@@ -375,6 +381,11 @@ function NotasTab({ chat, operator }) {
 
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+      {notas.length === 0 && (
+        <div style={{ color:T.sub, fontSize:12, textAlign:"center", padding:8 }}>
+          Nenhuma nota ainda. Adicione observações internas sobre este paciente.
+        </div>
+      )}
       {notas.map(n => (
         <div key={n.id} style={{ background:T.section, border:`1px solid ${T.border}`,
           borderRadius:8, padding:"10px 12px" }}>
