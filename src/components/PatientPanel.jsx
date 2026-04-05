@@ -252,6 +252,30 @@ export default function PatientPanel({ chat, operator }) {
   );
 }
 
+// ── EditField: fora do PerfilTab para não perder foco a cada render ──
+function EditField({ label, field, placeholder, form, setForm }) {
+  return (
+    <div style={{ marginBottom:7 }}>
+      <div style={{ color:T.sub, fontSize:9, fontWeight:700,
+        textTransform:"uppercase", letterSpacing:.5, marginBottom:3 }}>
+        {label}
+      </div>
+      <input
+        value={form[field] || ""}
+        onChange={e => setForm(prev => ({ ...prev, [field]: e.target.value }))}
+        placeholder={placeholder || label}
+        style={{
+          width:"100%", background:"#1a1a1a", border:`1px solid ${T.border}`,
+          borderRadius:5, padding:"4px 8px", color:T.text, fontSize:12,
+          outline:"none", boxSizing:"border-box",
+        }}
+        onFocus={e => e.target.style.borderColor = T.accent}
+        onBlur={e => e.target.style.borderColor = T.border}
+      />
+    </div>
+  );
+}
+
 // ── Aba Perfil ────────────────────────────────────────────────────
 function PerfilTab({ paciente, uploads, evols, buscando, onReload, onPacienteUpdate }) {
   const [editing, setEditing] = useState(false);
@@ -297,29 +321,6 @@ function PerfilTab({ paciente, uploads, evols, buscando, onReload, onPacienteUpd
       }
     } catch(e) { alert(e.message); }
     setSaving(false);
-  }
-
-  function EditField({ label, field, placeholder }) {
-    return (
-      <div style={{ marginBottom:7 }}>
-        <div style={{ color:T.sub, fontSize:9, fontWeight:700,
-          textTransform:"uppercase", letterSpacing:.5, marginBottom:3 }}>
-          {label}
-        </div>
-        <input
-          value={form[field] || ""}
-          onChange={e => setForm(prev => ({ ...prev, [field]: e.target.value }))}
-          placeholder={placeholder || label}
-          style={{
-            width:"100%", background:"#1a1a1a", border:`1px solid ${T.border}`,
-            borderRadius:5, padding:"4px 8px", color:T.text, fontSize:12,
-            outline:"none", boxSizing:"border-box",
-          }}
-          onFocus={e => e.target.style.borderColor = T.accent}
-          onBlur={e => e.target.style.borderColor = T.border}
-        />
-      </div>
-    );
   }
 
   return (
@@ -391,13 +392,13 @@ function PerfilTab({ paciente, uploads, evols, buscando, onReload, onPacienteUpd
         )}
         {paciente && editing && (
           <div>
-            <EditField label="Nome"        field="nome"       />
-            <EditField label="CPF"         field="cpf"        placeholder="000.000.000-00" />
-            <EditField label="Email"       field="email"      placeholder="email@exemplo.com" />
-            <EditField label="Telefone"    field="telefone"   placeholder="(61) 99999-9999" />
-            <EditField label="Nascimento"  field="nascimento" placeholder="DD/MM/AAAA" />
-            <EditField label="Convênio"    field="convenio"   placeholder="Particular" />
-            <EditField label="Carteirinha" field="carteirinha"/>
+            <EditField label="Nome"        field="nome"       form={form} setForm={setForm} />
+            <EditField label="CPF"         field="cpf"        placeholder="000.000.000-00" form={form} setForm={setForm} />
+            <EditField label="Email"       field="email"      placeholder="email@exemplo.com" form={form} setForm={setForm} />
+            <EditField label="Telefone"    field="telefone"   placeholder="(61) 99999-9999" form={form} setForm={setForm} />
+            <EditField label="Nascimento"  field="nascimento" placeholder="DD/MM/AAAA" form={form} setForm={setForm} />
+            <EditField label="Convênio"    field="convenio"   placeholder="Particular" form={form} setForm={setForm} />
+            <EditField label="Carteirinha" field="carteirinha" form={form} setForm={setForm} />
           </div>
         )}
       </Section>
