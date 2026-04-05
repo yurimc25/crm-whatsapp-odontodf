@@ -146,45 +146,15 @@ export function useContacts() {
     });
   }, []);
 
-  // 4. Lookup individual — tenta Codental, depois Google
+  // 4. Lookup individual — só Google (Codental alimenta o mapa via addLocalContact no PatientPanel)
   const lookupPhone = useCallback(async (wahaId) => {
     const phone = wahaIdToPhone(wahaId);
     if (!phone || phone.length < 7) return;
     if (lookedUp.current.has(phone)) return;
-    // Verifica se já está no mapa atual
     if (findInMap(phone, contactMap)) return;
     lookedUp.current.add(phone);
 
-    // 3a. Tenta Codental searchByPhone
-    try {
-      const r = await fetch(
-        `/api/codental?action=search&phone=${phone}&_t=${Date.now()}`,
-        { headers: { "X-Internal-Key": internalKey, "Cache-Control": "no-cache" }, cache: "no-store" }
-      );
-      if (r.ok) {
-        const data = await r.json();
-        const patient = data?.patients?.[0];
-        if (patient) {
-          const name = patient.name || patient.full_name || patient.fullName;
-          if (name) {
-            console.log(`[contacts] Codental ${phone} → ${name}`);
-            setContactMap(prev => {
-              const updated = { ...prev };
-              let changed = false;
-              for (const v of phoneVariants(phone)) {
-                if (!prev[v]) { updated[v] = name; changed = true; }
-              }
-              if (!changed) return prev;
-              persistMap(updated);
-              return updated;
-            });
-            return; // achou no Codental, para aqui
-          }
-        }
-      }
-    } catch {}
-
-    // 3b. Tenta Google individual lookup
+    // Google Contacts individual lookup
     try {
       const r = await fetch(
         `/api/contacts?action=search&phone=${phone}`,
@@ -201,7 +171,7 @@ export function useContacts() {
         }
         if (!changed) return prev;
         persistMap(updated);
-        console.log(`[contacts] Google ${phone} → ${name}`);
+        console.log(`[contacts] Google individual ${phone} → ${name}`);
         return updated;
       });
     } catch {}

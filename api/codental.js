@@ -2,8 +2,12 @@ const { MongoClient } = require("mongodb");
 
 let _client;
 async function getDb() {
-  if (!_client) {
-    _client = new MongoClient(process.env.MONGODB_URI);
+  if (!_client || !_client.topology?.isConnected?.()) {
+    _client = new MongoClient(process.env.MONGODB_URI, {
+      maxPoolSize: 5,
+      serverSelectionTimeoutMS: 5000,
+      connectTimeoutMS: 5000,
+    });
     await _client.connect();
   }
   return _client.db(process.env.MONGODB_DB || "codental_monitor");
@@ -12,13 +16,24 @@ async function getDb() {
 const APP_BASE = process.env.CODENTAL_BASE_URL || "https://app.codental.com.br";
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
+// Cache de sessão em memória — evita hit no MongoDB a cada request
+let _sessionCache = null;
+let _sessionCacheTs = 0;
+const SESSION_CACHE_TTL = 5 * 60 * 1000; // 5 minutos
+
 async function getSession() {
+  const now = Date.now();
+  if (_sessionCache && (now - _sessionCacheTs) < SESSION_CACHE_TTL) {
+    return _sessionCache;
+  }
   const db = await getDb();
   const doc = await db.collection("settings").findOne({ _id: "codental_session" });
   if (!doc?.cookie || !doc?.csrf) {
     throw new Error("Sem sessão Codental no MongoDB. GitHub Actions não rodou?");
   }
-  return { cookie: doc.cookie, csrf: doc.csrf };
+  _sessionCache = { cookie: doc.cookie, csrf: doc.csrf };
+  _sessionCacheTs = now;
+  return _sessionCache;
 }
 
 function authHeaders(session) {
