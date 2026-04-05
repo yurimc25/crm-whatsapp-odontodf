@@ -50,13 +50,25 @@ export default function PatientPanel({ chat, operator }) {
   const info = displayInfo(chat.id, chat.name, chat.pushname);
 
   const { searchByPhone, searchByName, getUploads, getEvolutions } = useCodental();
-  const [paciente, setPaciente] = useState(null);
-  const [uploads, setUploads]   = useState([]);
-  const [evols, setEvols]       = useState(null);
-  const [buscando, setBuscando] = useState(false);
+  const [pacientes, setPacientes] = useState([]);
+  const [paciente, setPaciente]   = useState(null);
+  const [uploads, setUploads]     = useState([]);
+  const [evols, setEvols]         = useState(null);
+  const [buscando, setBuscando]   = useState(false);
+
+  // Separada do useEffect para poder ser chamada também pelo seletor de múltiplos pacientes
+  const carregarDados = async (p) => {
+    setPaciente(p);
+    setUploads([]); setEvols(null);
+    if (!p?.id) return;
+    const [u, e] = await Promise.all([getUploads(p.id), getEvolutions(p.id)]);
+    console.log("[carregarDados] id=", p.id, "uploads:", u, "evols:", e?.evolutions?.length);
+    setUploads(u?.uploads || []);
+    setEvols(e?.error ? [] : (e?.evolutions || []));
+  };
 
   useEffect(() => {
-    setPaciente(null); setUploads([]); setEvols(null); setBuscando(true);
+    setPacientes([]); setPaciente(null); setUploads([]); setEvols(null); setBuscando(true);
     async function buscar() {
       try {
         const phone = info.phone.replace(/\D/g, "");
@@ -65,20 +77,12 @@ export default function PatientPanel({ chat, operator }) {
           result = await searchByName(info.name.split(" ").slice(0,3).join(" "));
         }
         if (result?.patients?.length > 0) {
+          setPacientes(result.patients);
           const p = result.patients[0];
-          setPaciente(p);
-
           const patientName = p.name || p.fullName;
           const chatPhone   = info.phone.replace(/\D/g, "");
           if (patientName && chatPhone) addLocalContact({ phone: chatPhone, name: patientName });
-
-          if (p.id) {
-            const [u, e] = await Promise.all([getUploads(p.id), getEvolutions(p.id)]);
-            console.log("[buscar] uploads:", u, "evols:", e?.evolutions?.length);
-            setUploads(u?.uploads || []);
-            if (e?.error) { setEvols([]); }
-            else setEvols(e?.evolutions || []);
-          }
+          await carregarDados(p);
         } else {
           setEvols([]);
         }
@@ -142,6 +146,47 @@ export default function PatientPanel({ chat, operator }) {
           ))}
         </div>
       </div>
+
+      {/* Seletor de pacientes — aparece quando há mais de um no mesmo número */}
+      {pacientes.length > 1 && (
+        <div style={{ padding:"8px 14px", borderBottom:`1px solid ${T.border}`,
+          background:"#141414" }}>
+          <div style={{ color:T.sub, fontSize:10, fontWeight:700,
+            textTransform:"uppercase", letterSpacing:.5, marginBottom:6 }}>
+            {pacientes.length} pacientes neste número — selecione:
+          </div>
+          <div style={{ display:"flex", flexDirection:"column", gap:3 }}>
+            {pacientes.map(p => (
+              <button key={p.id} onClick={() => carregarDados(p)}
+                style={{
+                  display:"flex", alignItems:"center", gap:8,
+                  background: paciente?.id === p.id ? T.accentBg : "transparent",
+                  border: `1px solid ${paciente?.id === p.id ? T.accent+"66" : T.border}`,
+                  borderRadius:6, padding:"6px 10px", cursor:"pointer",
+                  textAlign:"left", transition:"all .15s",
+                }}>
+                <div style={{ width:6, height:6, borderRadius:"50%", flexShrink:0,
+                  background: paciente?.id === p.id ? T.accent : T.sub }} />
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ color: paciente?.id === p.id ? T.accent : T.text,
+                    fontSize:12, fontWeight:600,
+                    overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                    {p.name || p.fullName || "—"}
+                  </div>
+                  {(p.birthdate || p.birthday) && (
+                    <div style={{ color:T.sub, fontSize:10 }}>
+                      Nasc. {p.birthdate || p.birthday}
+                    </div>
+                  )}
+                </div>
+                {paciente?.id === p.id && (
+                  <span style={{ color:T.accent, fontSize:11 }}>✓</span>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Conteúdo */}
       <div style={{ flex:1, overflowY:"auto", padding:"12px 14px",
