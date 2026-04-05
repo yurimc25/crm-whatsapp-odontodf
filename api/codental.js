@@ -273,8 +273,12 @@ module.exports = async function handler(req, res) {
           const uploadId  = m[1];
           const liContent = m[2];
 
-          // data-url usa aspas simples: data-url='{"filename":"...","download":"..."}'
-          const dataUrlM = liContent.match(/data-url='([^']+)'/);
+          // O JSON fica no atributo value do <input>:
+          // value="{&quot;filename&quot;:&quot;254_...jpg&quot;,&quot;download&quot;:&quot;https://...&quot;}"
+          // Tenta data-url primeiro (fallback), depois value
+          const dataUrlM = liContent.match(/\bdata-url='([^']+)'/) ||
+                           liContent.match(/\bvalue="(\{[^"]+\})"/)  ||
+                           liContent.match(/\bvalue='(\{[^']+\})'/);
           if (!dataUrlM) continue;
 
           const dataUrlRaw = dataUrlM[1]
