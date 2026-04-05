@@ -259,71 +259,56 @@ module.exports = async function handler(req, res) {
       const html = await r.text();
       const uploads = [];
 
-      const uploadsSectionIdx = html.indexOf("uploads-list");
-      console.log(`[uploads] id=${id} HTML length=${html.length} uploads-list found=${uploadsSectionIdx > -1}`);
-      if (uploadsSectionIdx > -1) {
-        // Loga 600 chars após uploads-list para ver a estrutura real
-        console.log(`[uploads] HTML after uploads-list: ${html.slice(uploadsSectionIdx, uploadsSectionIdx + 600).replace(/\s+/g, " ")}`);
-      }
+      console.log(`[uploads] id=${id} HTML length=${html.length} uploads-list=${html.includes('uploads-list')}`);
 
-      // Passo 1: encontrar todas as ocorrências de data-upload-id
-      const uploadIdReg = /data-upload-id="(\d+)"/g;
-      const uploadIds = [];
-      let idMatch;
-      while ((idMatch = uploadIdReg.exec(html)) !== null) {
-        uploadIds.push({ id: idMatch[1], pos: idMatch.index });
-      }
-      console.log(`[uploads] found ${uploadIds.length} data-upload-id entries`);
+      // Estrutura CONFIRMADA pelo HAR:
+      // <li data-upload-id="4591194" ...>
+      //   <input value="4591194"
+      //          data-url="{&quot;filename&quot;:&quot;foto.jpg&quot;,&quot;download&quot;:&quot;https://app.codental.com.br/rails/...&quot;}">
+      //   <img src="https://codental-static.com/?fit=crop&amp;h=280&amp;url=...&amp;w=280">
+      // </li>
+      //
+      // CHAVE: data-url usa aspas DUPLAS e o JSON dentro está escapado com &quot;
 
-      // Passo 2: para cada upload-id, extrair o bloco de HTML até o próximo data-upload-id (ou fim)
-      for (let i = 0; i < uploadIds.length; i++) {
+      // Passo 1: mapeia upload-id → posição no HTML
+      const idMatches = [...html.matchAll(/data-upload-id="(\d+)"/g)];
+      console.log(`[uploads] found ${idMatches.length} upload IDs`);
+
+      // Passo 2: para cada ID, pega o bloco até o próximo ID e extrai filename, download, preview
+      for (let i = 0; i < idMatches.length; i++) {
         try {
-          const start = uploadIds[i].pos;
-          const end   = i + 1 < uploadIds.length ? uploadIds[i+1].pos : start + 3000;
-          const block = html.slice(start, end);
-          const uploadId = uploadIds[i].id;
+          const uploadId = idMatches[i][1];
+          const start    = idMatches[i].index;
+          const end      = i + 1 < idMatches.length ? idMatches[i+1].index : start + 4000;
+          const block    = html.slice(start, end);
 
-          // Extrai JSON do value do input — pode usar &quot; ou aspas normais
-          let filename = null, downloadUrl = null;
-
-          // Tenta: value="{&quot;filename&quot;:..."  (HTML escaped)
-          const valueEscM = block.match(/value="(\{&quot;[^"]*&quot;[^"]*)"/)
-                         || block.match(/value='(\{[^']+\})'/)
-                         || block.match(/value="(\{[^"]+\})"/);
-          if (valueEscM) {
-            const raw = valueEscM[1]
-              .replace(/&quot;/g, '"')
-              .replace(/&amp;/g, "&")
-              .replace(/&#39;/g, "'");
-            try {
-              const parsed = JSON.parse(raw);
-              filename    = parsed.filename || null;
-              downloadUrl = parsed.download || null;
-            } catch {}
+          // data-url="{&quot;filename&quot;:...&quot;}" — aspas duplas, JSON com &quot;
+          const dataUrlM = block.match(/data-url="(\{&quot;[^"]+\})"/);
+          if (!dataUrlM) {
+            console.log(`[uploads] id=${uploadId}: no data-url found`);
+            continue;
           }
 
-          // Fallback: data-url com aspas simples
-          if (!filename) {
-            const dataUrlM = block.match(/data-url='([^']+)'/);
-            if (dataUrlM) {
-              const raw = dataUrlM[1].replace(/&quot;/g, '"').replace(/&amp;/g, "&");
-              try {
-                const parsed = JSON.parse(raw);
-                filename    = parsed.filename || null;
-                downloadUrl = parsed.download || null;
-              } catch {}
-            }
+          const raw = dataUrlM[1]
+            .replace(/&quot;/g, '"')
+            .replace(/&amp;/g, '&')
+            .replace(/&#39;/g, "'");
+
+          let parsed = {};
+          try { parsed = JSON.parse(raw); } catch(e) {
+            console.log(`[uploads] id=${uploadId}: JSON parse failed: ${e.message}`);
+            continue;
           }
 
-          if (!filename) filename = `arquivo_${uploadId}`;
+          const filename    = parsed.filename || `arquivo_${uploadId}`;
+          const downloadUrl = parsed.download  || null;
 
-          // Extrai URL da miniatura do CDN codental-static.com
-          const imgM = block.match(/src="(https:\/\/codental-static\.com[^"]+)"/);
-          let previewUrl = null;
-          if (imgM) previewUrl = imgM[1].replace(/&amp;/g, "&");
+          // preview: src="https://codental-static.com/?..."
+          const imgM      = block.match(/src="(https:\/\/codental-static\.com[^"]+)"/);
+          const previewUrl = imgM ? imgM[1].replace(/&amp;/g, '&') : null;
 
-          const ext = (filename.split(".").pop() || "").toLowerCase();
-          const mimeMap = { jpg:"image/jpeg", jpeg:"image/jpeg", png:"image/png", gif:"image/gif", webp:"image/webp", pdf:"application/pdf", mp4:"video/mp4", mov:"video/quicktime" };
+          const ext = (filename.split('.').pop() || '').toLowerCase();
+          const mimeMap = { jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', gif:'image/gif', webp:'image/webp', pdf:'application/pdf', mp4:'video/mp4', mov:'video/quicktime' };
 
           uploads.push({
             id:           uploadId,
@@ -333,18 +318,13 @@ module.exports = async function handler(req, res) {
             download_url: downloadUrl,
             content_type: mimeMap[ext] || null,
           });
-          console.log(`[uploads] item ${i}: ${filename} preview=${!!previewUrl} download=${!!downloadUrl}`);
-        } catch (err) {
-          console.error(`[uploads] error at index ${i}:`, err.message);
+          console.log(`[uploads] OK: ${filename} preview=${!!previewUrl} dl=${!!downloadUrl}`);
+        } catch(err) {
+          console.error(`[uploads] error at ${i}:`, err.message);
         }
       }
 
-      console.log(`[uploads] id=${id} total=${uploads.length}`);
-      // Debug: se não encontrou nada, retorna snippet do HTML para diagnóstico
-      if (uploads.length === 0) {
-        const snippet = html.slice(uploadsSectionIdx > -1 ? uploadsSectionIdx : 0, (uploadsSectionIdx > -1 ? uploadsSectionIdx : 0) + 800).replace(/\s+/g, " ");
-        return res.json({ uploads, _debug_html: snippet, _debug_uploadIds: uploadIds.length });
-      }
+      console.log(`[uploads] id=${id} TOTAL=${uploads.length}`);
       return res.json({ uploads });
     }
 
