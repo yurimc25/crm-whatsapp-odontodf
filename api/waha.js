@@ -58,13 +58,18 @@ export default async function handler(req, res) {
       }
     }
 
-    // Mídia binária (imagens, áudios, vídeos, documentos)
-    if (ct.startsWith("image/") || ct.startsWith("video/") ||
+    // Mídia binária — aceita qualquer content-type não-JSON quando é download de mídia
+    const isMediaDownload = path.includes("download-media") || path.includes("/api/files/");
+    if (isMediaDownload ||
+        ct.startsWith("image/") || ct.startsWith("video/") ||
         ct.startsWith("audio/") || ct.includes("octet-stream") ||
         ct.includes("pdf")) {
       try {
         const buf = await wahaRes.arrayBuffer();
-        res.setHeader("Content-Type", ct);
+        if (buf.byteLength === 0) {
+          return res.status(404).json({ error: "Mídia vazia ou não encontrada" });
+        }
+        res.setHeader("Content-Type", ct || "application/octet-stream");
         return res.status(200).end(Buffer.from(buf));
       } catch (e) {
         console.error("[waha-proxy] binary error:", e.message);

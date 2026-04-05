@@ -400,9 +400,10 @@ function MediaContent({ media, msgId, chatSession }) {
   const iKey    = import.meta.env.VITE_INTERNAL_API_KEY || "";
   const SESSION = chatSession || import.meta.env.VITE_WAHA_SESSION || "default";
 
-  const downloadPath = msgId
-    ? `/api/waha?path=/api/${SESSION}/messages/${encodeURIComponent(msgId)}/download-media`
-    : null;
+  // URL direta via proxy (se WAHA já serviu o arquivo)
+  // Fallback: endpoint download-media pelo ID da mensagem
+  const downloadPath = media.url ||
+    (msgId ? `/api/waha?path=/api/${SESSION}/messages/${encodeURIComponent(msgId)}/download-media` : null);
 
   const isImage = media.type === "image" || media.type === "sticker" ||
                   (media.mimetype || "").startsWith("image/");

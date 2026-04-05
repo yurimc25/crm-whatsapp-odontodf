@@ -225,13 +225,20 @@ export function normalizeMessage(wahaMsg) {
                    : mimetype?.startsWith("audio/") ? "audio"
                    : type;
 
+    // URL direta (WAHA às vezes já serve /api/files/filename.jpg)
+    // Precisa passar pelo nosso proxy para adicionar X-Api-Key
+    const rawUrl = wahaMsg.media?.url || null;
+    const mediaUrl = rawUrl
+      ? `/api/waha?path=${encodeURIComponent(rawUrl)}`
+      : null;
+
     media = {
       type:      realType,
       mimetype:  mimetype,
       filename:  wahaMsg.media?.filename || mediaData.fileName || mediaData.title || null,
       thumbUrl,              // miniatura base64 para exibir antes do download
-      url:       wahaMsg.media?.url || null, // URL direta (raro no NOWEB)
-      msgId:     wahaMsg.id || null,         // ID para usar no endpoint de download
+      url:       mediaUrl,   // URL via proxy (com auth)
+      msgId:     wahaMsg.id || null,  // fallback: download pelo ID
       hasMedia:  true,
     };
   }

@@ -312,6 +312,7 @@ module.exports = async function handler(req, res) {
             download_url: downloadUrl,
             content_type: mimeMap[ext] || null,
           });
+          console.log(`[uploads] item: ${filename} download=${downloadUrl?.slice(0,60)} preview=${previewUrl?.slice(0,60)}`);
         } catch {}
       }
 
@@ -372,6 +373,29 @@ module.exports = async function handler(req, res) {
       }
 
       return res.status(status).json({ error: `Codental: ${status}` });
+    }
+
+    // ── Proxy para download de arquivo do Codental ───────────────────
+    if (action === "file") {
+      const fileUrl = req.query.url;
+      if (!fileUrl) return res.status(400).json({ error: "url obrigatório" });
+      try {
+        const r = await fetch(decodeURIComponent(fileUrl), {
+          headers: {
+            "Cookie": session.cookie,
+            "User-Agent": UA,
+            "Referer": `${APP_BASE}/patients`,
+          },
+        });
+        if (!r.ok) return res.status(r.status).json({ error: `Codental file: ${r.status}` });
+        const ct  = r.headers.get("content-type") || "application/octet-stream";
+        const buf = await r.arrayBuffer();
+        res.setHeader("Content-Type", ct);
+        res.setHeader("Cache-Control", "public, max-age=300"); // cache 5 min
+        return res.status(200).end(Buffer.from(buf));
+      } catch (e) {
+        return res.status(500).json({ error: e.message });
+      }
     }
 
     // ── Buscar planos do convênio ────────────────────────────────────
