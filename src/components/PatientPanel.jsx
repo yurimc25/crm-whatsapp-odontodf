@@ -50,7 +50,7 @@ export default function PatientPanel({ chat, operator }) {
   const { displayInfo, addLocalContact } = useContactsCtx();
   const info = displayInfo(chat.id, chat.name, chat.pushname);
 
-  const { searchByPhone, searchByName, getUploads, getEvolutions } = useCodental();
+  const { searchByPhone, searchByName, getUploads, getEvolutions, getPatient } = useCodental();
   const [pacientes, setPacientes] = useState([]);
   const [paciente, setPaciente]   = useState(null);
   const [uploads, setUploads]     = useState([]);
@@ -76,6 +76,12 @@ export default function PatientPanel({ chat, operator }) {
     console.log("[carregarDados] id=", p.id, "uploads retorno:", JSON.stringify(u)?.slice(0,200), "evols retorno:", JSON.stringify(e)?.slice(0,100));
     setUploads(u?.uploads || []);
     setEvols(!e || e.error ? [] : (e.evolutions || []));
+    // Perfil completo em background (email, nascimento, convênio) — não bloqueia os uploads
+    getPatient(p.id).then(full => {
+      if (full && !full.error) {
+        setPaciente(prev => prev?.id === p.id ? { ...prev, ...full, id: p.id } : prev);
+      }
+    }).catch(() => {});
   }
 
   useEffect(() => {
