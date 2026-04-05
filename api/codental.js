@@ -259,14 +259,21 @@ module.exports = async function handler(req, res) {
       const html = await r.text();
       const uploads = [];
 
+      // Log do trecho relevante do HTML para debug
+      const uploadsSectionIdx = html.indexOf("uploads-list");
+      if (uploadsSectionIdx > -1) {
+        console.log(`[uploads] HTML snippet: ${html.slice(uploadsSectionIdx, uploadsSectionIdx + 500).replace(/\n/g, " ")}`);
+      } else {
+        console.log(`[uploads] uploads-list NOT FOUND in HTML. HTML length: ${html.length}`);
+      }
+
       // Estrutura real do Codental:
       // <li ... data-upload-id="4591194" ...>
-      //   <input ... value="4591194" data-url='{"filename":"254_...jpg","download":"https://..."}'>
-      //   <img src="https://codental-static.com/?...&url=https%3A%2F%2F...s3...&...">
+      //   <input ... value="{&quot;filename&quot;:...}" data-url='{...}'>
+      //   <img src="https://codental-static.com/?...">
       // </li>
-      //
-      // Extrai cada <li> que tem data-upload-id (específico de uploads, não confunde com outros elements)
-      const liReg = /<li[^>]*\bdata-upload-id="(\d+)"[^>]*>([\s\S]*?)<\/li>/g;
+      // IMPORTANTE: atributos podem ter quebras de linha — usar [\s\S] nos atributos do <li>
+      const liReg = /<li[\s\S]*?\bdata-upload-id="(\d+)"[\s\S]*?>([\s\S]*?)<\/li>/g;
       let m;
       while ((m = liReg.exec(html)) !== null) {
         try {
