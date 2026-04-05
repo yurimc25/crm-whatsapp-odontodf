@@ -259,65 +259,71 @@ module.exports = async function handler(req, res) {
       const html = await r.text();
       const uploads = [];
 
-      // Log do trecho relevante do HTML para debug
       const uploadsSectionIdx = html.indexOf("uploads-list");
+      console.log(`[uploads] id=${id} HTML length=${html.length} uploads-list found=${uploadsSectionIdx > -1}`);
       if (uploadsSectionIdx > -1) {
-        console.log(`[uploads] HTML snippet: ${html.slice(uploadsSectionIdx, uploadsSectionIdx + 500).replace(/\n/g, " ")}`);
-      } else {
-        console.log(`[uploads] uploads-list NOT FOUND in HTML. HTML length: ${html.length}`);
+        // Loga 600 chars após uploads-list para ver a estrutura real
+        console.log(`[uploads] HTML after uploads-list: ${html.slice(uploadsSectionIdx, uploadsSectionIdx + 600).replace(/\s+/g, " ")}`);
       }
 
-      // Estrutura real do Codental:
-      // <li ... data-upload-id="4591194" ...>
-      //   <input ... value="{&quot;filename&quot;:...}" data-url='{...}'>
-      //   <img src="https://codental-static.com/?...">
-      // </li>
-      // IMPORTANTE: atributos podem ter quebras de linha — usar [\s\S] nos atributos do <li>
-      const liReg = /<li[\s\S]*?\bdata-upload-id="(\d+)"[\s\S]*?>([\s\S]*?)<\/li>/g;
-      let m;
-      while ((m = liReg.exec(html)) !== null) {
+      // Passo 1: encontrar todas as ocorrências de data-upload-id
+      const uploadIdReg = /data-upload-id="(\d+)"/g;
+      const uploadIds = [];
+      let idMatch;
+      while ((idMatch = uploadIdReg.exec(html)) !== null) {
+        uploadIds.push({ id: idMatch[1], pos: idMatch.index });
+      }
+      console.log(`[uploads] found ${uploadIds.length} data-upload-id entries`);
+
+      // Passo 2: para cada upload-id, extrair o bloco de HTML até o próximo data-upload-id (ou fim)
+      for (let i = 0; i < uploadIds.length; i++) {
         try {
-          const uploadId  = m[1];
-          const liContent = m[2];
+          const start = uploadIds[i].pos;
+          const end   = i + 1 < uploadIds.length ? uploadIds[i+1].pos : start + 3000;
+          const block = html.slice(start, end);
+          const uploadId = uploadIds[i].id;
 
-          // O JSON fica no atributo value do <input>:
-          // value="{&quot;filename&quot;:&quot;254_...jpg&quot;,&quot;download&quot;:&quot;https://...&quot;}"
-          // Tenta data-url primeiro (fallback), depois value
-          const dataUrlM = liContent.match(/\bdata-url='([^']+)'/) ||
-                           liContent.match(/\bvalue="(\{[^"]+\})"/)  ||
-                           liContent.match(/\bvalue='(\{[^']+\})'/);
-          if (!dataUrlM) continue;
+          // Extrai JSON do value do input — pode usar &quot; ou aspas normais
+          let filename = null, downloadUrl = null;
 
-          const dataUrlRaw = dataUrlM[1]
-            .replace(/&quot;/g, '"')
-            .replace(/&amp;/g, "&")
-            .replace(/&#39;/g, "'");
-
-          let parsed = {};
-          try { parsed = JSON.parse(dataUrlRaw); } catch { continue; }
-
-          const filename    = parsed.filename || `arquivo_${uploadId}`;
-          const downloadUrl = parsed.download || null;
-
-          // Miniatura: <img src="https://codental-static.com/?fit=crop&h=280&url=ENCODED_S3_URL&w=280">
-          // Esta URL é PÚBLICA — codental-static.com é CDN público, não precisa de auth
-          const imgM = liContent.match(/\bsrc="(https:\/\/codental-static\.com[^"]+)"/);
-          let previewUrl = null;
-          if (imgM) {
-            // Usa a URL do CDN diretamente (pública, sem cookie)
-            previewUrl = imgM[1].replace(/&amp;/g, "&");
+          // Tenta: value="{&quot;filename&quot;:..."  (HTML escaped)
+          const valueEscM = block.match(/value="(\{&quot;[^"]*&quot;[^"]*)"/)
+                         || block.match(/value='(\{[^']+\})'/)
+                         || block.match(/value="(\{[^"]+\})"/);
+          if (valueEscM) {
+            const raw = valueEscM[1]
+              .replace(/&quot;/g, '"')
+              .replace(/&amp;/g, "&")
+              .replace(/&#39;/g, "'");
+            try {
+              const parsed = JSON.parse(raw);
+              filename    = parsed.filename || null;
+              downloadUrl = parsed.download || null;
+            } catch {}
           }
 
-          // download_url: Active Storage redirect URL (também pública — redireciona para S3 com token assinado)
-          // Token S3 válido por 7 dias (X-Amz-Expires=604800)
+          // Fallback: data-url com aspas simples
+          if (!filename) {
+            const dataUrlM = block.match(/data-url='([^']+)'/);
+            if (dataUrlM) {
+              const raw = dataUrlM[1].replace(/&quot;/g, '"').replace(/&amp;/g, "&");
+              try {
+                const parsed = JSON.parse(raw);
+                filename    = parsed.filename || null;
+                downloadUrl = parsed.download || null;
+              } catch {}
+            }
+          }
 
-          // Determina content_type pelo nome do arquivo
-          const ext = filename.split(".").pop().toLowerCase();
-          const mimeMap = {
-            jpg:"image/jpeg", jpeg:"image/jpeg", png:"image/png",
-            gif:"image/gif", webp:"image/webp", pdf:"application/pdf",
-            mp4:"video/mp4", mov:"video/quicktime",
-          };
+          if (!filename) filename = `arquivo_${uploadId}`;
+
+          // Extrai URL da miniatura do CDN codental-static.com
+          const imgM = block.match(/src="(https:\/\/codental-static\.com[^"]+)"/);
+          let previewUrl = null;
+          if (imgM) previewUrl = imgM[1].replace(/&amp;/g, "&");
+
+          const ext = (filename.split(".").pop() || "").toLowerCase();
+          const mimeMap = { jpg:"image/jpeg", jpeg:"image/jpeg", png:"image/png", gif:"image/gif", webp:"image/webp", pdf:"application/pdf", mp4:"video/mp4", mov:"video/quicktime" };
 
           uploads.push({
             id:           uploadId,
@@ -327,11 +333,13 @@ module.exports = async function handler(req, res) {
             download_url: downloadUrl,
             content_type: mimeMap[ext] || null,
           });
-          console.log(`[uploads] item: ${filename} download=${downloadUrl?.slice(0,60)} preview=${previewUrl?.slice(0,60)}`);
-        } catch {}
+          console.log(`[uploads] item ${i}: ${filename} preview=${!!previewUrl} download=${!!downloadUrl}`);
+        } catch (err) {
+          console.error(`[uploads] error at index ${i}:`, err.message);
+        }
       }
 
-      console.log(`[uploads] id=${id} parsed ${uploads.length} items`);
+      console.log(`[uploads] id=${id} total=${uploads.length}`);
       return res.json({ uploads });
     }
 
@@ -411,6 +419,44 @@ module.exports = async function handler(req, res) {
       } catch (e) {
         return res.status(500).json({ error: e.message });
       }
+    }
+
+    // ── Upload de novo arquivo para o paciente ───────────────────────
+    if (action === "upload_file") {
+      if (!id) return res.status(400).json({ error: "id obrigatório" });
+      // Recebe o arquivo via multipart — usa o direct upload do Codental
+      // 1. Obtém CSRF token da página de uploads
+      const pageR = await codentalFetchHtml(`/patients/${id}/uploads`, session);
+      if (!pageR.ok) return res.status(pageR.status).json({ error: "Falha ao acessar página de uploads" });
+      const pageHtml = await pageR.text();
+      const csrfM = pageHtml.match(/name="csrf-token"\s+content="([^"]+)"/);
+      const csrfToken = csrfM ? csrfM[1] : "";
+
+      // 2. Faz upload via POST /patients/ID/uploads com multipart
+      // O body já vem como Buffer do req
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const body = Buffer.concat(chunks);
+      const contentType = req.headers["content-type"] || "application/octet-stream";
+
+      const uploadR = await fetch(`${APP_BASE}/patients/${id}/uploads`, {
+        method: "POST",
+        headers: {
+          "Cookie": session.cookie,
+          "User-Agent": UA,
+          "Referer": `${APP_BASE}/patients/${id}/uploads`,
+          "X-CSRF-Token": csrfToken,
+          "Content-Type": contentType,
+          "Accept": "application/json, text/javascript, */*; q=0.01",
+          "X-Requested-With": "XMLHttpRequest",
+        },
+        body,
+      });
+
+      const respText = await uploadR.text();
+      if (uploadR.ok) return res.status(200).json({ success: true });
+      console.error(`[upload_file] failed ${uploadR.status}:`, respText.slice(0, 200));
+      return res.status(uploadR.status).json({ error: `Upload falhou: ${uploadR.status}` });
     }
 
     // ── Buscar planos do convênio ────────────────────────────────────
