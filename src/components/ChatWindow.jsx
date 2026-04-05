@@ -410,11 +410,25 @@ function MediaContent({ media, msgId, chatSession }) {
   const isAudio = media.type === "audio" || media.type === "voice" ||
                   (media.mimetype || "").startsWith("audio/");
 
-  // thumb base64 que o WAHA já retorna no normalizeMessage
   const thumbSrc = media.thumbUrl || null;
 
-  // Auto-carrega a mídia real ao montar (sem precisar clicar)
+  // Função manual de download (vídeo, documento, botão download)
+  async function fetchMedia() {
+    if (fullUrl || !downloadPath || downloading) return;
+    setDownload(true);
+    try {
+      const r = await fetch(downloadPath, { headers: { "X-Internal-Key": iKey } });
+      if (r.ok) {
+        const blob = await r.blob();
+        setFullUrl(URL.createObjectURL(blob));
+      }
+    } catch {}
+    setDownload(false);
+  }
+
+  // Auto-carrega imagem e áudio ao montar
   useEffect(() => {
+    if (!isImage && !isAudio) return;
     if (!downloadPath || fullUrl) return;
     let cancelled = false;
     async function load() {
@@ -430,7 +444,7 @@ function MediaContent({ media, msgId, chatSession }) {
     }
     load();
     return () => { cancelled = true; };
-  }, [downloadPath]);
+  }, [downloadPath, isImage, isAudio]);
 
   const displaySrc = fullUrl || thumbSrc;
 

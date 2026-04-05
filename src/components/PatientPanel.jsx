@@ -90,22 +90,32 @@ export default function PatientPanel({ chat, operator }) {
     setUploads([]); setEvols(null); setBuscandoDados(true);
     if (!p.id) { setBuscandoDados(false); return; }
 
-    // Busca perfil completo (sem bloquear uploads/evoluções)
-    getPatient(p.id).then(full => {
-      if (full && !full.error) setPaciente(merged => ({ ...p, ...full }));
-    }).catch(() => {});
-
-    // Uploads e evoluções em paralelo, cada um resiliente
-    const [u, e] = await Promise.allSettled([
+    // Roda tudo em paralelo — cada um com catch individual
+    const [full, u, e] = await Promise.allSettled([
+      getPatient(p.id),
       getUploads(p.id),
       getEvolutions(p.id),
     ]);
 
-    if (u.status === "fulfilled" && u.value?.uploads) setUploads(u.value.uploads);
-    else setUploads([]);
+    // Perfil completo: mescla sem sobrescrever id e name da busca
+    if (full.status === "fulfilled" && full.value && !full.value.error) {
+      setPaciente({ ...p, ...full.value, id: p.id });
+    }
 
-    if (e.status === "fulfilled" && !e.value?.error) setEvols(e.value?.evolutions || []);
-    else { console.warn("[evoluções]", e.reason || e.value?.error); setEvols([]); }
+    // Uploads
+    if (u.status === "fulfilled" && u.value?.uploads) {
+      setUploads(u.value.uploads);
+    } else {
+      setUploads([]);
+    }
+
+    // Evoluções
+    if (e.status === "fulfilled" && !e.value?.error) {
+      setEvols(e.value?.evolutions || []);
+    } else {
+      console.warn("[evoluções]", e.reason || e.value?.error);
+      setEvols([]);
+    }
 
     setBuscandoDados(false);
   }
