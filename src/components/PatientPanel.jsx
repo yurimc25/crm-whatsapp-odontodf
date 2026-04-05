@@ -84,29 +84,30 @@ export default function PatientPanel({ chat, operator }) {
     buscar();
   }, [chat.id]);
 
-  // Carrega perfil completo + uploads + evoluções do paciente selecionado
+  // Carrega perfil completo + uploads + evoluções — independentes para não quebrar juntos
   async function carregarPaciente(p) {
     setPaciente(p);
     setUploads([]); setEvols(null); setBuscandoDados(true);
-    try {
-      if (p.id) {
-        // Busca perfil completo, uploads e evoluções em paralelo
-        const [full, u, e] = await Promise.all([
-          getPatient(p.id),
-          getUploads(p.id),
-          getEvolutions(p.id),
-        ]);
-        // Mescla dados da busca (nome, id) com perfil completo (email, birthday, etc.)
-        if (full && !full.error) {
-          const merged = { ...p, ...full };
-          setPaciente(merged);
-        }
-        setUploads(u?.uploads || []);
-        if (e?.error) { console.warn("[evoluções]", e.error); setEvols([]); }
-        else setEvols(e?.evolutions || []);
-      }
-    } catch { setEvols([]); }
-    finally { setBuscandoDados(false); }
+    if (!p.id) { setBuscandoDados(false); return; }
+
+    // Busca perfil completo (sem bloquear uploads/evoluções)
+    getPatient(p.id).then(full => {
+      if (full && !full.error) setPaciente(merged => ({ ...p, ...full }));
+    }).catch(() => {});
+
+    // Uploads e evoluções em paralelo, cada um resiliente
+    const [u, e] = await Promise.allSettled([
+      getUploads(p.id),
+      getEvolutions(p.id),
+    ]);
+
+    if (u.status === "fulfilled" && u.value?.uploads) setUploads(u.value.uploads);
+    else setUploads([]);
+
+    if (e.status === "fulfilled" && !e.value?.error) setEvols(e.value?.evolutions || []);
+    else { console.warn("[evoluções]", e.reason || e.value?.error); setEvols([]); }
+
+    setBuscandoDados(false);
   }
 
   const TABS = [

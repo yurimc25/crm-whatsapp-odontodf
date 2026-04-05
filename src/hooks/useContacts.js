@@ -97,8 +97,7 @@ export function useContacts() {
     return () => clearInterval(interval);
   }, [fetchContacts]);
 
-  // Adiciona nomes do Codental ao mapa local sem sobrescrever Google Contacts
-  // Recebe um array de { phone, name } ou um único { phone, name }
+  // Adiciona nomes do Codental ao mapa local — sempre persiste no localStorage
   const addLocalContact = useCallback((entries) => {
     const list = Array.isArray(entries) ? entries : [entries];
     setContactMap(prev => {
@@ -107,33 +106,30 @@ export function useContacts() {
       for (const { phone, name } of list) {
         if (!phone || !name) continue;
         const digits = phone.replace(/\D/g, "");
-        // Gera variantes do número para cobrir todos os formatos do WAHA
         const variants = new Set([digits]);
-        // Com DDI 55
         if (!digits.startsWith("55")) variants.add("55" + digits);
-        // Sem DDI 55
         const local = digits.startsWith("55") ? digits.slice(2) : digits;
         variants.add(local);
-        // Com/sem o 9
         if (local.length === 11 && local[2] === "9") variants.add(local.slice(0,2) + local.slice(3));
         if (local.length === 10) variants.add(local.slice(0,2) + "9" + local.slice(2));
 
         for (const v of variants) {
-          // Só adiciona se não tiver nome do Google Contacts (não sobrescreve)
-          if (!prev[v]) {
-            updated[v] = name;
-            changed = true;
-          }
+          // Codental não sobrescreve Google Contacts, mas preenche o que falta
+          if (!prev[v]) { updated[v] = name; changed = true; }
         }
       }
       if (!changed) return prev;
-      // Salva no localStorage sem alterar TTL (é temporário, session-only)
+      // Persiste SEMPRE no localStorage, estendendo o TTL existente
       try {
         const raw = localStorage.getItem("crm_" + LS_KEY);
         if (raw) {
           const parsed = JSON.parse(raw);
           parsed.value = { ...parsed.value, ...updated };
+          // Renova TTL por mais 1h a cada inserção
+          parsed.expires = Date.now() + LS_TTL;
           localStorage.setItem("crm_" + LS_KEY, JSON.stringify(parsed));
+        } else {
+          cache.set(LS_KEY, updated, LS_TTL);
         }
       } catch {}
       return updated;
@@ -165,13 +161,16 @@ export function useContacts() {
           if (!prev[v]) { updated[v] = name; changed = true; }
         }
         if (!changed) return prev;
-        // Persiste no localStorage
+        // Persiste no localStorage renovando TTL
         try {
           const raw = localStorage.getItem("crm_" + LS_KEY);
           if (raw) {
             const parsed = JSON.parse(raw);
             parsed.value = { ...parsed.value, ...updated };
+            parsed.expires = Date.now() + LS_TTL;
             localStorage.setItem("crm_" + LS_KEY, JSON.stringify(parsed));
+          } else {
+            cache.set(LS_KEY, updated, LS_TTL);
           }
         } catch {}
         console.log(`[contacts] lookup ${phone} → ${name}`);

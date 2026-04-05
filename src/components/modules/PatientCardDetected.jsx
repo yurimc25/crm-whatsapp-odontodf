@@ -250,7 +250,7 @@ export default function PatientCardDetected({ msg }) {
     }
   }
 
-  const isSuccess = status === "success_codental";
+  const isSuccess = status === "success_codental" || status === "success_doctoralia";
   const isLoading = status === "loading";
   const isError   = status === "error";
 

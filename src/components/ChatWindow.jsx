@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import PatientCardDetected from "./modules/PatientCardDetected";
+import { QuickMessages } from "./modules/QuickMessages";
 import { useContactsCtx } from "../App";
 import { normalizeMessage } from "../services/waha";
 import { cache } from "../utils/cache";
@@ -59,6 +60,8 @@ export default function ChatWindow({
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore]         = useState(true);
   const [oldestDate, setOldestDate]   = useState(null);
+  const [showQuick, setShowQuick]     = useState(false);
+  const [quickQuery, setQuickQuery]   = useState("");
   // Auto-refresh a cada 5s
   const [lastRefresh, setLastRefresh] = useState(Date.now());
 
@@ -277,19 +280,47 @@ export default function ChatWindow({
         <div ref={bottomRef} />
       </div>
 
-      {/* Input — SEMPRE disponível, nunca bloqueado */}
+      {/* Input com menu de mensagens rápidas */}
       <div style={{ padding:"10px 14px", borderTop:`1px solid ${T.border}`,
-        background:T.header, display:"flex", gap:8, alignItems:"flex-end", flexShrink:0 }}>
+        background:T.header, display:"flex", gap:8, alignItems:"flex-end",
+        flexShrink:0, position:"relative" }}>
+
+        {/* Menu de mensagens rápidas */}
+        {showQuick && (
+          <QuickMessages
+            query={quickQuery}
+            onSelect={msg => {
+              setText(msg);
+              setShowQuick(false);
+              setQuickQuery("");
+            }}
+            onClose={() => { setShowQuick(false); setQuickQuery(""); }} />
+        )}
+
         <div style={{ flex:1, position:"relative" }}>
           <div style={{ position:"absolute", top:-18, left:2,
             fontSize:10, color:T.accent, fontWeight:600 }}>
             {operator.name}:
           </div>
-          <textarea value={text} onChange={e => setText(e.target.value)}
-            onKeyDown={e => {
-              if (e.key==="Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
+          <textarea value={text}
+            onChange={e => {
+              const v = e.target.value;
+              setText(v);
+              // Abre menu se começa com /
+              if (v.startsWith("/")) {
+                setShowQuick(true);
+                setQuickQuery(v.slice(1));
+              } else {
+                setShowQuick(false);
+                setQuickQuery("");
+              }
             }}
-            placeholder="Enter para enviar · Shift+Enter para nova linha"
+            onKeyDown={e => {
+              if (showQuick && (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "Enter")) return;
+              if (e.key === "Escape" && showQuick) { setShowQuick(false); setQuickQuery(""); return; }
+              if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
+            }}
+            placeholder="/ para mensagens rápidas · Enter para enviar · Shift+Enter nova linha"
             rows={2} style={{ width:"100%", background:T.inputBg,
               border:`1px solid ${T.border}`, borderRadius:8,
               padding:"10px 12px", color:T.text, fontSize:13,
@@ -363,13 +394,12 @@ function MessageBubble({ msg, currentOperator }) {
 
 // ── Renderizador de mídia ──────────────────────────────────────────
 function MediaContent({ media, msgId, chatSession }) {
-  const [lightbox, setLightbox]     = useState(false);
-  const [fullUrl, setFullUrl]       = useState(media.url || null);
-  const [downloading, setDownload]  = useState(false);
+  const [lightbox, setLightbox]    = useState(false);
+  const [fullUrl, setFullUrl]      = useState(null);
+  const [downloading, setDownload] = useState(false);
   const iKey    = import.meta.env.VITE_INTERNAL_API_KEY || "";
   const SESSION = chatSession || import.meta.env.VITE_WAHA_SESSION || "default";
 
-  // URL do endpoint de download via proxy
   const downloadPath = msgId
     ? `/api/waha?path=/api/${SESSION}/messages/${encodeURIComponent(msgId)}/download-media`
     : null;
@@ -380,56 +410,59 @@ function MediaContent({ media, msgId, chatSession }) {
   const isAudio = media.type === "audio" || media.type === "voice" ||
                   (media.mimetype || "").startsWith("audio/");
 
-  // Baixa a mídia real do WAHA (lazy, só quando necessário)
-  async function fetchMedia() {
-    if (fullUrl || !downloadPath || downloading) return;
-    setDownload(true);
-    try {
-      const r = await fetch(downloadPath, {
-        headers: { "X-Internal-Key": iKey }  // auth no header, não na URL
-      });
-      if (r.ok) {
-        const blob = await r.blob();
-        setFullUrl(URL.createObjectURL(blob));
-      }
-    } catch {}
-    finally { setDownload(false); }
-  }
-
-  // Thumb base64 que o WAHA já retorna (baixa resolução, mas rápido)
+  // thumb base64 que o WAHA já retorna no normalizeMessage
   const thumbSrc = media.thumbUrl || null;
+
+  // Auto-carrega a mídia real ao montar (sem precisar clicar)
+  useEffect(() => {
+    if (!downloadPath || fullUrl) return;
+    let cancelled = false;
+    async function load() {
+      setDownload(true);
+      try {
+        const r = await fetch(downloadPath, { headers: { "X-Internal-Key": iKey } });
+        if (!cancelled && r.ok) {
+          const blob = await r.blob();
+          if (!cancelled) setFullUrl(URL.createObjectURL(blob));
+        }
+      } catch {}
+      if (!cancelled) setDownload(false);
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [downloadPath]);
+
   const displaySrc = fullUrl || thumbSrc;
 
   if (isImage) {
     return (
       <>
-        <div style={{ position:"relative", cursor:"pointer", minWidth:120, minHeight:80 }}
-          onClick={async () => { await fetchMedia(); setLightbox(true); }}>
+        <div style={{ position:"relative", cursor:"pointer" }}
+          onClick={() => displaySrc && setLightbox(true)}>
           {displaySrc ? (
             <img src={displaySrc} alt="imagem"
-              style={{ width:"100%", maxWidth:280, maxHeight:220, objectFit:"cover",
-                borderRadius:8, display:"block",
-                filter: (thumbSrc && !fullUrl) ? "blur(2px)" : "none",
-                transition:"filter .3s" }} />
+              style={{ width:"100%", maxWidth:260, maxHeight:200,
+                objectFit:"cover", borderRadius:8, display:"block",
+                filter: (!fullUrl && thumbSrc) ? "blur(3px)" : "none",
+                transition:"filter .4s" }} />
           ) : (
-            <div style={{ width:200, height:140, background:"#2a2a2a", borderRadius:8,
+            <div style={{ width:200, height:130, background:"#2a2a2a", borderRadius:8,
               display:"flex", alignItems:"center", justifyContent:"center",
               color:T.sub, fontSize:13, gap:6 }}>
-              {downloading ? <>⏳ baixando...</> : <>🖼️ imagem</>}
+              {downloading ? "⏳ carregando..." : "🖼️ imagem"}
             </div>
           )}
-          {/* Overlay de zoom */}
           {displaySrc && (
             <div style={{ position:"absolute", top:6, right:6, background:"rgba(0,0,0,.5)",
               borderRadius:6, padding:"3px 7px", fontSize:11, color:"#fff" }}>
-              {downloading ? "⏳" : "🔍"}
+              {!fullUrl && downloading ? "⏳" : "🔍"}
             </div>
           )}
         </div>
         {lightbox && (
           <ImageLightbox
             src={fullUrl || thumbSrc}
-            downloadUrl={downloadPath || null}
+            downloadUrl={downloadPath}
             iKey={iKey}
             onClose={() => setLightbox(false)} />
         )}
