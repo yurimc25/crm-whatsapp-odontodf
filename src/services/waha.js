@@ -290,6 +290,26 @@ function detectPatientCard(text) {
   return temNome && score >= 2;
 }
 
+function isTemplateVazio(text) {
+  const labels = ["Nome completo:","CPF:","E-mail:","Convênio","Número da carteirinha:","Telefone:","Data de nascimento:"];
+  const temLabels = labels.filter(l => text.includes(l)).length >= 3;
+  if (!temLabels) return false;
+  const linhas = text.split("\n").map(l => l.trim()).filter(Boolean);
+  const labelsFormulario = linhas.filter(l => {
+    const k = (l.split(":")[0] || "").toLowerCase();
+    return k.includes("nome") || k.includes("cpf") || k.includes("e-mail") ||
+           k.includes("email") || k.includes("telefone") || k.includes("convênio") ||
+           k.includes("nascimento") || k.includes("cartão") || k.includes("carteirinha");
+  });
+  if (labelsFormulario.length < 3) return false;
+  const comValor = labelsFormulario.filter(l => {
+    const idx = l.indexOf(":");
+    if (idx === -1) return false;
+    return l.slice(idx+1).trim().length > 0;
+  });
+  return comValor.length === 0;
+}
+
 const RE_CPF_SIMPLE = /\b\d{3}[\s.]?\d{3}[\s.]?\d{3}[-\s.]?\d{2}\b/;
 const RE_EMAIL      = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/;
 
