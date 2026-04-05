@@ -84,40 +84,25 @@ export default function PatientPanel({ chat, operator }) {
     buscar();
   }, [chat.id]);
 
-  // Carrega perfil completo + uploads + evoluções — independentes para não quebrar juntos
+  // Carrega uploads + evoluções em paralelo — perfil completo carrega separado depois
   async function carregarPaciente(p) {
     setPaciente(p);
     setUploads([]); setEvols(null); setBuscandoDados(true);
     if (!p.id) { setBuscandoDados(false); return; }
 
-    // Roda tudo em paralelo — cada um com catch individual
-    const [full, u, e] = await Promise.allSettled([
-      getPatient(p.id),
+    const [u, e] = await Promise.allSettled([
       getUploads(p.id),
       getEvolutions(p.id),
     ]);
 
     console.log("[carregarPaciente] id=", p.id,
-      "full:", full.status, full.value ? Object.keys(full.value) : null,
       "uploads:", u.status, u.value,
       "evols:", e.status, e.value?.evolutions?.length ?? e.value
     );
 
-    // Perfil completo
-    if (full.status === "fulfilled" && full.value && !full.value.error) {
-      setPaciente({ ...p, ...full.value, id: p.id });
-    }
-
-    // Uploads — null = 304 (sem mudança), mantém o array atual se já tiver
-    if (u.status === "fulfilled") {
-      if (u.value?.uploads != null) {
-        setUploads(u.value.uploads);
-      } else if (u.value === null) {
-        // 304 — não altera o estado (já pode ter uploads carregados)
-        console.warn("[uploads] 304 recebido, mantendo estado anterior");
-      } else {
-        setUploads([]);
-      }
+    // Uploads
+    if (u.status === "fulfilled" && u.value?.uploads?.length > 0) {
+      setUploads(u.value.uploads);
     } else {
       setUploads([]);
     }
@@ -126,11 +111,19 @@ export default function PatientPanel({ chat, operator }) {
     if (e.status === "fulfilled" && !e.value?.error) {
       setEvols(e.value?.evolutions || []);
     } else {
-      console.warn("[evoluções]", e.reason || e.value?.error);
       setEvols([]);
     }
 
     setBuscandoDados(false);
+
+    // Perfil completo — carrega depois, sem bloquear os uploads
+    if (p.id) {
+      getPatient(p.id).then(full => {
+        if (full && !full.error) {
+          setPaciente(prev => prev?.id === p.id ? { ...prev, ...full, id: p.id } : prev);
+        }
+      }).catch(() => {});
+    }
   }
 
   const TABS = [
