@@ -469,6 +469,77 @@ module.exports = async function handler(req, res) {
       return res.status(createR.status).json({ error: `Criação do upload falhou: ${createR.status}` });
     }
 
+    // ── Atualizar paciente ────────────────────────────────────────────
+    if (action === "update") {
+      if (!id) return res.status(400).json({ error: "id obrigatório" });
+      const body = req.body || {};
+
+      const f = new URLSearchParams();
+      f.append("authenticity_token",   session.csrf);
+      f.append("_method",              "PATCH");
+      if (body.nome        !== undefined) f.append("patient[full_name]",              body.nome);
+      if (body.email       !== undefined) f.append("patient[email]",                  body.email);
+      if (body.cpf         !== undefined) f.append("patient[cpf]",                    body.cpf.replace(/\D/g,"").replace(/(\d{3})(\d{3})(\d{3})(\d{2})/,"$1.$2.$3-$4"));
+      if (body.telefone    !== undefined) {
+        const tel = body.telefone.replace(/\D/g,"").replace(/^55/,"");
+        f.append("patient[cellphone_formated]",     tel);
+        f.append("patient[cellphone_country_code]", "+55");
+      }
+      if (body.nascimento  !== undefined) {
+        // Aceita DD/MM/YYYY ou YYYY-MM-DD
+        let bday = body.nascimento;
+        const iso = bday.match(/(\d{4})-(\d{2})-(\d{2})/);
+        if (iso) bday = `${iso[3]}/${iso[2]}/${iso[1]}`;
+        f.append("patient[birthday]", bday);
+      }
+      if (body.carteirinha !== undefined) f.append("patient[dental_plan_card_number]", body.carteirinha);
+
+      // Convênio — resolve dental_plan_id se vier nome
+      if (body.convenio !== undefined) {
+        const pr = await codentalFetchHtml("/patients/new", session);
+        if (pr.ok) {
+          const html = await pr.text();
+          const selectM = html.match(/id="patient_dental_plan_id"[^>]*>([\s\S]*?)<\/select>/);
+          if (selectM) {
+            const plans = [];
+            const optReg = /<option[^>]*value="(\d+)"[^>]*>([^<]+)<\/option>/g;
+            let m;
+            while ((m = optReg.exec(selectM[1])) !== null) plans.push({ id: m[1], name: m[2].trim() });
+            const norm = s => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]/g,"");
+            const cn = norm(body.convenio);
+            const match = plans.find(p => norm(p.name) === cn)
+                       || plans.find(p => norm(p.name).includes(cn) || cn.includes(norm(p.name)))
+                       || plans.find(p => cn.split(/\s+/).filter(w=>w.length>3).some(w=>norm(p.name).includes(w)));
+            if (match) f.append("patient[dental_plan_id]", match.id);
+          }
+        }
+      }
+
+      const r = await fetch(`${APP_BASE}/patients/${id}`, {
+        method:  "POST",
+        redirect: "follow",
+        headers: {
+          "Content-Type":     "application/x-www-form-urlencoded",
+          "X-CSRF-Token":     session.csrf,
+          "X-Requested-With": "XMLHttpRequest",
+          "Accept":           "text/html,application/xhtml+xml,application/json",
+          "Cookie":           session.cookie,
+          "Origin":           APP_BASE,
+          "Referer":          `${APP_BASE}/patients/${id}/edit`,
+          "User-Agent":       UA,
+        },
+        body: f.toString(),
+      });
+
+      const text = await r.text().catch(() => "");
+      console.log(`[codental/update] id=${id} status=${r.status} url=${r.url?.slice(0,80)}`);
+
+      if ([200, 201, 302].includes(r.status) || r.url?.includes(`/patients/${id}`)) {
+        return res.json({ success: true });
+      }
+      return res.status(r.status).json({ error: `Update falhou: ${r.status}` });
+    }
+
     // ── Buscar planos do convênio ────────────────────────────────────
     if (action === "dental_plans") {
       const session = await getSession();

@@ -243,7 +243,7 @@ export default function PatientPanel({ chat, operator }) {
       {/* Conteúdo */}
       <div style={{ flex:1, overflowY:"auto", padding:"12px 14px",
         display:"flex", flexDirection:"column", gap:10 }}>
-        {tab === "perfil"       && <PerfilTab paciente={paciente} uploads={uploads} evols={evols} buscando={buscando} onReload={() => paciente && recarregarUploads(paciente.id)} />}
+        {tab === "perfil"       && <PerfilTab paciente={paciente} uploads={uploads} evols={evols} buscando={buscando} onReload={() => paciente && recarregarUploads(paciente.id)} onPacienteUpdate={updates => setPaciente(prev => prev ? { ...prev, full_name: updates.nome||prev.full_name, cpf: updates.cpf||prev.cpf, email: updates.email||prev.email, cellphone_formated: updates.telefone||prev.cellphone_formated, birthday: updates.nascimento||prev.birthday, health_insurance_name: updates.convenio||prev.health_insurance_name, dental_plan_card_number: updates.carteirinha||prev.dental_plan_card_number } : prev)} />}
         {tab === "agendamentos" && <AgendamentosTab />}
         {tab === "evolucoes"    && <EvolucoeTab paciente={paciente} evols={evols} uploads={uploads} buscando={buscando} onReload={() => paciente && recarregarUploads(paciente.id)} />}
         {tab === "notas"        && <NotasTab chat={chat} operator={operator} />}
@@ -253,48 +253,119 @@ export default function PatientPanel({ chat, operator }) {
 }
 
 // ── Aba Perfil ────────────────────────────────────────────────────
-function PerfilTab({ paciente, uploads, evols, buscando, onReload }) {
-  // Extrai últimos dentistas únicos das evoluções (até 3)
+function PerfilTab({ paciente, uploads, evols, buscando, onReload, onPacienteUpdate }) {
+  const [editing, setEditing] = useState(false);
+  const [saving,  setSaving]  = useState(false);
+  const [form,    setForm]    = useState({});
+  const iKey = import.meta.env.VITE_INTERNAL_API_KEY || "";
+
   const ultimosDentistas = evols?.length > 0
-    ? [...new Map(
-        evols
-          .filter(e => e.dentista || e.dentist)
-          .map(e => {
-            const nome = e.dentista || e.dentist || "";
-            return [nome, nome];
-          })
-      ).values()].slice(0, 3)
+    ? [...new Map(evols.filter(e=>e.dentista||e.dentist).map(e=>{const n=e.dentista||e.dentist||"";return[n,n];})).values()].slice(0,3)
     : [];
 
-  // Normaliza campos do Codental (API retorna diferentes formatos)
   const p = paciente || {};
-  const nome       = p.name || p.full_name || p.fullName || "—";
-  const cpf        = p.cpf || "—";
-  const email      = p.email || "—";
-  const telefone   = p.cellphone_formated || p.phone || p.cellphone || "—";
-  const nascimento = p.birthday || p.birthdate || p.birth_date || "—";
-  // Convênio: pode vir como string ou objeto
-  const convenio   = p.health_insurance_name || p.health_insurance ||
-                     p.dental_plan?.name || p.dentalPlan?.name ||
-                     p.convenio || "—";
-  const carteirinha = p.dental_plan_card_number || p.card_number || p.carteirinha || "—";
+  const nome       = p.name || p.full_name || p.fullName || "";
+  const cpf        = p.cpf || "";
+  const email      = p.email || "";
+  const telefone   = p.cellphone_formated || p.phone || p.cellphone || "";
+  const nascimento = p.birthday || p.birthdate || p.birth_date || "";
+  const convenio   = p.health_insurance_name || p.health_insurance || p.dental_plan?.name || p.convenio || "";
+  const carteirinha = p.dental_plan_card_number || p.card_number || p.carteirinha || "";
+
+  function startEdit() {
+    setForm({ nome, cpf, email, telefone, nascimento, convenio, carteirinha });
+    setEditing(true);
+  }
+
+  function cancelEdit() { setEditing(false); setForm({}); }
+
+  async function saveEdit() {
+    if (!p.id) return;
+    setSaving(true);
+    try {
+      const r = await fetch(`/api/codental?action=update&id=${p.id}`, {
+        method: "POST",
+        headers: { "X-Internal-Key": iKey, "Content-Type": "application/json" },
+        body: JSON.stringify(form),
+      });
+      if (r.ok) {
+        setEditing(false);
+        if (onPacienteUpdate) onPacienteUpdate(form);
+      } else {
+        const d = await r.json().catch(() => ({}));
+        alert(d.error || "Erro ao salvar");
+      }
+    } catch(e) { alert(e.message); }
+    setSaving(false);
+  }
+
+  function EditField({ label, field, placeholder }) {
+    return (
+      <div style={{ marginBottom:7 }}>
+        <div style={{ color:T.sub, fontSize:9, fontWeight:700,
+          textTransform:"uppercase", letterSpacing:.5, marginBottom:3 }}>
+          {label}
+        </div>
+        <input
+          value={form[field] || ""}
+          onChange={e => setForm(prev => ({ ...prev, [field]: e.target.value }))}
+          placeholder={placeholder || label}
+          style={{
+            width:"100%", background:"#1a1a1a", border:`1px solid ${T.border}`,
+            borderRadius:5, padding:"4px 8px", color:T.text, fontSize:12,
+            outline:"none", boxSizing:"border-box",
+          }}
+          onFocus={e => e.target.style.borderColor = T.accent}
+          onBlur={e => e.target.style.borderColor = T.border}
+        />
+      </div>
+    );
+  }
 
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-      <Section label="Codental">
+      <Section label={
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+          <span>Codental</span>
+          {paciente && !editing && (
+            <button onClick={startEdit} title="Editar dados do paciente" style={{
+              background:"transparent", border:"none", cursor:"pointer",
+              color:T.sub, padding:"0 2px", display:"flex", alignItems:"center",
+              transition:"color .15s",
+            }}
+              onMouseEnter={e => e.currentTarget.style.color = T.text}
+              onMouseLeave={e => e.currentTarget.style.color = T.sub}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+              </svg>
+            </button>
+          )}
+          {editing && (
+            <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+              <button onClick={cancelEdit} title="Cancelar" style={{
+                background:"transparent", border:"none", cursor:"pointer",
+                color:"#e57373", padding:"0 2px", fontSize:16, lineHeight:1,
+              }}>✕</button>
+              <button onClick={saveEdit} disabled={saving} title="Salvar" style={{
+                background:"transparent", border:"none", cursor:"pointer",
+                color: saving ? T.sub : T.green, padding:"0 2px", fontSize:16, lineHeight:1,
+              }}>{saving ? "…" : "✓"}</button>
+            </div>
+          )}
+        </div>
+      }>
         {buscando && <div style={{ color:T.sub, fontSize:12 }}>Buscando...</div>}
         {!buscando && !paciente && <div style={{ color:T.sub, fontSize:12 }}>Paciente não encontrado no Codental.</div>}
-        {paciente && (
+        {paciente && !editing && (
           <>
-            <Field label="Nome"        value={nome !== "—" ? nome : null} />
-            <Field label="CPF"         value={cpf !== "—" ? cpf : null} />
-            <Field label="Email"       value={email !== "—" ? email : null} />
-            <Field label="Telefone"    value={telefone !== "—" ? telefone : null} />
-            <Field label="Nascimento"  value={nascimento !== "—" ? nascimento : null} />
-            <Field label="Convênio"    value={convenio !== "—" ? convenio : null} />
-            <Field label="Carteirinha" value={carteirinha !== "—" ? carteirinha : null} />
-
-            {/* Últimos dentistas das evoluções */}
+            <Field label="Nome"        value={nome || null} />
+            <Field label="CPF"         value={cpf || null} />
+            <Field label="Email"       value={email || null} />
+            <Field label="Telefone"    value={telefone || null} />
+            <Field label="Nascimento"  value={nascimento || null} />
+            <Field label="Convênio"    value={convenio || null} />
+            <Field label="Carteirinha" value={carteirinha || null} />
             {ultimosDentistas.length > 0 && (
               <div style={{ marginTop:4 }}>
                 <div style={{ color:T.sub, fontSize:9, fontWeight:700,
@@ -302,14 +373,10 @@ function PerfilTab({ paciente, uploads, evols, buscando, onReload }) {
                   Últimos dentistas
                 </div>
                 {ultimosDentistas.map((d, i) => (
-                  <div key={i} style={{ color:T.accent, fontSize:12,
-                    fontWeight:500, marginBottom:2 }}>
-                    {d}
-                  </div>
+                  <div key={i} style={{ color:T.accent, fontSize:12, fontWeight:500, marginBottom:2 }}>{d}</div>
                 ))}
               </div>
             )}
-
             {p.id && (
               <a href={`https://app.codental.com.br/patients/${p.id}`}
                 target="_blank" rel="noreferrer"
@@ -321,6 +388,17 @@ function PerfilTab({ paciente, uploads, evols, buscando, onReload }) {
               </a>
             )}
           </>
+        )}
+        {paciente && editing && (
+          <div>
+            <EditField label="Nome"        field="nome"       />
+            <EditField label="CPF"         field="cpf"        placeholder="000.000.000-00" />
+            <EditField label="Email"       field="email"      placeholder="email@exemplo.com" />
+            <EditField label="Telefone"    field="telefone"   placeholder="(61) 99999-9999" />
+            <EditField label="Nascimento"  field="nascimento" placeholder="DD/MM/AAAA" />
+            <EditField label="Convênio"    field="convenio"   placeholder="Particular" />
+            <EditField label="Carteirinha" field="carteirinha"/>
+          </div>
         )}
       </Section>
 
