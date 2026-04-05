@@ -49,7 +49,7 @@ export default function PatientPanel({ chat, operator }) {
   const { displayInfo, addLocalContact } = useContactsCtx();
   const info = displayInfo(chat.id, chat.name, chat.pushname);
 
-  const { searchByPhone, searchByName, getUploads, getEvolutions } = useCodental();
+  const { searchByPhone, searchByName, getPatient, getUploads, getEvolutions } = useCodental();
   const [pacientes, setPacientes]   = useState([]); // todos os pacientes encontrados
   const [paciente, setPaciente]     = useState(null); // paciente selecionado
   const [uploads, setUploads]       = useState([]);
