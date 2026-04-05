@@ -340,6 +340,11 @@ module.exports = async function handler(req, res) {
       }
 
       console.log(`[uploads] id=${id} total=${uploads.length}`);
+      // Debug: se não encontrou nada, retorna snippet do HTML para diagnóstico
+      if (uploads.length === 0) {
+        const snippet = html.slice(uploadsSectionIdx > -1 ? uploadsSectionIdx : 0, (uploadsSectionIdx > -1 ? uploadsSectionIdx : 0) + 800).replace(/\s+/g, " ");
+        return res.json({ uploads, _debug_html: snippet, _debug_uploadIds: uploadIds.length });
+      }
       return res.json({ uploads });
     }
 
