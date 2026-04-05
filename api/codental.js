@@ -409,39 +409,93 @@ module.exports = async function handler(req, res) {
     // ── Upload de novo arquivo para o paciente ───────────────────────
     if (action === "upload_file") {
       if (!id) return res.status(400).json({ error: "id obrigatório" });
-      // Recebe o arquivo via multipart — usa o direct upload do Codental
-      // 1. Obtém CSRF token da página de uploads
-      const pageR = await codentalFetchHtml(`/patients/${id}/uploads`, session);
-      if (!pageR.ok) return res.status(pageR.status).json({ error: "Falha ao acessar página de uploads" });
-      const pageHtml = await pageR.text();
-      const csrfM = pageHtml.match(/name="csrf-token"\s+content="([^"]+)"/);
-      const csrfToken = csrfM ? csrfM[1] : "";
 
-      // 2. Faz upload via POST /patients/ID/uploads com multipart
-      // O body já vem como Buffer do req
+      // Lê o arquivo do body multipart
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
-      const body = Buffer.concat(chunks);
-      const contentType = req.headers["content-type"] || "application/octet-stream";
+      const fileBuffer = Buffer.concat(chunks);
+      const contentType = req.headers["content-type-file"] || "application/octet-stream";
+      const filename    = req.headers["x-filename"] ? decodeURIComponent(req.headers["x-filename"]) : "arquivo.jpg";
+      const fileSize    = fileBuffer.length;
 
-      const uploadR = await fetch(`${APP_BASE}/patients/${id}/uploads`, {
+      // 1. Obtém CSRF token
+      const pageR = await codentalFetchHtml(`/patients/${id}/uploads`, session);
+      if (!pageR.ok) return res.status(pageR.status).json({ error: "Falha ao acessar página" });
+      const pageHtml = await pageR.text();
+      const csrfM    = pageHtml.match(/name="csrf-token"\s+content="([^"]+)"/);
+      const csrfToken = csrfM ? csrfM[1] : "";
+      if (!csrfToken) return res.status(500).json({ error: "CSRF token não encontrado" });
+
+      // 2. Solicita Direct Upload URL ao Codental (Active Storage)
+      const crypto = await import("crypto");
+      const checksum = crypto.createHash("md5").update(fileBuffer).digest("base64");
+
+      const directUploadR = await fetch(`${APP_BASE}/rails/active_storage/direct_uploads`, {
         method: "POST",
         headers: {
           "Cookie": session.cookie,
           "User-Agent": UA,
-          "Referer": `${APP_BASE}/patients/${id}/uploads`,
+          "Content-Type": "application/json",
           "X-CSRF-Token": csrfToken,
-          "Content-Type": contentType,
-          "Accept": "application/json, text/javascript, */*; q=0.01",
+          "Accept": "application/json",
           "X-Requested-With": "XMLHttpRequest",
         },
-        body,
+        body: JSON.stringify({
+          blob: {
+            filename,
+            content_type: contentType,
+            byte_size: fileSize,
+            checksum,
+          }
+        }),
       });
 
-      const respText = await uploadR.text();
-      if (uploadR.ok) return res.status(200).json({ success: true });
-      console.error(`[upload_file] failed ${uploadR.status}:`, respText.slice(0, 200));
-      return res.status(uploadR.status).json({ error: `Upload falhou: ${uploadR.status}` });
+      if (!directUploadR.ok) {
+        const t = await directUploadR.text();
+        console.error(`[upload_file] direct_upload failed ${directUploadR.status}:`, t.slice(0,200));
+        return res.status(directUploadR.status).json({ error: `Direct upload falhou: ${directUploadR.status}` });
+      }
+
+      const { signed_id, direct_upload } = await directUploadR.json();
+      const { url: s3Url, headers: s3Headers } = direct_upload;
+
+      // 3. Faz PUT direto no S3
+      const s3R = await fetch(s3Url, {
+        method: "PUT",
+        headers: { ...s3Headers, "Content-Length": String(fileSize) },
+        body: fileBuffer,
+      });
+      if (!s3R.ok) {
+        console.error(`[upload_file] S3 PUT failed ${s3R.status}`);
+        return res.status(500).json({ error: `S3 upload falhou: ${s3R.status}` });
+      }
+
+      // 4. Cria o registro de upload no Codental com o signed_id do blob
+      const createR = await fetch(`${APP_BASE}/patients/${id}/uploads`, {
+        method: "POST",
+        headers: {
+          "Cookie": session.cookie,
+          "User-Agent": UA,
+          "Content-Type": "application/x-www-form-urlencoded",
+          "X-CSRF-Token": csrfToken,
+          "Accept": "application/json, text/javascript, */*; q=0.01",
+          "X-Requested-With": "XMLHttpRequest",
+          "Referer": `${APP_BASE}/patients/${id}/uploads`,
+        },
+        body: new URLSearchParams({
+          "upload[file]": signed_id,
+          "upload[name]": filename,
+          "authenticity_token": csrfToken,
+        }).toString(),
+      });
+
+      const createText = await createR.text();
+      if (createR.ok) {
+        console.log(`[upload_file] success: ${filename} for patient ${id}`);
+        return res.status(200).json({ success: true, filename });
+      }
+      console.error(`[upload_file] create failed ${createR.status}:`, createText.slice(0, 300));
+      return res.status(createR.status).json({ error: `Criação do upload falhou: ${createR.status}` });
     }
 
     // ── Buscar planos do convênio ────────────────────────────────────

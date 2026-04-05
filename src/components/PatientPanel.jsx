@@ -437,12 +437,18 @@ function UploadsGrid({ uploads, paciente, maxItems = 9, onUploaded }) {
     setUploading(true);
     setUploadMsg(null);
     try {
-      const fd = new FormData();
-      fd.append("upload[file]", file);
+      // Lê o arquivo como ArrayBuffer e envia com headers customizados
+      // O backend precisa saber o content-type e filename separadamente
+      const arrayBuffer = await file.arrayBuffer();
       const r = await fetch(`/api/codental?action=upload_file&id=${paciente.id}`, {
         method: "POST",
-        headers: { "X-Internal-Key": iKey },
-        body: fd,
+        headers: {
+          "X-Internal-Key": iKey,
+          "Content-Type-File": file.type || "application/octet-stream",
+          "X-Filename": encodeURIComponent(file.name),
+          "Content-Type": "application/octet-stream",
+        },
+        body: arrayBuffer,
       });
       if (r.ok) {
         setUploadMsg({ ok: true, text: `✓ ${file.name} enviado!` });
