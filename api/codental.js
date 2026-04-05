@@ -71,8 +71,12 @@ module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Internal-Key");
   // Nunca cachear — evita 304 sem body quebrando o frontend
-  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0");
   res.setHeader("Pragma", "no-cache");
+  res.setHeader("Surrogate-Control", "no-store");
+  res.setHeader("Vary", "*");
+  // Remove ETag para o Vercel não gerar 304
+  res.removeHeader("ETag");
   if (req.method === "OPTIONS") return res.status(200).end();
 
   const key = req.headers["x-internal-key"];

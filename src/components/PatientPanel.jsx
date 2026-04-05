@@ -97,14 +97,27 @@ export default function PatientPanel({ chat, operator }) {
       getEvolutions(p.id),
     ]);
 
-    // Perfil completo: mescla sem sobrescrever id e name da busca
+    console.log("[carregarPaciente] id=", p.id,
+      "full:", full.status, full.value ? Object.keys(full.value) : null,
+      "uploads:", u.status, u.value,
+      "evols:", e.status, e.value?.evolutions?.length ?? e.value
+    );
+
+    // Perfil completo
     if (full.status === "fulfilled" && full.value && !full.value.error) {
       setPaciente({ ...p, ...full.value, id: p.id });
     }
 
-    // Uploads
-    if (u.status === "fulfilled" && u.value?.uploads) {
-      setUploads(u.value.uploads);
+    // Uploads — null = 304 (sem mudança), mantém o array atual se já tiver
+    if (u.status === "fulfilled") {
+      if (u.value?.uploads != null) {
+        setUploads(u.value.uploads);
+      } else if (u.value === null) {
+        // 304 — não altera o estado (já pode ter uploads carregados)
+        console.warn("[uploads] 304 recebido, mantendo estado anterior");
+      } else {
+        setUploads([]);
+      }
     } else {
       setUploads([]);
     }
