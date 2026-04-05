@@ -437,28 +437,21 @@ function EvolucoeTab({ paciente, evols, uploads, buscando }) {
 // ── Grid de uploads reutilizável ──────────────────────────────────
 function UploadsGrid({ uploads, paciente, maxItems = 9 }) {
   const [lightbox, setLightbox] = useState(null);
-  const iKey = import.meta.env.VITE_INTERNAL_API_KEY || "";
-
-  // Gera URL via proxy Codental (necessário pois S3 e codental-static requerem auth)
-  function proxyUrl(url) {
-    if (!url) return null;
-    return `/api/codental?action=file&url=${encodeURIComponent(url)}&_t=${Date.now()}`;
-  }
 
   return (
     <>
       <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:6 }}>
         {uploads.slice(0, maxItems).map((u, i) => {
-          const rawUrl    = u.download_url || u.preview_url || u.url;
-          const proxied   = proxyUrl(rawUrl);
-          const previewPx = proxyUrl(u.preview_url || rawUrl);
-          const name      = u.name || u.filename || u.title || `Arquivo ${i+1}`;
-          const ct        = u.content_type || u.mime_type || "";
+          // preview_url = codental-static.com (CDN público, sem auth)
+          // download_url = app.codental.com.br/rails/active_storage (redirect público com token S3)
+          const previewUrl  = u.preview_url || null;
+          const downloadUrl = u.download_url || u.url || null;
+          const name  = u.name || u.filename || u.title || `Arquivo ${i+1}`;
+          const ct    = u.content_type || u.mime_type || "";
           const isImg = /\.(jpg|jpeg|png|gif|webp|bmp)/i.test(name) || ct.startsWith("image/");
           const isPdf = /\.pdf/i.test(name) || ct === "application/pdf";
 
-          // Passa URLs com proxy para o FileLightbox
-          const fileForLightbox = { ...u, url: proxied, preview_url: previewPx, download_url: proxied };
+          const fileForLightbox = { ...u, url: downloadUrl, preview_url: previewUrl, download_url: downloadUrl };
 
           return (
             <div key={u.id || i} onClick={() => setLightbox(fileForLightbox)}
@@ -470,8 +463,8 @@ function UploadsGrid({ uploads, paciente, maxItems = 9 }) {
               onMouseEnter={e => { e.currentTarget.style.borderColor=T.accent; e.currentTarget.style.transform="scale(1.03)"; }}
               onMouseLeave={e => { e.currentTarget.style.borderColor=T.border; e.currentTarget.style.transform="scale(1)"; }}>
 
-              {isImg && previewPx ? (
-                <img src={previewPx} alt={name}
+              {isImg && previewUrl ? (
+                <img src={previewUrl} alt={name}
                   style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }}
                   onError={e => { e.target.style.display="none"; }} />
               ) : (

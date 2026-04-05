@@ -284,17 +284,17 @@ module.exports = async function handler(req, res) {
           const filename    = parsed.filename || `arquivo_${uploadId}`;
           const downloadUrl = parsed.download || null;
 
-          // Miniatura: <img src="https://codental-static.com/?...url=ENCODED_S3_URL...">
+          // Miniatura: <img src="https://codental-static.com/?fit=crop&h=280&url=ENCODED_S3_URL&w=280">
+          // Esta URL é PÚBLICA — codental-static.com é CDN público, não precisa de auth
           const imgM = liContent.match(/\bsrc="(https:\/\/codental-static\.com[^"]+)"/);
           let previewUrl = null;
           if (imgM) {
-            const urlMatch = imgM[1].match(/[?&]url=([^&"]+)/);
-            if (urlMatch) {
-              previewUrl = decodeURIComponent(urlMatch[1]);
-            } else {
-              previewUrl = imgM[1].replace(/&amp;/g, "&");
-            }
+            // Usa a URL do CDN diretamente (pública, sem cookie)
+            previewUrl = imgM[1].replace(/&amp;/g, "&");
           }
+
+          // download_url: Active Storage redirect URL (também pública — redireciona para S3 com token assinado)
+          // Token S3 válido por 7 dias (X-Amz-Expires=604800)
 
           // Determina content_type pelo nome do arquivo
           const ext = filename.split(".").pop().toLowerCase();
