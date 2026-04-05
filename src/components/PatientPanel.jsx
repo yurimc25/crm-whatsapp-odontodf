@@ -33,14 +33,47 @@ function Section({ label, children }) {
   );
 }
 
+function CopyIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+    </svg>
+  );
+}
+
 function Field({ label, value }) {
+  const [copied, setCopied] = useState(false);
+
+  function copy() {
+    if (!value) return;
+    navigator.clipboard.writeText(value).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  }
+
   return (
     <div style={{ marginBottom:7 }}>
       <div style={{ color:T.sub, fontSize:9, fontWeight:700,
         textTransform:"uppercase", letterSpacing:.5, marginBottom:1 }}>
         {label}
       </div>
-      <div style={{ color: value ? T.text : "#444", fontSize:12 }}>{value || "—"}</div>
+      <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+        <div style={{ color: value ? T.text : "#444", fontSize:12, flex:1 }}>{value || "—"}</div>
+        {value && (
+          <button onClick={copy} title="Copiar" style={{
+            background:"transparent", border:"none", cursor:"pointer",
+            color: copied ? T.green : T.sub, padding:"1px 3px",
+            borderRadius:4, display:"flex", alignItems:"center",
+            transition:"color .15s", flexShrink:0,
+          }}
+            onMouseEnter={e => { if (!copied) e.currentTarget.style.color = T.text; }}
+            onMouseLeave={e => { if (!copied) e.currentTarget.style.color = T.sub; }}>
+            {copied ? "✓" : <CopyIcon />}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
