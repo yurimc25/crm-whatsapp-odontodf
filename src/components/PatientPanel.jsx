@@ -243,7 +243,23 @@ export default function PatientPanel({ chat, operator }) {
       {/* Conteúdo */}
       <div style={{ flex:1, overflowY:"auto", padding:"12px 14px",
         display:"flex", flexDirection:"column", gap:10 }}>
-        {tab === "perfil"       && <PerfilTab paciente={paciente} uploads={uploads} evols={evols} buscando={buscando} onReload={() => paciente && recarregarUploads(paciente.id)} onPacienteUpdate={updates => setPaciente(prev => prev ? { ...prev, full_name: updates.nome||prev.full_name, cpf: updates.cpf||prev.cpf, email: updates.email||prev.email, cellphone_formated: updates.telefone||prev.cellphone_formated, birthday: updates.nascimento||prev.birthday, health_insurance_name: updates.convenio||prev.health_insurance_name, dental_plan_card_number: updates.carteirinha||prev.dental_plan_card_number } : prev)} />}
+        {tab === "perfil"       && <PerfilTab paciente={paciente} uploads={uploads} evols={evols} buscando={buscando} onReload={() => paciente && recarregarUploads(paciente.id)} onPacienteUpdate={updates => setPaciente(prev => {
+          if (!prev) return prev;
+          // Se vier do form (tem chave 'nome'), mapeia para campos do Codental
+          if ('nome' in updates) {
+            return { ...prev,
+              full_name: updates.nome || prev.full_name,
+              cpf: updates.cpf || prev.cpf,
+              email: updates.email || prev.email,
+              cellphone_formated: updates.telefone || prev.cellphone_formated,
+              birthday: updates.nascimento || prev.birthday,
+              health_insurance_name: updates.convenio || prev.health_insurance_name,
+              dental_plan_card_number: updates.carteirinha || prev.dental_plan_card_number,
+            };
+          }
+          // Se vier do getPatient (refresh), merge direto
+          return { ...prev, ...updates, id: prev.id };
+        })} />}
         {tab === "agendamentos" && <AgendamentosTab />}
         {tab === "evolucoes"    && <EvolucoeTab paciente={paciente} evols={evols} uploads={uploads} buscando={buscando} onReload={() => paciente && recarregarUploads(paciente.id)} />}
         {tab === "notas"        && <NotasTab chat={chat} operator={operator} />}
@@ -315,6 +331,14 @@ function PerfilTab({ paciente, uploads, evols, buscando, onReload, onPacienteUpd
       if (r.ok) {
         setEditing(false);
         if (onPacienteUpdate) onPacienteUpdate(form);
+        // Recarrega os dados do paciente após 800ms para refletir a edição
+        setTimeout(async () => {
+          const fresh = await fetch(`/api/codental?action=patient&id=${p.id}&_t=${Date.now()}`, {
+            headers: { "X-Internal-Key": iKey },
+            cache: "no-store",
+          }).then(r => r.json()).catch(() => null);
+          if (fresh && !fresh.error && onPacienteUpdate) onPacienteUpdate(fresh);
+        }, 800);
       } else {
         const d = await r.json().catch(() => ({}));
         alert(d.error || "Erro ao salvar");
