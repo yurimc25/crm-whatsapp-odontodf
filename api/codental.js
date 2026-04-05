@@ -207,19 +207,33 @@ module.exports = async function handler(req, res) {
       if (rJson.ok) {
         const ct = rJson.headers.get("content-type") || "";
         if (ct.includes("json")) {
-          const data = await rJson.json();
-          return res.json({ uploads: Array.isArray(data) ? data : (data.uploads || []) });
+          try {
+            const data = await rJson.json();
+            const list = Array.isArray(data) ? data : (data.uploads || []);
+            console.log(`[uploads] id=${id} via JSON: ${list.length} items`);
+            return res.json({ uploads: list });
+          } catch (e) {
+            console.warn(`[uploads] id=${id} JSON parse falhou:`, e.message);
+          }
         }
+        // Se não for JSON real, segue para parse HTML
       }
 
-      // Fallback: busca página HTML e extrai uploads do JSON embutido
+      // Sempre tenta HTML como fallback
       const r = await codentalFetchHtml(`/patients/${id}/uploads`, session);
-      if (!r.ok) return res.status(r.status).json({ error: `Codental: ${r.status}` });
+      if (!r.ok) {
+        console.warn(`[uploads] id=${id} HTML status=${r.status}`);
+        return res.json({ uploads: [] });
+      }
 
       const ct = r.headers.get("content-type") || "";
       if (ct.includes("json")) {
-        const data = await r.json();
-        return res.json({ uploads: Array.isArray(data) ? data : (data.uploads || []) });
+        try {
+          const data = await r.json();
+          const list = Array.isArray(data) ? data : (data.uploads || []);
+          console.log(`[uploads] id=${id} via HTML-JSON: ${list.length} items`);
+          return res.json({ uploads: list });
+        } catch {}
       }
 
       // Parse HTML para extrair os uploads

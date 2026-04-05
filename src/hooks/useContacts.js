@@ -1,14 +1,17 @@
 // src/hooks/useContacts.js
-// Camadas de cache: localStorage (instantâneo) → MongoDB (1h) → Google API
-// O usuário vê os dados imediatamente do localStorage,
-// enquanto o MongoDB e o Google atualizam em background.
+// Hierarquia de contatos:
+// 1. localStorage (mapa acumulado — instantâneo, zero latência)
+// 2. Google Contacts bulk (carrega em background, ~2s)
+// 3. Codental searchByPhone (fallback individual por número desconhecido)
+// 4. Google Contacts individual lookup (último recurso)
+// Se nenhum encontrar → paciente novo
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { cache } from "../utils/cache";
 
-const LS_KEY   = "contacts_map";
-const LS_TTL   = 60 * 60 * 1000; // 1 hora no localStorage
-const API_TTL  = 60 * 60 * 1000; // 1 hora no MongoDB
+const LS_KEY  = "contacts_map";
+const LS_TTL  = 4 * 60 * 60 * 1000; // 4 horas
+const API_TTL = 4 * 60 * 60 * 1000;
 
 export function wahaIdToPhone(wahaId) {
   return (wahaId || "").replace(/@.*$/, "").replace(/\D/g, "");
@@ -16,88 +19,115 @@ export function wahaIdToPhone(wahaId) {
 
 export function formatPhone(digits) {
   const d = (digits || "").replace(/\D/g, "");
-  if (d.startsWith("55") && d.length === 13) return `(${d.slice(2,4)})${d.slice(4,9)}-${d.slice(9)}`;
-  if (d.startsWith("55") && d.length === 12) return `(${d.slice(2,4)})${d.slice(4,8)}-${d.slice(8)}`;
-  if (d.length === 11) return `(${d.slice(0,2)})${d.slice(2,7)}-${d.slice(7)}`;
-  if (d.length === 10) return `(${d.slice(0,2)})${d.slice(2,6)}-${d.slice(6)}`;
+  if (d.startsWith("55") && d.length === 13) return `(${d.slice(2,4)}) ${d.slice(4,9)}-${d.slice(9)}`;
+  if (d.startsWith("55") && d.length === 12) return `(${d.slice(2,4)}) ${d.slice(4,8)}-${d.slice(8)}`;
+  if (d.length === 11) return `(${d.slice(0,2)}) ${d.slice(2,7)}-${d.slice(7)}`;
+  if (d.length === 10) return `(${d.slice(0,2)}) ${d.slice(2,6)}-${d.slice(6)}`;
   return d || "—";
 }
 
+// Gera variantes de um número para lookup no mapa
+function phoneVariants(digits) {
+  const v = new Set([digits]);
+  const local = digits.startsWith("55") ? digits.slice(2) : digits;
+  v.add(local);
+  if (!digits.startsWith("55")) v.add("55" + digits);
+  // Com/sem o 9 (celular brasileiro)
+  if (local.length === 11 && local[2] === "9") v.add(local.slice(0,2) + local.slice(3));
+  if (local.length === 10) v.add(local.slice(0,2) + "9" + local.slice(2));
+  return [...v];
+}
+
+// Salva no localStorage renovando TTL
+function persistMap(map) {
+  try {
+    const raw = localStorage.getItem("crm_" + LS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      parsed.value   = { ...parsed.value, ...map };
+      parsed.expires = Date.now() + LS_TTL;
+      localStorage.setItem("crm_" + LS_KEY, JSON.stringify(parsed));
+    } else {
+      cache.set(LS_KEY, map, LS_TTL);
+    }
+  } catch {}
+}
+
 export function useContacts() {
-  // 1. Carrega do localStorage imediatamente (zero latência)
+  // 1. Carrega do localStorage imediatamente
   const [contactMap, setContactMap] = useState(() => cache.get(LS_KEY) || {});
   const [loading, setLoading]       = useState(false);
-  const [error, setError]           = useState(null);
-  const [source, setSource]         = useState("cache"); // cache | mongo | google
-
+  const [source, setSource]         = useState("cache");
   const internalKey = import.meta.env.VITE_INTERNAL_API_KEY || "";
+  // Rastreia números já pesquisados individualmente para não repetir
+  const lookedUp = useRef(new Set());
 
-  // 2. Tenta MongoDB (rápido, ~100ms), depois Google API se necessário
-  const fetchContacts = useCallback(async (force = false) => {
-    if (!force && cache.get(LS_KEY)) return; // localStorage válido, não precisa buscar
-
+  // 2. Carrega Google Contacts em background (bulk, uma vez)
+  const fetchGoogle = useCallback(async (force = false) => {
+    if (!force && cache.get(LS_KEY)) return;
     setLoading(true);
-    setError(null);
-
     try {
-      // Tenta cache do MongoDB primeiro
+      // Tenta MongoDB cache primeiro
       const mongoRes = await fetch(`/api/db?action=contacts_cache`, {
         headers: { "X-Internal-Key": internalKey },
       });
-
       if (mongoRes.ok) {
         const { contacts, expired } = await mongoRes.json();
         if (contacts && !expired) {
-          setContactMap(contacts);
-          cache.set(LS_KEY, contacts, LS_TTL);
+          setContactMap(prev => {
+            const merged = { ...contacts, ...prev }; // mapa local tem prioridade
+            cache.set(LS_KEY, merged, LS_TTL);
+            return merged;
+          });
           setSource("mongo");
           setLoading(false);
           return;
         }
       }
-    } catch (e) {
-      console.warn("[useContacts] MongoDB cache falhou, indo para Google API:", e.message);
-    }
+    } catch {}
 
-    // Busca na Google Contacts API via Vercel Function
+    // Google API bulk
     try {
       const r = await fetch("/api/contacts", {
         headers: { "X-Internal-Key": internalKey },
       });
-
-      if (!r.ok) {
-        const err = await r.json().catch(() => ({}));
-        throw new Error(err.error || `HTTP ${r.status}`);
+      if (r.ok) {
+        const { contacts } = await r.json();
+        setContactMap(prev => {
+          const merged = { ...contacts, ...prev }; // mapa local tem prioridade
+          cache.set(LS_KEY, merged, LS_TTL);
+          // Salva no MongoDB
+          fetch(`/api/db?action=contacts_cache`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Internal-Key": internalKey },
+            body: JSON.stringify({ contacts: merged }),
+          }).catch(() => {});
+          return merged;
+        });
+        setSource("google");
       }
-
-      const { contacts } = await r.json();
-      setContactMap(contacts);
-      cache.set(LS_KEY, contacts, LS_TTL);
-      setSource("google");
-
-      // Salva no MongoDB para próximas requisições
-      fetch(`/api/db?action=contacts_cache`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Internal-Key": internalKey },
-        body: JSON.stringify({ contacts }),
-      }).catch(() => {});
-
     } catch (e) {
-      console.warn("[useContacts] Google API falhou:", e.message);
-      setError(e.message);
+      console.warn("[contacts] Google bulk falhou:", e.message);
     } finally {
       setLoading(false);
     }
   }, [internalKey]);
 
   useEffect(() => {
-    fetchContacts();
-    // Atualiza em background a cada hora
-    const interval = setInterval(() => fetchContacts(true), API_TTL);
-    return () => clearInterval(interval);
-  }, [fetchContacts]);
+    fetchGoogle();
+    const iv = setInterval(() => fetchGoogle(true), API_TTL);
+    return () => clearInterval(iv);
+  }, [fetchGoogle]);
 
-  // Adiciona nomes do Codental ao mapa local — sempre persiste no localStorage
+  // Busca no mapa (todas as variantes)
+  const findInMap = useCallback((phone, map) => {
+    for (const v of phoneVariants(phone)) {
+      if (map[v]) return map[v];
+    }
+    return null;
+  }, []);
+
+  // 3. Adiciona contatos do Codental/outros ao mapa — sempre persiste
   const addLocalContact = useCallback((entries) => {
     const list = Array.isArray(entries) ? entries : [entries];
     setContactMap(prev => {
@@ -106,44 +136,55 @@ export function useContacts() {
       for (const { phone, name } of list) {
         if (!phone || !name) continue;
         const digits = phone.replace(/\D/g, "");
-        const variants = new Set([digits]);
-        if (!digits.startsWith("55")) variants.add("55" + digits);
-        const local = digits.startsWith("55") ? digits.slice(2) : digits;
-        variants.add(local);
-        if (local.length === 11 && local[2] === "9") variants.add(local.slice(0,2) + local.slice(3));
-        if (local.length === 10) variants.add(local.slice(0,2) + "9" + local.slice(2));
-
-        for (const v of variants) {
-          // Codental não sobrescreve Google Contacts, mas preenche o que falta
+        for (const v of phoneVariants(digits)) {
           if (!prev[v]) { updated[v] = name; changed = true; }
         }
       }
       if (!changed) return prev;
-      // Persiste SEMPRE no localStorage, estendendo o TTL existente
-      try {
-        const raw = localStorage.getItem("crm_" + LS_KEY);
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          parsed.value = { ...parsed.value, ...updated };
-          // Renova TTL por mais 1h a cada inserção
-          parsed.expires = Date.now() + LS_TTL;
-          localStorage.setItem("crm_" + LS_KEY, JSON.stringify(parsed));
-        } else {
-          cache.set(LS_KEY, updated, LS_TTL);
-        }
-      } catch {}
+      persistMap(updated);
       return updated;
     });
   }, []);
 
-  // Busca individual de número no Google Contacts
-  // Chamado pelo ChatList quando !hasContact — faz uma busca específica
+  // 4. Lookup individual — tenta Codental, depois Google
   const lookupPhone = useCallback(async (wahaId) => {
     const phone = wahaIdToPhone(wahaId);
     if (!phone || phone.length < 7) return;
-    // Já tem no mapa — não busca de novo
-    if (contactMap[phone]) return;
+    if (lookedUp.current.has(phone)) return;
+    // Verifica se já está no mapa atual
+    if (findInMap(phone, contactMap)) return;
+    lookedUp.current.add(phone);
 
+    // 3a. Tenta Codental searchByPhone
+    try {
+      const r = await fetch(
+        `/api/codental?action=search&phone=${phone}&_t=${Date.now()}`,
+        { headers: { "X-Internal-Key": internalKey, "Cache-Control": "no-cache" }, cache: "no-store" }
+      );
+      if (r.ok) {
+        const data = await r.json();
+        const patient = data?.patients?.[0];
+        if (patient) {
+          const name = patient.name || patient.full_name || patient.fullName;
+          if (name) {
+            console.log(`[contacts] Codental ${phone} → ${name}`);
+            setContactMap(prev => {
+              const updated = { ...prev };
+              let changed = false;
+              for (const v of phoneVariants(phone)) {
+                if (!prev[v]) { updated[v] = name; changed = true; }
+              }
+              if (!changed) return prev;
+              persistMap(updated);
+              return updated;
+            });
+            return; // achou no Codental, para aqui
+          }
+        }
+      }
+    } catch {}
+
+    // 3b. Tenta Google individual lookup
     try {
       const r = await fetch(
         `/api/contacts?action=search&phone=${phone}`,
@@ -152,38 +193,24 @@ export function useContacts() {
       if (!r.ok) return;
       const { found, name, variants } = await r.json();
       if (!found || !name) return;
-
-      // Injeta no mapa todas as variantes retornadas
       setContactMap(prev => {
         const updated = { ...prev };
         let changed = false;
-        for (const v of (variants || [phone])) {
+        for (const v of (variants || phoneVariants(phone))) {
           if (!prev[v]) { updated[v] = name; changed = true; }
         }
         if (!changed) return prev;
-        // Persiste no localStorage renovando TTL
-        try {
-          const raw = localStorage.getItem("crm_" + LS_KEY);
-          if (raw) {
-            const parsed = JSON.parse(raw);
-            parsed.value = { ...parsed.value, ...updated };
-            parsed.expires = Date.now() + LS_TTL;
-            localStorage.setItem("crm_" + LS_KEY, JSON.stringify(parsed));
-          } else {
-            cache.set(LS_KEY, updated, LS_TTL);
-          }
-        } catch {}
-        console.log(`[contacts] lookup ${phone} → ${name}`);
+        persistMap(updated);
+        console.log(`[contacts] Google ${phone} → ${name}`);
         return updated;
       });
     } catch {}
-  }, [contactMap, internalKey]);
+  }, [contactMap, internalKey, findInMap]);
 
   const resolveName = useCallback((wahaId, pushname) => {
     const phone = wahaIdToPhone(wahaId);
-    // Ordem de prioridade: Google Contacts > pushname do WhatsApp > nada
-    return contactMap[phone] || pushname || null;
-  }, [contactMap]);
+    return findInMap(phone, contactMap) || pushname || null;
+  }, [contactMap, findInMap]);
 
   const displayName = useCallback((wahaId, fallback, pushname) => {
     return resolveName(wahaId, pushname) || fallback || formatPhone(wahaIdToPhone(wahaId));
@@ -193,7 +220,6 @@ export function useContacts() {
     const phone       = wahaIdToPhone(wahaId);
     const fmtPhone    = formatPhone(phone);
     const contactName = resolveName(wahaId, pushname);
-
     if (contactName) {
       return { hasContact: true, name: contactName, phone: fmtPhone };
     }
@@ -204,7 +230,7 @@ export function useContacts() {
   return {
     contactMap, resolveName, displayName, displayInfo,
     addLocalContact, lookupPhone,
-    loading, error, source,
-    refresh: () => fetchContacts(true),
+    loading, source,
+    refresh: () => fetchGoogle(true),
   };
 }
