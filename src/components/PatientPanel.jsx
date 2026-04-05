@@ -59,29 +59,26 @@ export default function PatientPanel({ chat, operator }) {
 
   // Carrega uploads e evoluções de um paciente específico
   async function recarregarUploads(pid) {
-    const u = await getUploads(pid);
-    console.log("[uploads] retorno:", u);
-    setUploads(u?.uploads || []);
+    const u = await getUploads(pid).catch(() => null);
+    if (u?.uploads) setUploads(u.uploads);
   }
 
   async function carregarDados(p) {
     setPaciente(p);
     setUploads([]); setEvols(null);
     if (!p?.id) return;
-    // Carrega uploads e evoluções em paralelo, separadamente
-    const [u, e] = await Promise.all([
-      getUploads(p.id).catch(err => { console.error("[uploads] erro:", err); return null; }),
-      getEvolutions(p.id).catch(err => { console.error("[evols] erro:", err); return null; }),
+    // Tudo em paralelo — getPatient agora é uma única request (só HTML)
+    const [u, e, full] = await Promise.all([
+      getUploads(p.id).catch(() => null),
+      getEvolutions(p.id).catch(() => null),
+      getPatient(p.id).catch(() => null),
     ]);
-    console.log("[carregarDados] id=", p.id, "uploads retorno:", JSON.stringify(u)?.slice(0,200), "evols retorno:", JSON.stringify(e)?.slice(0,100));
+    console.log("[carregarDados] id=", p.id, "uploads:", u?.uploads?.length, "evols:", e?.evolutions?.length, "patient fields:", full ? Object.keys(full).join(",") : "null");
     setUploads(u?.uploads || []);
     setEvols(!e || e.error ? [] : (e.evolutions || []));
-    // Perfil completo em background (email, nascimento, convênio) — não bloqueia os uploads
-    getPatient(p.id).then(full => {
-      if (full && !full.error) {
-        setPaciente(prev => prev?.id === p.id ? { ...prev, ...full, id: p.id } : prev);
-      }
-    }).catch(() => {});
+    if (full && !full.error) {
+      setPaciente(prev => prev?.id === p.id ? { ...prev, ...full, id: p.id } : prev);
+    }
   }
 
   useEffect(() => {
@@ -213,9 +210,9 @@ export default function PatientPanel({ chat, operator }) {
       {/* Conteúdo */}
       <div style={{ flex:1, overflowY:"auto", padding:"12px 14px",
         display:"flex", flexDirection:"column", gap:10 }}>
-        {tab === "perfil"       && <PerfilTab paciente={paciente} uploads={uploads} evols={evols} buscando={buscando} onReload={() => paciente && carregarDados(paciente)} />}
+        {tab === "perfil"       && <PerfilTab paciente={paciente} uploads={uploads} evols={evols} buscando={buscando} onReload={() => paciente && recarregarUploads(paciente.id)} />}
         {tab === "agendamentos" && <AgendamentosTab />}
-        {tab === "evolucoes"    && <EvolucoeTab paciente={paciente} evols={evols} uploads={uploads} buscando={buscando} onReload={() => paciente && carregarDados(paciente)} />}
+        {tab === "evolucoes"    && <EvolucoeTab paciente={paciente} evols={evols} uploads={uploads} buscando={buscando} onReload={() => paciente && recarregarUploads(paciente.id)} />}
         {tab === "notas"        && <NotasTab chat={chat} operator={operator} />}
       </div>
     </div>
@@ -458,7 +455,7 @@ function UploadsGrid({ uploads, paciente, maxItems = 9, onUploaded }) {
       });
       if (r.ok) {
         setUploadMsg({ ok: true, text: `✓ ${file.name} enviado!` });
-        if (onUploaded) setTimeout(onUploaded, 800);
+        if (onUploaded) setTimeout(onUploaded, 2500);
       } else {
         const d = await r.json().catch(() => ({}));
         setUploadMsg({ ok: false, text: `✗ ${d.error || "Falha no envio"}` });
