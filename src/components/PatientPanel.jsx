@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useContactsCtx } from "../App";
 import { useCodental } from "../hooks/useCodental";
 import { FileLightbox } from "./ChatWindow";
@@ -14,6 +14,7 @@ const T = {
   accentBg: "#3a2a1e",
   green:    "#4caf87",
   greenBg:  "#1a2e22",
+  red:      "#e57373",
   inputBg:  "#2d2d2d",
   stub:     "#1e1e1e",
 };
@@ -56,26 +57,40 @@ export default function PatientPanel({ chat, operator }) {
   const [evols, setEvols]         = useState(null);
   const [buscando, setBuscando]   = useState(false);
 
-  // Separada do useEffect para poder ser chamada também pelo seletor de múltiplos pacientes
-  const carregarDados = async (p) => {
+  // Carrega uploads e evoluções de um paciente específico
+  async function recarregarUploads(pid) {
+    const u = await getUploads(pid);
+    console.log("[uploads] retorno:", u);
+    setUploads(u?.uploads || []);
+  }
+
+  async function carregarDados(p) {
     setPaciente(p);
     setUploads([]); setEvols(null);
     if (!p?.id) return;
-    const [u, e] = await Promise.all([getUploads(p.id), getEvolutions(p.id)]);
-    console.log("[carregarDados] id=", p.id, "uploads:", u, "evols:", e?.evolutions?.length);
+    // Carrega uploads e evoluções em paralelo, separadamente
+    const [u, e] = await Promise.all([
+      getUploads(p.id).catch(err => { console.error("[uploads] erro:", err); return null; }),
+      getEvolutions(p.id).catch(err => { console.error("[evols] erro:", err); return null; }),
+    ]);
+    console.log("[carregarDados] id=", p.id, "uploads retorno:", JSON.stringify(u)?.slice(0,200), "evols retorno:", JSON.stringify(e)?.slice(0,100));
     setUploads(u?.uploads || []);
-    setEvols(e?.error ? [] : (e?.evolutions || []));
-  };
+    setEvols(!e || e.error ? [] : (e.evolutions || []));
+  }
 
   useEffect(() => {
     setPacientes([]); setPaciente(null); setUploads([]); setEvols(null); setBuscando(true);
+    let cancelled = false;
     async function buscar() {
       try {
         const phone = info.phone.replace(/\D/g, "");
+        console.log("[buscar] phone=", phone, "chat.id=", chat.id);
         let result = phone ? await searchByPhone(phone) : null;
         if (!result?.patients?.length && info.hasContact) {
           result = await searchByName(info.name.split(" ").slice(0,3).join(" "));
         }
+        console.log("[buscar] result patients=", result?.patients?.length);
+        if (cancelled) return;
         if (result?.patients?.length > 0) {
           setPacientes(result.patients);
           const p = result.patients[0];
@@ -90,9 +105,10 @@ export default function PatientPanel({ chat, operator }) {
         console.error("[buscar] erro:", err);
         setEvols([]);
       }
-      finally { setBuscando(false); }
+      finally { if (!cancelled) setBuscando(false); }
     }
     buscar();
+    return () => { cancelled = true; };
   }, [chat.id]);
 
   const TABS = [
@@ -191,9 +207,9 @@ export default function PatientPanel({ chat, operator }) {
       {/* Conteúdo */}
       <div style={{ flex:1, overflowY:"auto", padding:"12px 14px",
         display:"flex", flexDirection:"column", gap:10 }}>
-        {tab === "perfil"       && <PerfilTab paciente={paciente} uploads={uploads} evols={evols} buscando={buscando} />}
+        {tab === "perfil"       && <PerfilTab paciente={paciente} uploads={uploads} evols={evols} buscando={buscando} onReload={() => paciente && carregarDados(paciente)} />}
         {tab === "agendamentos" && <AgendamentosTab />}
-        {tab === "evolucoes"    && <EvolucoeTab paciente={paciente} evols={evols} uploads={uploads} buscando={buscando} />}
+        {tab === "evolucoes"    && <EvolucoeTab paciente={paciente} evols={evols} uploads={uploads} buscando={buscando} onReload={() => paciente && carregarDados(paciente)} />}
         {tab === "notas"        && <NotasTab chat={chat} operator={operator} />}
       </div>
     </div>
@@ -201,7 +217,7 @@ export default function PatientPanel({ chat, operator }) {
 }
 
 // ── Aba Perfil ────────────────────────────────────────────────────
-function PerfilTab({ paciente, uploads, evols, buscando }) {
+function PerfilTab({ paciente, uploads, evols, buscando, onReload }) {
   // Extrai últimos dentistas únicos das evoluções (até 3)
   const ultimosDentistas = evols?.length > 0
     ? [...new Map(
@@ -300,12 +316,10 @@ function PerfilTab({ paciente, uploads, evols, buscando }) {
         </Section>
       )}
 
-      {/* Miniaturas de arquivos */}
-      {uploads.length > 0 && (
-        <Section label={`Arquivos (${uploads.length})`}>
-          <UploadsGrid uploads={uploads} paciente={paciente} maxItems={6} />
-        </Section>
-      )}
+      {/* Arquivos do paciente — sempre visível para permitir upload */}
+      <Section label={uploads.length > 0 ? `Arquivos (${uploads.length})` : "Arquivos"}>
+        <UploadsGrid uploads={uploads} paciente={paciente} maxItems={6} onUploaded={onReload} />
+      </Section>
     </div>
   );
 }
@@ -324,7 +338,7 @@ function AgendamentosTab() {
 }
 
 // ── Aba Evoluções ─────────────────────────────────────────────────
-function EvolucoeTab({ paciente, evols, uploads, buscando }) {
+function EvolucoeTab({ paciente, evols, uploads, buscando, onReload }) {
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
 
@@ -396,7 +410,7 @@ function EvolucoeTab({ paciente, evols, uploads, buscando }) {
                 Ver todos no Codental →
               </a>
             )}
-            <UploadsGrid uploads={uploads} paciente={paciente} maxItems={12} />
+            <UploadsGrid uploads={uploads} paciente={paciente} maxItems={12} onUploaded={onReload} />
             {uploads.length > 12 && (
               <div style={{ color:T.sub, fontSize:10, textAlign:"center", marginTop:4 }}>
                 +{uploads.length - 12} arquivos no Codental
@@ -410,56 +424,146 @@ function EvolucoeTab({ paciente, evols, uploads, buscando }) {
 }
 
 // ── Grid de uploads reutilizável ──────────────────────────────────
-function UploadsGrid({ uploads, paciente, maxItems = 9 }) {
-  const [lightbox, setLightbox] = useState(null);
+function UploadsGrid({ uploads, paciente, maxItems = 9, onUploaded }) {
+  const [lightbox, setLightbox]     = useState(null);
+  const [dragging, setDragging]     = useState(false);
+  const [uploading, setUploading]   = useState(false);
+  const [uploadMsg, setUploadMsg]   = useState(null);
+  const iKey = import.meta.env.VITE_INTERNAL_API_KEY || "";
+  const inputRef = useRef(null);
+
+  async function enviarArquivo(file) {
+    if (!paciente?.id || !file) return;
+    setUploading(true);
+    setUploadMsg(null);
+    try {
+      const fd = new FormData();
+      fd.append("upload[file]", file);
+      const r = await fetch(`/api/codental?action=upload_file&id=${paciente.id}`, {
+        method: "POST",
+        headers: { "X-Internal-Key": iKey },
+        body: fd,
+      });
+      if (r.ok) {
+        setUploadMsg({ ok: true, text: `✓ ${file.name} enviado!` });
+        if (onUploaded) setTimeout(onUploaded, 800);
+      } else {
+        const d = await r.json().catch(() => ({}));
+        setUploadMsg({ ok: false, text: `✗ ${d.error || "Falha no envio"}` });
+      }
+    } catch (e) {
+      setUploadMsg({ ok: false, text: `✗ ${e.message}` });
+    } finally {
+      setUploading(false);
+      setTimeout(() => setUploadMsg(null), 3000);
+    }
+  }
+
+  function onDrop(e) {
+    e.preventDefault();
+    setDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) enviarArquivo(file);
+  }
+
+  function onDragOver(e) { e.preventDefault(); setDragging(true); }
+  function onDragLeave(e) { e.preventDefault(); setDragging(false); }
+
+  function onFileInput(e) {
+    const file = e.target.files?.[0];
+    if (file) enviarArquivo(file);
+    e.target.value = "";
+  }
 
   return (
     <>
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:6 }}>
-        {uploads.slice(0, maxItems).map((u, i) => {
-          // preview_url = codental-static.com (CDN público, sem auth)
-          // download_url = app.codental.com.br/rails/active_storage (redirect público com token S3)
-          const previewUrl  = u.preview_url || null;
-          const downloadUrl = u.download_url || u.url || null;
-          const name  = u.name || u.filename || u.title || `Arquivo ${i+1}`;
-          const ct    = u.content_type || u.mime_type || "";
-          const isImg = /\.(jpg|jpeg|png|gif|webp|bmp)/i.test(name) || ct.startsWith("image/");
-          const isPdf = /\.pdf/i.test(name) || ct === "application/pdf";
+      <div
+        onDrop={onDrop}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        style={{ position:"relative" }}>
 
-          const fileForLightbox = { ...u, url: downloadUrl, preview_url: previewUrl, download_url: downloadUrl };
-
-          return (
-            <div key={u.id || i} onClick={() => setLightbox(fileForLightbox)}
-              title={name}
-              style={{ borderRadius:8, overflow:"hidden",
-                background:T.inputBg, border:`1px solid ${T.border}`,
-                cursor:"pointer", aspectRatio:"1",
-                transition:"border-color .15s, transform .1s" }}
-              onMouseEnter={e => { e.currentTarget.style.borderColor=T.accent; e.currentTarget.style.transform="scale(1.03)"; }}
-              onMouseLeave={e => { e.currentTarget.style.borderColor=T.border; e.currentTarget.style.transform="scale(1)"; }}>
-
-              {isImg && previewUrl ? (
-                <img src={previewUrl} alt={name}
-                  style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }}
-                  onError={e => { e.target.style.display="none"; }} />
-              ) : (
-                <div style={{ width:"100%", height:"100%", display:"flex",
-                  flexDirection:"column", alignItems:"center",
-                  justifyContent:"center", gap:4, padding:6 }}>
-                  <span style={{ fontSize:22 }}>
-                    {isPdf ? "📄" : isImg ? "🖼️" : "📎"}
-                  </span>
-                  <span style={{ color:T.sub, fontSize:8, textAlign:"center",
-                    overflow:"hidden", textOverflow:"ellipsis",
-                    width:"100%", whiteSpace:"nowrap", padding:"0 2px" }}>
-                    {name.length > 18 ? name.slice(0,15)+"..." : name}
-                  </span>
-                </div>
-              )}
+        {/* Overlay de drag */}
+        {dragging && (
+          <div style={{
+            position:"absolute", inset:0, zIndex:10, borderRadius:8,
+            background:"rgba(212,149,106,0.15)", border:`2px dashed ${T.accent}`,
+            display:"flex", alignItems:"center", justifyContent:"center",
+            backdropFilter:"blur(2px)",
+          }}>
+            <div style={{ color:T.accent, fontSize:13, fontWeight:700, textAlign:"center" }}>
+              📎 Solte para enviar ao Codental
             </div>
-          );
-        })}
+          </div>
+        )}
+
+        {/* Grid de miniaturas */}
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:6 }}>
+          {uploads.slice(0, maxItems).map((u, i) => {
+            const previewUrl  = u.preview_url || null;
+            const downloadUrl = u.download_url || u.url || null;
+            const name  = u.name || u.filename || u.title || `Arquivo ${i+1}`;
+            const ct    = u.content_type || u.mime_type || "";
+            const isImg = /\.(jpg|jpeg|png|gif|webp|bmp)/i.test(name) || ct.startsWith("image/");
+            const isPdf = /\.pdf/i.test(name) || ct === "application/pdf";
+            const fileForLightbox = { ...u, url: downloadUrl, preview_url: previewUrl, download_url: downloadUrl };
+            return (
+              <div key={u.id || i} onClick={() => setLightbox(fileForLightbox)}
+                title={name}
+                style={{ borderRadius:8, overflow:"hidden",
+                  background:T.inputBg, border:`1px solid ${T.border}`,
+                  cursor:"pointer", aspectRatio:"1",
+                  transition:"border-color .15s, transform .1s" }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor=T.accent; e.currentTarget.style.transform="scale(1.03)"; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor=T.border; e.currentTarget.style.transform="scale(1)"; }}>
+                {isImg && previewUrl ? (
+                  <img src={previewUrl} alt={name}
+                    style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }}
+                    onError={e => { e.target.style.display="none"; }} />
+                ) : (
+                  <div style={{ width:"100%", height:"100%", display:"flex",
+                    flexDirection:"column", alignItems:"center",
+                    justifyContent:"center", gap:4, padding:6 }}>
+                    <span style={{ fontSize:22 }}>{isPdf ? "📄" : isImg ? "🖼️" : "📎"}</span>
+                    <span style={{ color:T.sub, fontSize:8, textAlign:"center",
+                      overflow:"hidden", textOverflow:"ellipsis",
+                      width:"100%", whiteSpace:"nowrap", padding:"0 2px" }}>
+                      {name.length > 18 ? name.slice(0,15)+"..." : name}
+                    </span>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Footer: arrastar ou clicar para enviar */}
+        <label style={{
+          display:"flex", alignItems:"center", justifyContent:"center", gap:6,
+          marginTop:8, padding:"6px 0", borderRadius:6, cursor:"pointer",
+          border:`1px dashed ${T.border}`, color:T.sub, fontSize:10,
+          background:"transparent", transition:"all .15s",
+          opacity: uploading ? .5 : 1,
+        }}
+          onMouseEnter={e => { e.currentTarget.style.borderColor=T.accent; e.currentTarget.style.color=T.accent; }}
+          onMouseLeave={e => { e.currentTarget.style.borderColor=T.border; e.currentTarget.style.color=T.sub; }}>
+          <input type="file" style={{ display:"none" }} onChange={onFileInput} disabled={uploading} />
+          {uploading ? "⏳ Enviando..." : "📎 Arraste ou clique para enviar arquivo"}
+        </label>
+
+        {/* Mensagem de status */}
+        {uploadMsg && (
+          <div style={{
+            marginTop:4, padding:"4px 8px", borderRadius:6, fontSize:11, textAlign:"center",
+            background: uploadMsg.ok ? T.greenBg : "#2e1a1a",
+            color: uploadMsg.ok ? T.green : T.red,
+            border: `1px solid ${uploadMsg.ok ? T.green : T.red}44`,
+          }}>
+            {uploadMsg.text}
+          </div>
+        )}
       </div>
+
       {lightbox && (
         <FileLightbox file={lightbox} onClose={() => setLightbox(null)} />
       )}
