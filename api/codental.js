@@ -16,6 +16,48 @@ async function getDb() {
 const APP_BASE = process.env.CODENTAL_BASE_URL || "https://app.codental.com.br";
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
+// Planos confirmados da clínica — elimina request extra ao /patients/new
+const DENTAL_PLANS = [
+  { id: "21004", name: "Amil" },
+  { id: "46565", name: "Bradesco" },
+  { id: "46571", name: "Brasil Dental BB" },
+  { id: "46580", name: "Brazil Dental" },
+  { id: "46570", name: "Care Plus" },
+  { id: "46575", name: "Dental Uni" },
+  { id: "46566", name: "GEAP" },
+  { id: "46567", name: "HAPVIDA" },
+  { id: "46582", name: "INAS DF" },
+  { id: "46564", name: "INPAO Dental" },
+  { id: "46576", name: "MedSênior" },
+  { id: "46562", name: "Metlife" },
+  { id: "46568", name: "NotreDame" },
+  { id: "46583", name: "Odont" },
+  { id: "46563", name: "Odontogroup" },
+  { id: "46572", name: "Odontoprev" },
+  { id: "46581", name: "Outro (Reembolso)" },
+  { id: "19304", name: "Particular" },
+  { id: "46579", name: "PLAN ASSISTE" },
+  { id: "46569", name: "Porto Seguro" },
+  { id: "46573", name: "Prevident" },
+  { id: "46577", name: "PRIVIAN" },
+  { id: "46526", name: "Quallity Pró Saúde" },
+  { id: "46578", name: "Rede Unna" },
+  { id: "46561", name: "Sul América Odonto" },
+  { id: "46560", name: "Unimed" },
+  { id: "46574", name: "Uniodonto" },
+  { id: "46584", name: "W dental" },
+];
+
+function resolvePlanId(convenio) {
+  if (!convenio) return "19304"; // Particular
+  const norm = s => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]/g,"");
+  const cn = norm(convenio);
+  const match = DENTAL_PLANS.find(p => norm(p.name) === cn)
+             || DENTAL_PLANS.find(p => norm(p.name).includes(cn) || cn.includes(norm(p.name)))
+             || DENTAL_PLANS.find(p => cn.split(/\s+/).filter(w=>w.length>3).some(w=>norm(p.name).includes(w)));
+  return match?.id || "19304";
+}
+
 // Cache de sessão em memória — evita hit no MongoDB a cada request
 let _sessionCache = null;
 let _sessionCacheTs = 0;
@@ -494,25 +536,9 @@ module.exports = async function handler(req, res) {
       }
       if (body.carteirinha !== undefined) f.append("patient[dental_plan_card_number]", body.carteirinha);
 
-      // Convênio — resolve dental_plan_id se vier nome
+      // Convênio — resolve dental_plan_id usando mapa hardcoded
       if (body.convenio !== undefined) {
-        const pr = await codentalFetchHtml("/patients/new", session);
-        if (pr.ok) {
-          const html = await pr.text();
-          const selectM = html.match(/id="patient_dental_plan_id"[^>]*>([\s\S]*?)<\/select>/);
-          if (selectM) {
-            const plans = [];
-            const optReg = /<option[^>]*value="(\d+)"[^>]*>([^<]+)<\/option>/g;
-            let m;
-            while ((m = optReg.exec(selectM[1])) !== null) plans.push({ id: m[1], name: m[2].trim() });
-            const norm = s => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]/g,"");
-            const cn = norm(body.convenio);
-            const match = plans.find(p => norm(p.name) === cn)
-                       || plans.find(p => norm(p.name).includes(cn) || cn.includes(norm(p.name)))
-                       || plans.find(p => cn.split(/\s+/).filter(w=>w.length>3).some(w=>norm(p.name).includes(w)));
-            if (match) f.append("patient[dental_plan_id]", match.id);
-          }
-        }
+        f.append("patient[dental_plan_id]", resolvePlanId(body.convenio));
       }
 
       const r = await fetch(`${APP_BASE}/patients/${id}`, {
@@ -542,22 +568,7 @@ module.exports = async function handler(req, res) {
 
     // ── Buscar planos do convênio ────────────────────────────────────
     if (action === "dental_plans") {
-      const session = await getSession();
-      // Busca a página de novo paciente para extrair os planos disponíveis
-      const r = await codentalFetchHtml("/patients/new", session);
-      if (!r.ok) return res.status(r.status).json({ error: "Falha ao buscar planos" });
-      const html = await r.text();
-      const plans = [];
-      // Extrai <option value="ID">Nome</option> dentro do select de dental_plan_id
-      const selectM = html.match(/id="patient_dental_plan_id"[^>]*>([\s\S]*?)<\/select>/);
-      if (selectM) {
-        const optReg = /<option[^>]*value="(\d+)"[^>]*>([^<]+)<\/option>/g;
-        let m;
-        while ((m = optReg.exec(selectM[1])) !== null) {
-          plans.push({ id: m[1], name: m[2].trim() });
-        }
-      }
-      return res.json({ plans });
+      return res.json({ plans: DENTAL_PLANS });
     }
 
     // ── Criar paciente ───────────────────────────────────────────────
@@ -597,45 +608,8 @@ module.exports = async function handler(req, res) {
       // ── Resolve dental_plan_id a partir do nome do convênio ──────
       let dentalPlanId = "";
       if (convenio) {
-        // Busca os planos da página de novo paciente
-        try {
-          const pr = await codentalFetchHtml("/patients/new", session);
-          if (pr.ok) {
-            const html = await pr.text();
-            const plans = [];
-            const selectM = html.match(/id="patient_dental_plan_id"[^>]*>([\s\S]*?)<\/select>/);
-            if (selectM) {
-              const optReg = /<option[^>]*value="(\d+)"[^>]*>([^<]+)<\/option>/g;
-              let m;
-              while ((m = optReg.exec(selectM[1])) !== null) {
-                plans.push({ id: m[1], name: m[2].trim() });
-              }
-            }
-            // Match fuzzy: normaliza e compara
-            const norm = s => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]/g,"");
-            const convNorm = norm(convenio);
-            // Match exato primeiro
-            let match = plans.find(p => norm(p.name) === convNorm);
-            // Match parcial: convenio contém parte do nome do plano ou vice-versa
-            if (!match) match = plans.find(p => norm(p.name).includes(convNorm) || convNorm.includes(norm(p.name)));
-            // Match por palavras-chave (ex: "quality" → "Quallity Pró Saúde")
-            if (!match) {
-              const words = convNorm.split(/\s+/).filter(w => w.length > 3);
-              match = plans.find(p => words.some(w => norm(p.name).includes(w)));
-            }
-            if (match) {
-              dentalPlanId = match.id;
-              console.log(`[codental/create] convênio "${convenio}" → id=${match.id} (${match.name})`);
-            } else {
-              // Default: Particular (19304)
-              const particular = plans.find(p => norm(p.name).includes("particular"));
-              dentalPlanId = particular?.id || "19304";
-              console.log(`[codental/create] convênio "${convenio}" não encontrado, usando Particular`);
-            }
-          }
-        } catch (e) {
-          console.warn("[codental/create] Erro ao buscar planos:", e.message);
-        }
+        dentalPlanId = resolvePlanId(convenio);
+        console.log(`[codental/create] convênio "${convenio}" → id=${dentalPlanId}`);
       }
 
       console.log("[codental/create]", JSON.stringify({ nome, cpfFmt, phoneFmt, email, birthdayFmt, dentalPlanId }));
