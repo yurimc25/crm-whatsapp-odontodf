@@ -3,6 +3,30 @@ import PatientCardDetected from "./modules/PatientCardDetected";
 import { QuickMessages } from "./modules/QuickMessages";
 import { useContactsCtx } from "../App";
 import { normalizeMessage } from "../services/waha";
+
+// Renderiza formatação WhatsApp: *negrito* _itálico_ ~riscado~
+function renderText(text) {
+  if (!text) return null;
+  // Divide em segmentos preservando os marcadores
+  const parts = [];
+  const re = /(\*[^*\n]+\*|_[^_\n]+_|~[^~\n]+~)/g;
+  let last = 0, m;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) parts.push({ t: "plain", v: text.slice(last, m.index) });
+    const raw = m[0];
+    if (raw.startsWith("*"))      parts.push({ t: "bold",   v: raw.slice(1, -1) });
+    else if (raw.startsWith("_")) parts.push({ t: "italic", v: raw.slice(1, -1) });
+    else if (raw.startsWith("~")) parts.push({ t: "strike", v: raw.slice(1, -1) });
+    last = m.index + raw.length;
+  }
+  if (last < text.length) parts.push({ t: "plain", v: text.slice(last) });
+  return parts.map((p, i) => {
+    if (p.t === "bold")   return <strong key={i} style={{ fontWeight:700 }}>{p.v}</strong>;
+    if (p.t === "italic") return <em key={i} style={{ fontStyle:"italic" }}>{p.v}</em>;
+    if (p.t === "strike") return <s key={i}>{p.v}</s>;
+    return <span key={i}>{p.v}</span>;
+  });
+}
 import { cache } from "../utils/cache";
 
 const MSGS_PREFIX = "waha_msgs_";
@@ -89,8 +113,8 @@ export default function ChatWindow({
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
-    if (nearBottom) bottomRef.current?.scrollIntoView({ behavior:"smooth" });
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 300;
+    if (nearBottom) bottomRef.current?.scrollIntoView({ behavior:"instant" });
   }, [messages]);
 
   const handleScroll = useCallback(async () => {
@@ -379,7 +403,7 @@ function MessageBubble({ msg, currentOperator }) {
           {msg.text && (
             <div style={{ color:T.text, fontSize:13, lineHeight:1.55, whiteSpace:"pre-wrap",
               padding: msg.media ? "6px 8px 2px" : 0 }}>
-              {msg.text}
+              {renderText(msg.text)}
             </div>
           )}
           <div style={{ color:T.sub, fontSize:10, marginTop:4, textAlign:"right",
