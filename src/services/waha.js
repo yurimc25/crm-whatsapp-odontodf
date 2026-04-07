@@ -221,7 +221,10 @@ export function normalizeMessage(wahaMsg) {
   const tsMs  = tsRaw ? tsRaw * 1000 : Date.now();
   const ts    = new Date(tsMs).toISOString();
 
-  const chatId = wahaMsg.chatId
+  // chatId é o sender (from) — pode ser do payload direto ou precisa extrair do formato
+  // Resposta padrão WAHA: "from": "11111111111@c.us" ou similar
+  const chatId = wahaMsg.from
+    || wahaMsg.chatId
     || wahaMsg.from?.replace(/:.*@/, "@")
     || null;
 
@@ -298,13 +301,13 @@ export function normalizeMessage(wahaMsg) {
       filename:  wahaMsg.media?.filename || mediaData.fileName || mediaData.title || null,
       thumbUrl,              // miniatura base64 para exibir antes do download
       url:       mediaUrl,   // URL via proxy (com auth)
-      msgId:     buildMsgId(wahaMsg) || normalizeWahaId(wahaMsg.id) || null,  // ID correto para /download-media
+      msgId:     wahaMsg.id || null,  // ID direto do WAHA — já em formato correto "true_11111111111@c.us_AAABBBCCC"
       hasMedia:  true,
     };
   }
 
   return {
-    id:       normalizeWahaId(wahaMsg.id) || `tmp-${tsMs}`,
+    id:       wahaMsg.id || `tmp-${tsMs}`,  // ID direto do WAHA já é único
     from:     wahaMsg.fromMe ? "operator" : "patient",
     text:     body,
     time:     new Date(tsMs).toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" }),

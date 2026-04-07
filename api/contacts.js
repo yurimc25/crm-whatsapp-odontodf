@@ -39,9 +39,17 @@ export default async function handler(req, res) {
   if (!tokenRes.ok) {
     const err = await tokenRes.text();
     console.error("[contacts] token error:", err);
-    return res.status(502).json({ error: "Failed to get Google token" });
+    return res.status(502).json({ error: "Failed to get Google token", detail: err });
   }
-  const { access_token } = await tokenRes.json();
+  const tokenData = await tokenRes.json();
+  const access_token = tokenData.access_token;
+  
+  if (!access_token) {
+    console.error("[contacts] no access_token in response:", tokenData);
+    return res.status(502).json({ error: "No access token returned", detail: tokenData });
+  }
+  
+  console.debug(`[contacts] token obtained successfully`);
 
 // ── Busca individual por número ou nome ──────────────────────────
   if (req.query.action === "search") {
@@ -64,13 +72,17 @@ export default async function handler(req, res) {
 
       for (const query of searchQueries) {
         try {
-          const r = await fetch(
-            `https://people.googleapis.com/v1/people:searchContacts` +
-            `?query=${encodeURIComponent(query)}&readMask=names,phoneNumbers&pageSize=5`,
-            { headers: { Authorization: `Bearer ${access_token}` } }
-          );
-          if (!r.ok) continue;
+          const url = `https://people.googleapis.com/v1/people:searchContacts` +
+            `?query=${encodeURIComponent(query)}&readMask=names,phoneNumbers&pageSize=5`;
+          console.debug(`[contacts] searching by phone with query: ${query}`);
+          const r = await fetch(url, { headers: { Authorization: `Bearer ${access_token}` } });
+          if (!r.ok) {
+            const errBody = await r.text();
+            console.warn(`[contacts] search by phone query '${query}' returned ${r.status}: ${errBody.slice(0, 200)}`);
+            continue;
+          }
           const data = await r.json();
+          console.debug(`[contacts] search by phone query '${query}' returned ${data.results?.length || 0} results`);
           for (const result of (data.results || [])) {
             const person = result.person;
             const nm   = person?.names?.[0]?.displayName;
@@ -85,7 +97,9 @@ export default async function handler(req, res) {
             }
           }
           if (results.size > 0) break; // achou, para
-        } catch {}
+        } catch (e) {
+          console.error(`[contacts] search by phone error on query '${query}':`, e.message);
+        }
       }
 
       if (results.size === 0) {
@@ -100,25 +114,31 @@ export default async function handler(req, res) {
     // Busca por nome
     if (name && name.length >= 2) {
       try {
-        const r = await fetch(
-          `https://people.googleapis.com/v1/people:searchContacts` +
-          `?query=${encodeURIComponent(name)}&readMask=names,phoneNumbers&pageSize=10`,
-          { headers: { Authorization: `Bearer ${access_token}` } }
-        );
+        const url = `https://people.googleapis.com/v1/people:searchContacts` +
+          `?query=${encodeURIComponent(name)}&readMask=names,phoneNumbers&pageSize=10`;
+        console.debug(`[contacts] searching by name: '${name}'`);
+        const r = await fetch(url, { headers: { Authorization: `Bearer ${access_token}` } });
         if (!r.ok) {
+          const errBody = await r.text();
+          console.warn(`[contacts] search by name '${name}' returned ${r.status}: ${errBody.slice(0, 200)}`);
           return res.json({ found: false, contacts: [] });
         }
         const data = await r.json();
+        console.debug(`[contacts] search by name '${name}' returned ${data.results?.length || 0} results`);
         const contacts = [];
         for (const result of (data.results || [])) {
           const person = result.person;
           const nm     = person?.names?.[0]?.displayName;
           const phones = person?.phoneNumbers || [];
-          if (!nm || phones.length === 0) continue;
+          if (!nm || phones.length === 0) {
+            console.debug(`[contacts] skipping result: name=${nm}, phones=${phones.length}`);
+            continue;
+          }
           // Retorna todos os contatos com seus telefones
           for (const ph of phones) {
             const digits = ph.value.replace(/\D/g, "");
             contacts.push({ name: nm, phone: digits });
+            console.debug(`[contacts] found contact: ${nm} → ${digits}`);
           }
         }
         console.log(`[contacts/search] name "${name}" → ${contacts.length} contatos`);
@@ -134,6 +154,7 @@ export default async function handler(req, res) {
 
   // ── Busca em bulk (comportamento original) ───────────────────────
   try {
+    console.debug(`[contacts] fetching all connections from Google Contacts`);
     let allConnections = [];
     let pageToken = null;
 
@@ -143,11 +164,19 @@ export default async function handler(req, res) {
         `?personFields=names,phoneNumbers&pageSize=1000&sortOrder=LAST_NAME_ASCENDING` +
         (pageToken ? `&pageToken=${pageToken}` : "");
       const r = await fetch(url, { headers: { Authorization: `Bearer ${access_token}` } });
-      if (!r.ok) break;
+      if (!r.ok) {
+        const errBody = await r.text();
+        console.warn(`[contacts] bulk fetch page token=${pageToken || 'first'} returned ${r.status}: ${errBody.slice(0, 200)}`);
+        break;
+      }
       const data = await r.json();
-      allConnections = allConnections.concat(data.connections || []);
+      const connections = data.connections || [];
+      console.debug(`[contacts] bulk fetch page token=${pageToken || 'first'} returned ${connections.length} connections`);
+      allConnections = allConnections.concat(connections);
       pageToken = data.nextPageToken || null;
     } while (pageToken && allConnections.length < 2000);
+
+    console.log(`[contacts] fetched ${allConnections.length} total connections`);
 
     const map = {};
     for (const person of allConnections) {
@@ -161,10 +190,11 @@ export default async function handler(req, res) {
 
     // Cache no cliente por 5min, mas nunca no CDN — dados de contato mudam
     res.setHeader("Cache-Control", "private, max-age=300");
+    console.log(`[contacts] bulk returning ${Object.keys(map).length} number variants mapped`);
     return res.json({ contacts: map, total: Object.keys(map).length });
 
   } catch (err) {
-    console.error("[contacts] unexpected error:", err);
+    console.error("[contacts] unexpected error:", err.message || err);
     return res.status(500).json({ error: "Internal error", detail: err.message });
   }
 }

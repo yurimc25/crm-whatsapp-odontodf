@@ -478,33 +478,22 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
   const iKey    = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
   const SESSION = chatSession || import.meta.env.VITE_WAHA_SESSION || "default";
 
-  // WAHA NOWEB: usa /download-media pelo ID serializado da mensagem
-  // OU /chats/{chatId}/messages/{msgId}?downloadMedia=true como fallback
-  // ID válido tem formato: "false_556...@c.us_AABBCC..." (tem "@" ou "_")
-  // Remove segmentos do tipo `_participant@lid` quando presentes (causam 404 no endpoint)
-  const sanitizedMsgId = msgId ? String(msgId).replace(/_[^_@]+@lid\b/g, "") : null;
-  const validMsgId = (() => {
-    if (!sanitizedMsgId) return null;
-    const s = sanitizedMsgId;
-    // ID serializado do NOWEB: tem "@" (contém número@c.us) ou tem "_" com 3 partes
-    if (s.includes("@") || (s.match(/_/g) || []).length >= 2) return s;
-    // ID curto ou inválido — loga para debug
-    console.warn("[media] ID possivelmente inválido:", s);
-    return s; // tenta mesmo assim
-  })();
-  const cleanId      = validMsgId ? encodeURIComponent(validMsgId) : null;
-  const downloadPath = cleanId
-    ? `/api/waha?path=/api/${SESSION}/messages/${cleanId}/download-media`
+  // msgId já vem no formato correto do WAHA: "true_11111111111@c.us_AAAABBBBCCCC"
+  // chatId: "11111111111@c.us" (o sender)
+  const cleanMsgId   = msgId ? encodeURIComponent(String(msgId)) : null;
+  const cleanChatId  = chatId ? encodeURIComponent(String(chatId)) : null;
+  
+  const downloadPath = cleanMsgId
+    ? `/api/waha?path=/api/${SESSION}/messages/${cleanMsgId}/download-media`
     : null;
   
   // Endpoint alternativo: /chats/{chatId}/messages/{msgId}?downloadMedia=true
-  const cleanChatId = chatId ? encodeURIComponent(chatId) : null;
-  const alternativeDownloadPath = (cleanId && cleanChatId)
-    ? `/api/waha?path=/api/${SESSION}/chats/${cleanChatId}/messages/${cleanId}&downloadMedia=true`
+  const alternativeDownloadPath = (cleanMsgId && cleanChatId)
+    ? `/api/waha?path=/api/${SESSION}/chats/${cleanChatId}/messages/${cleanMsgId}&downloadMedia=true`
     : null;
 
-  // Se o WAHA já serviu a mídia via /api/files/... ou outra URL proxy, prefira essa URL
-  // (normalizeMessage coloca esse valor em media.url quando disponível).
+  // Se o WAHA já serviu a mídia via media.url, prefira essa URL
+  // (WAHA retorna "media.url": "http://localhost:3000/api/files/true_11111111111@c.us_AAAABBBBCCCC.pdf")
   const proxiedUrl = media.url || null;
   const urlToFetch = proxiedUrl || downloadPath;
 
@@ -521,20 +510,19 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
   const thumbSrc = media.thumbUrl || null;
   // Debug inicial: mostra quais URLs estarão disponíveis para fetch
   const debugInfo = { 
-    media, msgId, isImage, isVideo, isAudio, mimeHint, thumbSrc,
+    media, msgId, chatId, isImage, isVideo, isAudio, mimeHint, thumbSrc,
     mediaUrl: media?.url,
-    sanitized: sanitizedMsgId,
-    validMsgId,
+    downloadPath,
     alternativePath: alternativeDownloadPath,
   };
-  console.debug(`[media] init msgId=${validMsgId} proxiedUrl=${proxiedUrl ? proxiedUrl : 'null'} downloadPath=${downloadPath ? downloadPath : 'null'} alternativePath=${alternativeDownloadPath ? alternativeDownloadPath : 'null'} urlToFetch=${urlToFetch ? urlToFetch : 'null'}`, debugInfo);
+  console.debug(`[media] init msgId=${msgId} proxiedUrl=${proxiedUrl ? proxiedUrl : 'null'} downloadPath=${downloadPath ? downloadPath : 'null'} alternativePath=${alternativeDownloadPath ? alternativeDownloadPath : 'null'} urlToFetch=${urlToFetch ? urlToFetch : 'null'}`, debugInfo);
 
   // Revoga objectURL ao desmontar
   const blobUrlRef = useRef(null);
   useEffect(() => {
     return () => {
       if (blobUrlRef.current) {
-        console.debug(`[media] revoke objectURL for msgId=${validMsgId}`, blobUrlRef.current);
+        console.debug(`[media] revoke objectURL for msgId=${msgId}`, blobUrlRef.current);
         URL.revokeObjectURL(blobUrlRef.current);
       }
     };
@@ -542,7 +530,7 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
 
   async function fetchMedia() {
     if (fullUrl || !urlToFetch || downloading) { console.debug(`[media] fetch skipped fullUrl=${!!fullUrl} urlToFetch=${!!urlToFetch} downloading=${downloading}`); return; }
-    console.debug(`[media] fetch start msgId=${validMsgId} url=${urlToFetch}`);
+    console.debug(`[media] fetch start msgId=${msgId} url=${urlToFetch}`);
     setDownload(true);
     setError(false);
     try {
@@ -552,7 +540,7 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
       });
       if (!r.ok) {
         const errBody = await r.text().catch(() => "");
-        console.warn(`[media] download ${r.status} for ${validMsgId} -> ${urlToFetch}`, errBody.slice(0, 200));
+        console.warn(`[media] download ${r.status} for ${msgId} -> ${urlToFetch}`, errBody.slice(0, 200));
         
         // 404 em download-media é esperado para mensagens de grupo (WAHA pode não ter indexado)
         // Tenta o endpoint alternativo /chats/{chatId}/messages/{msgId}?downloadMedia=true
@@ -566,7 +554,7 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
             if (r2.ok) {
               const ct  = r2.headers.get("content-type") || mimeHint;
               const buf = await r2.arrayBuffer();
-              console.debug(`[media] alternative endpoint ok msgId=${validMsgId} content-type=${ct} size=${buf.byteLength}`);
+              console.debug(`[media] alternative endpoint ok msgId=${msgId} content-type=${ct} size=${buf.byteLength}`);
               if (buf.byteLength > 0) {
                 const blob = new Blob([buf], { type: ct });
                 const url  = URL.createObjectURL(blob);
@@ -596,7 +584,7 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
       }
       const ct  = r.headers.get("content-type") || mimeHint;
       const buf = await r.arrayBuffer();
-      console.debug(`[media] fetch ok msgId=${validMsgId} content-type=${ct} size=${buf.byteLength}`);
+      console.debug(`[media] fetch ok msgId=${msgId} content-type=${ct} size=${buf.byteLength}`);
       if (buf.byteLength === 0) {
         setError(true);
         setDownload(false);
@@ -605,9 +593,9 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
       const blob = new Blob([buf], { type: ct });
       const url  = URL.createObjectURL(blob);
       blobUrlRef.current = url;
-      console.debug(`[media] objectURL created for msgId=${validMsgId}`, url);
+      console.debug(`[media] objectURL created for msgId=${msgId}`, url);
       setFullUrl(url);
-      console.debug(`[media] fullUrl set for msgId=${validMsgId}`);
+      console.debug(`[media] fullUrl set for msgId=${msgId}`);
     } catch (e) {
       console.error("[media] fetch error:", e?.message || e);
       setError(true);
@@ -621,7 +609,7 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
     if (!urlToFetch || fullUrl) return;
     let cancelled = false;
     async function autoLoad() {
-      console.debug(`[media] autoLoad start msgId=${validMsgId} url=${urlToFetch}`);
+      console.debug(`[media] autoLoad start msgId=${msgId} url=${urlToFetch}`);
       setDownload(true);
       setError(false);
       try {
@@ -632,7 +620,7 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
         if (cancelled) return;
         if (!r.ok) {
           const errBody = await r.text().catch(() => "");
-          console.warn(`[media] autoLoad ${r.status} for ${validMsgId} -> ${urlToFetch}`, errBody.slice(0,200));
+          console.warn(`[media] autoLoad ${r.status} for ${msgId} -> ${urlToFetch}`, errBody.slice(0,200));
           
           // 404 em download-media é esperado para mensagens de grupo
           // Tenta o endpoint alternativo
@@ -647,7 +635,7 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
               if (r2.ok) {
                 const ct  = r2.headers.get("content-type") || mimeHint;
                 const buf = await r2.arrayBuffer();
-                console.debug(`[media] autoLoad alternative endpoint ok msgId=${validMsgId} content-type=${ct} size=${buf.byteLength}`);
+                console.debug(`[media] autoLoad alternative endpoint ok msgId=${msgId} content-type=${ct} size=${buf.byteLength}`);
                 if (cancelled) return;
                 if (buf.byteLength > 0) {
                   const blob = new Blob([buf], { type: ct });
@@ -673,16 +661,16 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
         }
         const ct  = r.headers.get("content-type") || mimeHint;
         const buf = await r.arrayBuffer();
-        console.debug(`[media] autoLoad ok msgId=${validMsgId} content-type=${ct} size=${buf.byteLength}`);
+        console.debug(`[media] autoLoad ok msgId=${msgId} content-type=${ct} size=${buf.byteLength}`);
         if (cancelled) return;
         if (buf.byteLength === 0) { setError(true); setDownload(false); return; }
         const blob = new Blob([buf], { type: ct });
         const url  = URL.createObjectURL(blob);
         blobUrlRef.current = url;
-        console.debug(`[media] autoLoad objectURL created for msgId=${validMsgId}`, url);
+        console.debug(`[media] autoLoad objectURL created for msgId=${msgId}`, url);
         if (!cancelled) setFullUrl(url);
       } catch (e) {
-        console.error(`[media] autoLoad error for ${validMsgId}:`, e?.message || e);
+        console.error(`[media] autoLoad error for ${msgId}:`, e?.message || e);
         if (!cancelled) setError(true);
       }
       if (!cancelled) setDownload(false);
@@ -693,8 +681,8 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
 
   const displaySrc = fullUrl || thumbSrc;
   useEffect(() => {
-    console.debug(`[media] status msgId=${validMsgId} fullUrl=${!!fullUrl} thumb=${!!thumbSrc} displaySrc=${!!displaySrc} downloading=${downloading} error=${error}`);
-  }, [fullUrl, thumbSrc, displaySrc, downloading, error, validMsgId]);
+    console.debug(`[media] status msgId=${msgId} fullUrl=${!!fullUrl} thumb=${!!thumbSrc} displaySrc=${!!displaySrc} downloading=${downloading} error=${error}`);
+  }, [fullUrl, thumbSrc, displaySrc, downloading, error, msgId]);
 
   // ── Imagem ──────────────────────────────────────────────────
   if (isImage) {
