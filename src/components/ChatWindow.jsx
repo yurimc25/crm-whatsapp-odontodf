@@ -457,15 +457,23 @@ function MediaContent({ media, msgId, chatSession }) {
     (isImage ? "image/jpeg" : isVideo ? "video/mp4" : isAudio ? "audio/ogg" : "application/octet-stream");
 
   const thumbSrc = media.thumbUrl || null;
+  // Debug inicial: mostra quais URLs estarão disponíveis para fetch
+  console.debug(`[media] init msgId=${validMsgId} proxiedUrl=${proxiedUrl ? proxiedUrl : 'null'} downloadPath=${downloadPath ? downloadPath : 'null'} urlToFetch=${urlToFetch ? urlToFetch : 'null'}`, { media, msgId, isImage, isVideo, isAudio, mimeHint, thumbSrc });
 
   // Revoga objectURL ao desmontar
   const blobUrlRef = useRef(null);
   useEffect(() => {
-    return () => { if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current); };
+    return () => {
+      if (blobUrlRef.current) {
+        console.debug(`[media] revoke objectURL for msgId=${validMsgId}`, blobUrlRef.current);
+        URL.revokeObjectURL(blobUrlRef.current);
+      }
+    };
   }, []);
 
   async function fetchMedia() {
-    if (fullUrl || !urlToFetch || downloading) return;
+    if (fullUrl || !urlToFetch || downloading) { console.debug(`[media] fetch skipped fullUrl=${!!fullUrl} urlToFetch=${!!urlToFetch} downloading=${downloading}`); return; }
+    console.debug(`[media] fetch start msgId=${validMsgId} url=${urlToFetch}`);
     setDownload(true);
     setError(false);
     try {
@@ -482,6 +490,7 @@ function MediaContent({ media, msgId, chatSession }) {
       }
       const ct  = r.headers.get("content-type") || mimeHint;
       const buf = await r.arrayBuffer();
+      console.debug(`[media] fetch ok msgId=${validMsgId} content-type=${ct} size=${buf.byteLength}`);
       if (buf.byteLength === 0) {
         setError(true);
         setDownload(false);
@@ -490,9 +499,11 @@ function MediaContent({ media, msgId, chatSession }) {
       const blob = new Blob([buf], { type: ct });
       const url  = URL.createObjectURL(blob);
       blobUrlRef.current = url;
+      console.debug(`[media] objectURL created for msgId=${validMsgId}`, url);
       setFullUrl(url);
+      console.debug(`[media] fullUrl set for msgId=${validMsgId}`);
     } catch (e) {
-      console.error("[media] fetch error:", e.message);
+      console.error("[media] fetch error:", e?.message || e);
       setError(true);
     }
     setDownload(false);
@@ -504,6 +515,7 @@ function MediaContent({ media, msgId, chatSession }) {
     if (!urlToFetch || fullUrl) return;
     let cancelled = false;
     async function autoLoad() {
+      console.debug(`[media] autoLoad start msgId=${validMsgId} url=${urlToFetch}`);
       setDownload(true);
       setError(false);
       try {
@@ -519,13 +531,16 @@ function MediaContent({ media, msgId, chatSession }) {
         }
         const ct  = r.headers.get("content-type") || mimeHint;
         const buf = await r.arrayBuffer();
+        console.debug(`[media] autoLoad ok msgId=${validMsgId} content-type=${ct} size=${buf.byteLength}`);
         if (cancelled) return;
         if (buf.byteLength === 0) { setError(true); setDownload(false); return; }
         const blob = new Blob([buf], { type: ct });
         const url  = URL.createObjectURL(blob);
         blobUrlRef.current = url;
+        console.debug(`[media] autoLoad objectURL created for msgId=${validMsgId}`, url);
         if (!cancelled) setFullUrl(url);
-      } catch {
+      } catch (e) {
+        console.error(`[media] autoLoad error for ${validMsgId}:`, e?.message || e);
         if (!cancelled) setError(true);
       }
       if (!cancelled) setDownload(false);
@@ -535,6 +550,9 @@ function MediaContent({ media, msgId, chatSession }) {
   }, [urlToFetch, isImage, isAudio]);
 
   const displaySrc = fullUrl || thumbSrc;
+  useEffect(() => {
+    console.debug(`[media] status msgId=${validMsgId} fullUrl=${!!fullUrl} thumb=${!!thumbSrc} displaySrc=${!!displaySrc} downloading=${downloading} error=${error}`);
+  }, [fullUrl, thumbSrc, displaySrc, downloading, error, validMsgId]);
 
   // ── Imagem ──────────────────────────────────────────────────
   if (isImage) {
@@ -680,15 +698,27 @@ function ImageLightbox({ src, downloadUrl, iKey, onClose }) {
 
   async function handleDownload() {
     if (!downloadUrl) return;
+    console.debug(`[lightbox] download start -> ${downloadUrl}`);
     try {
       const r = await fetch(downloadUrl, { headers: { "X-Internal-Key": iKey || "" } });
-      if (!r.ok) return;
+      console.debug(`[lightbox] download response status=${r.status}`);
+      if (!r.ok) {
+        const txt = await r.text().catch(() => "");
+        console.error(`[lightbox] download failed ${r.status}:`, txt.slice(0, 300));
+        return;
+      }
       const blob = await r.blob();
+      console.debug(`[lightbox] downloaded blob size=${blob.size} type=${blob.type}`);
       const url  = URL.createObjectURL(blob);
       const a    = document.createElement("a");
       a.href = url; a.download = "imagem"; a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
-    } catch {}
+      setTimeout(() => {
+        console.debug(`[lightbox] revoke downloaded objectURL`);
+        URL.revokeObjectURL(url);
+      }, 5000);
+    } catch (e) {
+      console.error(`[lightbox] download error:`, e?.message || e);
+    }
   }
 
   function onWheel(e) {
