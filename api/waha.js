@@ -69,8 +69,13 @@ export default async function handler(req, res) {
     if (ct.includes("application/json") || ct === "") {
       try {
         const data = await wahaRes.json();
-        return res.status(200).json(data);
-      } catch {
+        if (wahaRes.status >= 200 && wahaRes.status < 300) {
+          return res.status(wahaRes.status).json(data);
+        }
+        // Encaminha erros do WAHA com o mesmo código
+        console.error("[waha-proxy] upstream error JSON:", wahaRes.status, data);
+        return res.status(wahaRes.status).json(data);
+      } catch (e) {
         // Se falhou o parse de JSON, cai no texto
       }
     }
@@ -87,7 +92,7 @@ export default async function handler(req, res) {
           return res.status(404).json({ error: "Mídia vazia ou não encontrada" });
         }
         res.setHeader("Content-Type", ct || "application/octet-stream");
-        return res.status(200).end(Buffer.from(buf));
+        return res.status(wahaRes.status || 200).end(Buffer.from(buf));
       } catch (e) {
         console.error("[waha-proxy] binary error:", e.message);
         return res.status(502).json({ error: "Erro ao baixar mídia" });
@@ -96,6 +101,8 @@ export default async function handler(req, res) {
 
     // Texto genérico
     const text = await wahaRes.text();
+    if (wahaRes.status >= 200 && wahaRes.status < 300) return res.status(wahaRes.status).send(text);
+    console.error("[waha-proxy] upstream text error:", wahaRes.status, text.slice ? text.slice(0,300) : text);
     return res.status(wahaRes.status).send(text);
   } catch (e) {
     console.error("[waha-proxy]", e.message);
