@@ -4,6 +4,7 @@ import CRMLayout from "./components/CRMLayout";
 import CRMLayoutMobile from "./components/CRMLayoutMobile";
 import { useContacts } from "./hooks/useContacts";
 import { OPERATORS } from "./data/mock";
+import { NotificationBell } from "./components/NotificationBell";
 
 export const ContactsContext = createContext({ displayName: (id) => id, displayInfo: () => ({ hasContact: false, line1: id, line2: id, phone: id }), contactMap: {}, addLocalContact: () => {}, lookupPhone: () => {} });
 export const useContactsCtx = () => useContext(ContactsContext);
@@ -61,7 +62,11 @@ export default function App() {
     <ContactsContext.Provider value={contacts}>
       {!operator
         ? <LoginScreen onLogin={setOperator} />
-        : <Layout operator={operator} onLogout={handleLogout} />
+        : <Layout
+            operator={operator}
+            onLogout={handleLogout}
+            notificationBell={<NotificationBell operator={operator} />}
+          />
       }
     </ContactsContext.Provider>
   );

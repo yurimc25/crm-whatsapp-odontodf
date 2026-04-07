@@ -6,6 +6,7 @@ import { useWAHA } from "../hooks/useWAHA";
 import { ROLE_PERMISSIONS } from "../data/mock";
 import { useContactsCtx } from "../App";
 import { wahaIdToPhone, formatPhone } from "../hooks/useContacts";
+import { NotificationBell } from "./NotificationBell";
 
 // Tema escuro estilo Claude
 const T = {
@@ -28,7 +29,7 @@ const T = {
   bubbleMe:  "#1e3a2a",   // bolha minha mensagem
 };
 
-export default function CRMLayout({ operator, onLogout }) {
+export default function CRMLayout({ operator, onLogout, notificationBell }) {
   const [activeChat, setActiveChat] = useState(null);
   const [filter, setFilter]         = useState("all");
   const [search, setSearch]         = useState("");
@@ -175,6 +176,7 @@ export default function CRMLayout({ operator, onLogout }) {
           onMouseLeave={e => { e.currentTarget.style.background="transparent"; e.currentTarget.style.color=T.sub; }}>
             Sair
           </button>
+          <NotificationBell operator={operator} />
         </div>
       </div>
 
