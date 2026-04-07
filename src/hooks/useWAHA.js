@@ -577,25 +577,38 @@ export function useWAHA(operator) {
 
   const resolveChat = useCallback((chatId) => {
     setChats(prev => {
-      const chat    = prev.find(c => c.id === chatId);
-      const newSt   = chat?.status === "resolved" ? "open" : "resolved";
-      const updated = prev.map(c => c.id === chatId ? { ...c, status: newSt } : c);
+      const chat  = prev.find(c => c.id === chatId);
+      const newSt = chat?.status === "resolved" ? "open" : "resolved";
+      const updated = prev.map(c => {
+        if (c.id !== chatId) return c;
+        return {
+          ...c,
+          status:        newSt,
+          // Ao resolver: zera contagem e unread; ao reabrir: mantém zerado
+          lastPatientTs: newSt === "resolved" ? null : c.lastPatientTs,
+          unread:        newSt === "resolved" ? 0    : c.unread,
+        };
+      });
       cache.set(CHATS_KEY, updated, CHATS_TTL);
+      // Persiste no MongoDB
+      persistChat(chatId, {
+        status:        newSt,
+        lastPatientTs: newSt === "resolved" ? null : undefined,
+        unread:        newSt === "resolved" ? 0    : undefined,
+      });
       return updated;
-    });
-    setChats(prev => {
-      const chat = prev.find(c => c.id === chatId);
-      persistChat(chatId, { status: chat?.status });
-      return prev;
     });
   }, []);
 
   const markRead = useCallback((chatId) => {
     setChats(prev => {
-      const updated = prev.map(c => c.id === chatId ? { ...c, unread: 0 } : c);
+      const updated = prev.map(c =>
+        c.id === chatId ? { ...c, unread: 0, lastPatientTs: null } : c
+      );
       cache.set(CHATS_KEY, updated, CHATS_TTL);
       return updated;
     });
+    persistChat(chatId, { unread: 0, lastPatientTs: null });
   }, []);
 
   const markUnread = useCallback((chatId) => {

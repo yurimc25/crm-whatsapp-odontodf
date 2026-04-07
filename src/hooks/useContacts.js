@@ -244,23 +244,26 @@ export function useContacts() {
       }
     } catch {}
 
-    // ── 4. Google individual ──────────────────────────────────
-    const variants = phoneVariants(phone);
-    for (const v of variants.slice(0, 3)) { // tenta só as 3 principais variantes
-      try {
-        const r = await fetch(
-          `/api/contacts?action=search&phone=${v}`,
-          { headers: { "X-Internal-Key": internalKey } }
-        );
-        if (!r.ok) continue;
-        const { found, name, variants: fv } = await r.json();
-        if (!found || !name) continue;
-        const incoming = {};
-        for (const gv of (fv || phoneVariants(phone))) incoming[gv] = name;
-        mergeMap(incoming, "local");
-        console.log(`[contacts] Google ${phone} → ${name}`);
-        return name;
-      } catch {}
+    // ── 4. Google individual — UMA request com cache-bust ────────
+    // _t evita 304 do CDN do Vercel
+    try {
+      const r = await fetch(
+        `/api/contacts?action=search&phone=${phone}&_t=${Date.now()}`,
+        { headers: { "X-Internal-Key": internalKey }, cache: "no-store" }
+      );
+      if (r.status === 304 || !r.ok) {
+        console.warn(`[contacts] Google ${phone}: status ${r.status}`);
+        return null;
+      }
+      const { found, name, variants: fv } = await r.json();
+      if (!found || !name) return null;
+      const incoming = {};
+      for (const gv of (fv || phoneVariants(phone))) incoming[gv] = name;
+      mergeMap(incoming, "local");
+      console.log(`[contacts] Google ${phone} → ${name}`);
+      return name;
+    } catch (e) {
+      console.warn(`[contacts] Google ${phone} error:`, e.message);
     }
 
     return null;

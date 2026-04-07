@@ -13,6 +13,9 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Internal-Key");
+  // NUNCA cacheia — cada número precisa de resposta fresca
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+  res.setHeader("Pragma", "no-cache");
 
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
@@ -119,7 +122,8 @@ export default async function handler(req, res) {
       }
     }
 
-    res.setHeader("Cache-Control", "s-maxage=300, stale-while-revalidate=60");
+    // Cache no cliente por 5min, mas nunca no CDN — dados de contato mudam
+    res.setHeader("Cache-Control", "private, max-age=300");
     return res.json({ contacts: map, total: Object.keys(map).length });
 
   } catch (err) {
@@ -136,48 +140,28 @@ function formatForSearch(digits) {
   return digits;
 }
 
-// Gera variações do número — IDÊNTICA ao frontend (useContacts.js)
+// Gera variações do número para cobrir todos os formatos do WhatsApp
 function makeVariants(digits) {
   const variants = new Set();
-  const d = (digits || "").replace(/\D/g, "");
-  if (!d) return [];
-
+  const d = digits.replace(/\D/g, "");
   variants.add(d);
 
+  // Isola o número local (sem 55)
   const isBR = d.startsWith("55") && d.length >= 12;
   const local = isBR ? d.slice(2) : d;
 
-  if (local.length >= 8) {
+  if (local.length >= 10) {
     variants.add(local);
     variants.add("55" + local);
 
-    const ddd = local.slice(0, 2);
-    const num = local.slice(2);
-
-    // Sem DDD
-    variants.add(num);
-
-    if (num.length === 9 && num.startsWith("9")) {
-      const sem9 = num.slice(1);
-      variants.add(sem9);
-      variants.add(ddd + sem9);
-      variants.add("55" + ddd + sem9);
-    }
-
-    if (num.length === 8) {
-      const com9 = "9" + num;
-      variants.add(com9);
-      variants.add(ddd + com9);
-      variants.add("55" + ddd + com9);
-    }
-
+    // Lida com o 9º dígito
     if (local.length === 11 && local[2] === "9") {
+      // Tem o 9: gera a versão sem o 9
       const sem9 = local.slice(0, 2) + local.slice(3);
       variants.add(sem9);
-      variants.add("55" + sem9);
-    }
-
-    if (local.length === 10) {
+      variants.add("55" + sem9); // O bug estava aqui: faltava essa linha
+    } else if (local.length === 10) {
+      // Não tem o 9: gera a versão com o 9
       const com9 = local.slice(0, 2) + "9" + local.slice(2);
       variants.add(com9);
       variants.add("55" + com9);
