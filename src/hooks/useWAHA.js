@@ -6,6 +6,36 @@ import {
 import { MOCK_CHATS, MOCK_MESSAGES } from "../data/mock";
 import { cache } from "../utils/cache";
 
+// ── Sort estável por timestamp ────────────────────────────────────
+// O WAHA usa timestamps em segundos inteiros — mensagens do mesmo
+// segundo preservam a ordem original da array (posição na API)
+function sortMsgs(msgs) {
+  return msgs.map((m, i) => ({ m, i }))
+    .sort((a, b) => {
+      const ta = new Date(a.m.ts).getTime();
+      const tb = new Date(b.m.ts).getTime();
+      return ta !== tb ? ta - tb : a.i - b.i;
+    })
+    .map(({ m }) => m);
+}
+
+// Remove mensagens tmp que foram confirmadas como reais
+// Estratégia: se chegar mensagem fromMe com mesmo texto do tmp → remove tmp
+function removeTmp(current, incoming) {
+  // IDs reais que chegaram
+  const realIds = new Set(incoming.map(m => m.id));
+  // Textos de mensagens reais fromMe que chegaram agora
+  const realFromMeTexts = new Set(
+    incoming.filter(m => m.from === "operator").map(m => m.text?.trim())
+  );
+  return current.filter(m => {
+    if (!m.id.startsWith("tmp-")) return true;           // não é tmp → mantém
+    if (realIds.has(m.id)) return false;                  // ID real chegou → remove
+    if (realFromMeTexts.has(m.text?.trim())) return false; // texto confirmado → remove
+    return true;
+  });
+}
+
 const USE_MOCK    = import.meta.env.VITE_USE_MOCK === "true";
 const CHATS_KEY   = "waha_chats";
 const MSGS_PREFIX = "waha_msgs_";
@@ -191,9 +221,8 @@ export function useWAHA(operator) {
             if (!msgs || !Array.isArray(msgs) || msgs.length === 0) continue;
 
             // Ordena por timestamp real do WhatsApp (mais antiga → mais nova)
-            const normalized = msgs
-              .map(normalizeMessage)
-              .sort((a, b) => new Date(a.ts) - new Date(b.ts));
+            const normalized = sortMsgs(msgs
+              .map(normalizeMessage))
 
             // Última mensagem (qualquer remetente) — para exibir no ChatList
             const lastAny = normalized[normalized.length - 1];
@@ -278,7 +307,7 @@ export function useWAHA(operator) {
               const ids     = new Set(current.map(m => m.id));
               const novos   = normalized.filter(m => !ids.has(m.id));
               if (novos.length === 0) return prev;
-              const updated = [...current, ...novos].sort((a,b) => new Date(a.ts)-new Date(b.ts));
+              const updated = sortMsgs([...current, ...novos]);
               cache.set(MSGS_PREFIX + chatId, updated, MSGS_TTL);
               return { ...prev, [chatId]: updated };
             });
@@ -311,9 +340,7 @@ export function useWAHA(operator) {
         if (!r.ok) return;
         const raw = await r.json();
         if (!Array.isArray(raw)) return;
-        const normalized = raw
-          .map(normalizeMessage)
-          .sort((a,b) => new Date(a.ts)-new Date(b.ts));
+        const normalized = sortMsgs(raw.map(normalizeMessage));
 
         setMessages(prev => {
           const current = prev[chatId] || [];
@@ -321,13 +348,8 @@ export function useWAHA(operator) {
           const novos   = normalized.filter(m => !ids.has(m.id));
           if (novos.length === 0) return prev;
 
-          // Remove mensagens tmp que têm o mesmo texto que uma mensagem real que chegou
-          const textosDasNovas = new Set(novos.map(m => m.text));
-          const semDuplicados  = current.filter(m =>
-            !m.id.startsWith("tmp-") || !textosDasNovas.has(m.text)
-          );
-
-          const updated = [...semDuplicados, ...novos].sort((a,b) => new Date(a.ts)-new Date(b.ts));
+          const semTmp  = removeTmp(current, novos);
+          const updated = sortMsgs([...semTmp, ...novos]);
           cache.set(MSGS_PREFIX + chatId, updated, MSGS_TTL);
           return { ...prev, [chatId]: updated };
         });
@@ -345,7 +367,7 @@ export function useWAHA(operator) {
         const raw = await getMessages(c.id, 20);
         let msgs = [];
         if (raw?.length) {
-          msgs = raw.map(normalizeMessage).sort((a,b) => new Date(a.ts)-new Date(b.ts));
+          msgs = sortMsgs(raw.map(normalizeMessage);
           cache.set(MSGS_PREFIX + c.id, msgs, MSGS_TTL);
           setMessages(prev => ({ ...prev, [c.id]: msgs }));
         } else {
@@ -424,7 +446,9 @@ export function useWAHA(operator) {
         setMessages(prev => {
           const existing = prev[msgChatId] || [];
           if (existing.find(m => m.id === msg.id)) return prev;
-          const updated = [...existing, msg].sort((a,b) => new Date(a.ts)-new Date(b.ts));
+          // Remove tmp correspondente antes de inserir a mensagem real
+          const semTmp = removeTmp(existing, [msg]);
+          const updated = sortMsgs([...semTmp, msg]);
           cache.set(MSGS_PREFIX + msgChatId, updated, MSGS_TTL);
           return { ...prev, [msgChatId]: updated };
         });
@@ -465,7 +489,7 @@ export function useWAHA(operator) {
     if (USE_MOCK) { setMessages(prev => ({ ...prev, [chatId]: MOCK_MESSAGES[chatId] || [] })); return; }
     try {
       const raw = await getMessages(chatId, 20);
-      const normalized = raw.map(normalizeMessage).sort((a,b) => new Date(a.ts)-new Date(b.ts));
+      const normalized = sortMsgs(raw.map(normalizeMessage);
       setMessages(prev => ({ ...prev, [chatId]: normalized }));
       cache.set(MSGS_PREFIX + chatId, normalized, MSGS_TTL);
 
@@ -507,8 +531,8 @@ export function useWAHA(operator) {
         text:     m.content || m.text || "",
         time:     m.ts ? new Date(m.ts).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"}) : "",
         ts:       m.ts, type:"text",
-        operator: m.role !== "user" ? (m.author||"Operador") : null,
-      })).sort((a,b) => new Date(a.ts)-new Date(b.ts));
+        operator: m.role !== sortMsgs("user" ? (m.author||"Operador") : null,
+      }));
       setMessages(prev => {
         const current = prev[chatId] || [];
         const ids = new Set(current.map(m => m.id));
@@ -529,7 +553,7 @@ export function useWAHA(operator) {
       ts:now.toISOString(), chatId, type:"text", operator:operatorName,
     };
     setMessages(prev => {
-      const updated = [...(prev[chatId]||[]),tmpMsg].sort((a,b)=>new Date(a.ts)-new Date(b.ts));
+      const updated = sortMsgs([...(prev[chatId]||[]),tmpMsg]);
       cache.set(MSGS_PREFIX+chatId, updated, MSGS_TTL);
       return { ...prev, [chatId]: updated };
     });
@@ -628,9 +652,8 @@ export function useWAHA(operator) {
       const raw = await r.json();
       if (!raw || !Array.isArray(raw)) return { hasMore: false };
 
-      const normalized = raw
-        .map(normalizeMessage)
-        .sort((a, b) => new Date(a.ts) - new Date(b.ts));
+      const normalized = sortMsgs(raw
+        .map(normalizeMessage))
 
       // Filtra mensagens que já temos
       const existingIds = new Set((currentMsgs || []).map(m => m.id));
@@ -647,7 +670,7 @@ export function useWAHA(operator) {
         const ids     = new Set(current.map(m => m.id));
         const toAdd   = novas.filter(m => !ids.has(m.id));
         if (toAdd.length === 0) return prev;
-        const updated = [...toAdd, ...current].sort((a,b) => new Date(a.ts)-new Date(b.ts));
+        const updated = sortMsgs([...toAdd, ...current]);
         cache.set(MSGS_PREFIX + chatId, updated, MSGS_TTL);
         return { ...prev, [chatId]: updated };
       });
