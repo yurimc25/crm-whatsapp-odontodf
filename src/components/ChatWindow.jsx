@@ -209,23 +209,21 @@ export default function ChatWindow({
             overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
             {info.hasContact ? info.name : info.phone}
           </div>
-          {info.hasContact && (
-            <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-              <div style={{ color:T.sub, fontSize:11, fontFamily:"'DM Mono', monospace" }}>
-                {info.phone}
-              </div>
-              <button onClick={() => setShowContactLookup(true)} title="Atualizar contato no Google"
-                style={{
-                  background:"transparent", border:"none", cursor:"pointer",
-                  color:T.sub, padding:"0 4px", fontSize:10,
-                  transition:"color .15s", display:"flex", alignItems:"center"
-                }}
-                onMouseEnter={e => e.currentTarget.style.color = T.accent}
-                onMouseLeave={e => e.currentTarget.style.color = T.sub}>
-                🔍
-              </button>
+          <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+            <div style={{ color:T.sub, fontSize:11, fontFamily:"'DM Mono', monospace" }}>
+              {info.hasContact ? info.phone : "Número desconhecido"}
             </div>
-          )}
+            <button onClick={() => setShowContactLookup(true)} title="Buscar/atualizar contato no Google"
+              style={{
+                background:"transparent", border:"none", cursor:"pointer",
+                color:T.sub, padding:"0 4px", fontSize:10,
+                transition:"color .15s", display:"flex", alignItems:"center"
+              }}
+              onMouseEnter={e => e.currentTarget.style.color = T.accent}
+              onMouseLeave={e => e.currentTarget.style.color = T.sub}>
+              🔍
+            </button>
+          </div>
         </div>
 
         {/* Encaminhar */}

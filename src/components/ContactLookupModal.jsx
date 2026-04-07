@@ -33,16 +33,19 @@ export function ContactLookupModal({ phoneNumber, chatId, onClose, onSelectConta
 
     try {
       // Tenta buscar por nome OU número dependendo do que foi digitado
-      const isPhone = /\d/.test(query) && query.length > 8;
-      const action = isPhone ? "search&phone=" : "search&q=";
+      const isPhone = /\d/.test(query) && query.length >= 8;
+      
+      let url;
+      if (isPhone) {
+        url = `/api/contacts?action=search&phone=${encodeURIComponent(query)}&_t=${Date.now()}`;
+      } else {
+        url = `/api/contacts?action=search&q=${encodeURIComponent(query)}&_t=${Date.now()}`;
+      }
 
-      const r = await fetch(
-        `/api/contacts?action=${action}${encodeURIComponent(query)}&_t=${Date.now()}`,
-        {
-          headers: { "X-Internal-Key": ikey },
-          cache: "no-store",
-        }
-      );
+      const r = await fetch(url, {
+        headers: { "X-Internal-Key": ikey },
+        cache: "no-store",
+      });
 
       if (!r.ok) {
         setError(`Erro ${r.status} ao buscar contatos`);
