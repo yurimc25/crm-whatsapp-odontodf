@@ -367,7 +367,7 @@ export function useWAHA(operator) {
         const raw = await getMessages(c.id, 20);
         let msgs = [];
         if (raw?.length) {
-          msgs = sortMsgs(raw.map(normalizeMessage);
+          msgs = sortMsgs(raw.map(normalizeMessage));
           cache.set(MSGS_PREFIX + c.id, msgs, MSGS_TTL);
           setMessages(prev => ({ ...prev, [c.id]: msgs }));
         } else {
@@ -489,7 +489,7 @@ export function useWAHA(operator) {
     if (USE_MOCK) { setMessages(prev => ({ ...prev, [chatId]: MOCK_MESSAGES[chatId] || [] })); return; }
     try {
       const raw = await getMessages(chatId, 20);
-      const normalized = sortMsgs(raw.map(normalizeMessage);
+      const normalized = sortMsgs(raw.map(normalizeMessage));
       setMessages(prev => ({ ...prev, [chatId]: normalized }));
       cache.set(MSGS_PREFIX + chatId, normalized, MSGS_TTL);
 
@@ -531,7 +531,7 @@ export function useWAHA(operator) {
         text:     m.content || m.text || "",
         time:     m.ts ? new Date(m.ts).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"}) : "",
         ts:       m.ts, type:"text",
-        operator: m.role !== sortMsgs("user" ? (m.author||"Operador") : null,
+        operator: m.role !== "user" ? (m.author||"Operador") : null,
       }));
       setMessages(prev => {
         const current = prev[chatId] || [];
