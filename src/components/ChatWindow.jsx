@@ -425,11 +425,26 @@ function MediaContent({ media, msgId, chatSession }) {
   const iKey    = import.meta.env.VITE_INTERNAL_API_KEY || "";
   const SESSION = chatSession || import.meta.env.VITE_WAHA_SESSION || "default";
 
-  // WAHA NOWEB: sempre usa /download-media pelo ID da mensagem
-  const cleanId      = msgId ? encodeURIComponent(msgId) : null;
+  // WAHA NOWEB: usa /download-media pelo ID serializado da mensagem
+  // ID válido tem formato: "false_556...@c.us_AABBCC..." (tem "@" ou "_")
+  const validMsgId = (() => {
+    if (!msgId) return null;
+    const s = String(msgId);
+    // ID serializado do NOWEB: tem "@" (contém número@c.us) ou tem "_" com 3 partes
+    if (s.includes("@") || (s.match(/_/g) || []).length >= 2) return s;
+    // ID curto ou inválido — loga para debug
+    console.warn("[media] ID possivelmente inválido:", s);
+    return s; // tenta mesmo assim
+  })();
+  const cleanId      = validMsgId ? encodeURIComponent(validMsgId) : null;
   const downloadPath = cleanId
     ? `/api/waha?path=/api/${SESSION}/messages/${cleanId}/download-media`
     : null;
+
+  // Se o WAHA já serviu a mídia via /api/files/... ou outra URL proxy, prefira essa URL
+  // (normalizeMessage coloca esse valor em media.url quando disponível).
+  const proxiedUrl = media.url || null;
+  const urlToFetch = proxiedUrl || downloadPath;
 
   const isImage = media.type === "image" || media.type === "sticker" ||
                   (media.mimetype || "").startsWith("image/");
@@ -450,16 +465,17 @@ function MediaContent({ media, msgId, chatSession }) {
   }, []);
 
   async function fetchMedia() {
-    if (fullUrl || !downloadPath || downloading) return;
+    if (fullUrl || !urlToFetch || downloading) return;
     setDownload(true);
     setError(false);
     try {
-      const r = await fetch(downloadPath, {
+      const r = await fetch(urlToFetch, {
         headers: { "X-Internal-Key": iKey },
         cache: "no-store",
       });
       if (!r.ok) {
-        console.error(`[media] download-media ${r.status} for ${msgId}`);
+        const errBody = await r.text().catch(() => "");
+        console.error(`[media] download ${r.status} for ${validMsgId} -> ${urlToFetch}`, errBody.slice(0, 200));
         setError(true);
         setDownload(false);
         return;
@@ -485,18 +501,22 @@ function MediaContent({ media, msgId, chatSession }) {
   // Auto-carrega imagem e áudio
   useEffect(() => {
     if (!isImage && !isAudio) return;
-    if (!downloadPath || fullUrl) return;
+    if (!urlToFetch || fullUrl) return;
     let cancelled = false;
     async function autoLoad() {
       setDownload(true);
       setError(false);
       try {
-        const r = await fetch(downloadPath, {
+        const r = await fetch(urlToFetch, {
           headers: { "X-Internal-Key": iKey },
           cache: "no-store",
         });
         if (cancelled) return;
-        if (!r.ok) { setError(true); setDownload(false); return; }
+        if (!r.ok) {
+          const errBody = await r.text().catch(() => "");
+          console.error(`[media] autoLoad ${r.status} for ${validMsgId} -> ${urlToFetch}`, errBody.slice(0,200));
+          setError(true); setDownload(false); return;
+        }
         const ct  = r.headers.get("content-type") || mimeHint;
         const buf = await r.arrayBuffer();
         if (cancelled) return;
@@ -512,7 +532,7 @@ function MediaContent({ media, msgId, chatSession }) {
     }
     autoLoad();
     return () => { cancelled = true; };
-  }, [downloadPath, isImage, isAudio]);
+  }, [urlToFetch, isImage, isAudio]);
 
   const displaySrc = fullUrl || thumbSrc;
 
@@ -554,7 +574,7 @@ function MediaContent({ media, msgId, chatSession }) {
         {lightbox && (
           <ImageLightbox
             src={fullUrl || thumbSrc}
-            downloadUrl={downloadPath}
+            downloadUrl={media.url || downloadPath}
             iKey={iKey}
             onClose={() => setLightbox(false)} />
         )}
