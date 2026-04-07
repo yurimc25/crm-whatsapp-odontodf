@@ -262,39 +262,42 @@ export function normalizeMessage(wahaMsg) {
 function detectPatientCard(text) {
   if (!text) return false;
 
-  // NUNCA detecta se é mensagem do operador/bot (começa com prefixo "Nome: texto")
-  // Heurística: se a PRIMEIRA linha tem ":" com conteúdo substantivo (>20 chars), é operador
+  // NUNCA detecta mensagens de operador/bot
+  // Operador começa com "Nome do operador: mensagem longa"
+  // Mas NÃO bloqueia quando a primeira linha é um label de formulário (ex: "Nome completo: João")
   const firstLine = text.split("\n")[0] || "";
   const firstColon = firstLine.indexOf(":");
   if (firstColon > 0 && firstColon < 30) {
-    const afterColon = firstLine.slice(firstColon + 1).trim();
-    // Se tem conteúdo depois dos dois pontos na primeira linha e não parece dado de paciente
-    if (afterColon.length > 20 && !RE_CPF_SIMPLE.test(afterColon) && !RE_EMAIL.test(afterColon)) {
+    const beforeColon = firstLine.slice(0, firstColon).toLowerCase().trim();
+    const afterColon  = firstLine.slice(firstColon + 1).trim();
+    // Só bloqueia se a parte antes dos ":" NÃO for um label de formulário
+    const isFormLabel = /^(nome|cpf|e-?mail|telefone|convên|convenio|nasc|data|carteirinha|whatsapp)/i.test(beforeColon);
+    if (!isFormLabel && afterColon.length > 20 &&
+        !RE_CPF_SIMPLE.test(afterColon) && !RE_EMAIL.test(afterColon)) {
       return false; // ex: "Recepcionista: Para agendamento..."
     }
   }
 
   const t = text.toLowerCase();
 
-  // Formato estruturado: template de formulário com labels
+  // Formato estruturado: tem labels de formulário
   const temLabels = (t.includes("nome") || t.includes("cpf")) &&
-    (t.includes("email") || t.includes("telefone") || t.includes("nascimento") ||
-     t.includes("convênio") || t.includes("convenio"));
+    (t.includes("email") || t.includes("e-mail") || t.includes("telefone") ||
+     t.includes("whatsapp") || t.includes("nascimento") ||
+     t.includes("convênio") || t.includes("convenio") || t.includes("carteirinha"));
 
   if (temLabels) {
-    // Só dispara se NÃO for template vazio
     if (isTemplateVazio(text)) return false;
     return true;
   }
 
-  // Formato livre: texto corrido com dados misturados
+  // Formato livre: dados sem labels
   const temEmail    = RE_EMAIL.test(text);
-  const temCpf      = RE_CPF_SIMPLE.test(text);
-  const temData     = /\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b/.test(text);
-  const temTelefone = /(?:\(?\d{2}\)?\s?)(?:9\s?\d{4}|\d{4})[\s\-]?\d{4}/.test(text);
+  const temCpf      = RE_CPF_FLEX.test(text);   // aceita espaços entre grupos
+  const temData     = RE_DATA_FLEX.test(text);   // aceita espaços entre dia/mês/ano
+  const temTelefone = RE_TELEFONE.test(text);
   const temNome     = /[A-ZÀ-Ú][a-zà-ú]+ [A-ZÀ-Ú][a-zà-ú]+/.test(text);
 
-  // Precisa de nome + pelo menos 2 outros dados
   const score = [temEmail, temCpf, temData, temTelefone].filter(Boolean).length;
   return temNome && score >= 2;
 }
@@ -320,6 +323,12 @@ function isTemplateVazio(text) {
 }
 
 const RE_CPF_SIMPLE = /\b\d{3}[\s.]?\d{3}[\s.]?\d{3}[-\s.]?\d{2}\b/;
+// CPF com espaços entre todos os grupos: "786 054 401 63"
+const RE_CPF_FLEX   = /\b\d{3}[\s.\-]?\d{3}[\s.\-]?\d{3}[\s.\-]?\d{2}\b/;
+// Data com /, - ou espaço: "28/06/1998", "09 09 76", "09-09-1976"
+const RE_DATA_FLEX  = /\b\d{1,2}[\s\/\-]\d{1,2}[\s\/\-]\d{2,4}\b/;
+// Telefone BR flexível
+const RE_TELEFONE   = /(?:\(?\d{2}\)?\s?)(?:9\s?\d{4}|\d{4})[\s\-]?\d{4}/;
 const RE_EMAIL      = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/;
 
 function stringToColor(str) {

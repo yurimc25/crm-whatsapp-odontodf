@@ -1,158 +1,317 @@
-import { useState } from "react";
+// src/services/waha.js
+const WAHA_URL = import.meta.env.VITE_WAHA_URL || "https://n8n-waha8.vxjlst.easypanel.host";
+const WAHA_KEY = import.meta.env.VITE_WAHA_API_KEY || "";
+const SESSION  = import.meta.env.VITE_WAHA_SESSION || "default";
 
-const T = {
-  bg:       "#212121",
-  bubble:   "#2d2d2d",
-  border:   "#383838",
-  card:     "#252525",
-  cardBord: "#d4956a44",
-  text:     "#ececec",
-  sub:      "#8e8e8e",
-  accent:   "#d4956a",
-  accentBg: "#3a2a1e",
-  green:    "#4caf87",
-  greenBg:  "#1a2e22",
-  warn:     "#c9a84c",
-  warnBg:   "#2a2010",
-  inputBg:  "#1e1e1e",
-  fieldBg:  "#1a1a1a",
-};
+const headers = () => ({
+  "Content-Type": "application/json",
+  "X-Api-Key": WAHA_KEY,
+});
 
-const RE_CPF      = /\b\d{3}[\s.]?\d{3}[\s.]?\d{3}[-\s.]?\d{2}\b/;
-const RE_CNPJ     = /\b\d{2}[\s.]?\d{3}[\s.]?\d{3}[/\s]?\d{4}[-\s.]?\d{2}\b/;
-const RE_EMAIL    = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/;
-const RE_DATE     = /\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})\b/;
-const RE_PHONE    = /(?:\+?55\s?)?(?:\(?\d{2}\)?\s?)(?:9\s?\d{4}|\d{4})[\s\-]?\d{4}/g;
-const RE_CONVENIO_KNOWN = /bradesco|amil|unimed|sulam[eé]rica|metlife|porto\s?seguro|itaú\s?seguro|hapvida|notredame|gndi|sami|prevent\s?senior|alian[çc]a|quallity|qualit[yi]|odontoprev|interodonto|uniodonto|fenelon|funo|omint|b[- ]?dental/i;
+// ── Cache de fotos de perfil ──────────────────────────────────────
+const PHOTO_KEY = "waha_photos";
+const PHOTO_TTL = 24 * 60 * 60 * 1000; // 24h
 
-const CAMPOS = ["nome","cpf","convenio","carteirinha","nascimento","email","telefone"];
+function getPhotoCache() {
+  try {
+    const raw = localStorage.getItem(PHOTO_KEY);
+    if (!raw) return {};
+    const p = JSON.parse(raw);
+    if (Date.now() > p.expires) { localStorage.removeItem(PHOTO_KEY); return {}; }
+    return p.value || {};
+  } catch { return {}; }
+}
 
-function parsePatientData(text) {
-  const fields = {};
+function setPhotoCache(map) {
+  try {
+    localStorage.setItem(PHOTO_KEY, JSON.stringify({
+      value: map, expires: Date.now() + PHOTO_TTL,
+    }));
+  } catch {}
+}
 
-  // Normaliza: se tudo numa linha só, tenta quebrar por delimitadores comuns
-  let normalized = text;
-  const lineCount = text.split("\n").filter(l => l.trim()).length;
-  if (lineCount <= 2) {
-    // Texto corrido — tenta quebrar por "  " (dois espaços) ou "\t"
-    normalized = text
-      .replace(/\s{2,}/g, "\n")  // múltiplos espaços → nova linha
-      .replace(/\t/g, "\n");
+// Busca foto de perfil de um contato (com cache 24h)
+export async function getProfilePicture(chatId) {
+  const cache = getPhotoCache();
+  if (chatId in cache) return cache[chatId]; // null = sem foto (também cacheado)
+
+  try {
+    const id = encodeURIComponent(chatId);
+    const r = await fetch(
+      `${WAHA_URL}/api/contacts/profile-picture?contactId=${id}&session=${SESSION}`,
+      { headers: headers() }
+    );
+    if (!r.ok) {
+      const updated = { ...cache, [chatId]: null };
+      setPhotoCache(updated);
+      return null;
+    }
+    const data = await r.json();
+    const url = data?.profilePictureURL || data?.pictureUrl || data?.url || null;
+    const updated = { ...cache, [chatId]: url };
+    setPhotoCache(updated);
+    return url;
+  } catch {
+    const updated = { ...cache, [chatId]: null };
+    setPhotoCache(updated);
+    return null;
+  }
+}
+
+// ── REST ──────────────────────────────────────────────────────────
+
+// Carrega TODOS os chats paginando até não ter mais
+export async function getChats() {
+  const allChats = [];
+  let limit = 100;
+  let offset = 0;
+
+  while (true) {
+    const r = await fetch(
+      `${WAHA_URL}/api/${SESSION}/chats?limit=${limit}&offset=${offset}`,
+      { headers: headers() }
+    );
+    if (!r.ok) throw new Error(`WAHA getChats: ${r.status}`);
+    const batch = await r.json();
+    if (!Array.isArray(batch) || batch.length === 0) break;
+    allChats.push(...batch);
+    if (batch.length < limit) break; // última página
+    offset += limit;
+    if (allChats.length > 1000) break; // safety
   }
 
-  const lines = normalized.split("\n").map(l => l.trim()).filter(Boolean);
+  return allChats;
+}
 
-  // ── Modo estruturado: tem labels com ":" ─────────────────────────
-  const labelLines = lines.filter(l => /:/.test(l) && l.split(":")[0].length < 30);
-  // Só usa modo estruturado se tiver pelo menos 2 labels reais de formulário
-  const temLabelsFormulario = labelLines.some(l => {
-    const k = l.split(":")[0].toLowerCase();
-    return k.includes("nome") || k.includes("cpf") || k.includes("email") ||
-           k.includes("convênio") || k.includes("telefone") || k.includes("nascimento");
+export async function getMessages(chatId, limit = 20) {
+  const id = encodeURIComponent(chatId);
+  const r = await fetch(
+    `${WAHA_URL}/api/${SESSION}/chats/${id}/messages?limit=${limit}&downloadMedia=false`,
+    { headers: headers() }
+  );
+  if (!r.ok) throw new Error(`WAHA getMessages: ${r.status}`);
+  return r.json();
+}
+
+export async function sendText(chatId, text) {
+  const r = await fetch(`${WAHA_URL}/api/sendText`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({ chatId, text, session: SESSION }),
   });
+  if (!r.ok) throw new Error(`WAHA sendText: ${r.status}`);
+  return r.json();
+}
 
-  if (temLabelsFormulario && labelLines.length >= 2) {
-    for (const line of lines) {
-      const idx = line.indexOf(":");
-      if (idx === -1) continue;
-      const k   = line.slice(0, idx).toLowerCase().trim();
-      const val = line.slice(idx + 1).trim();
-      if (!val) continue;
-      if (k.includes("nome"))                                          fields.nome      = val;
-      if (k.includes("cpf"))                                           fields.cpf       = val.replace(/\D/g,"");
-      if (k.includes("e-mail") || k.includes("email"))                fields.email     = val;
-      if (k.includes("convênio") || k.includes("convenio") ||
-          k.includes("particular") || k.includes("plano"))            fields.convenio  = val;
-      if (k.includes("carteirinha") || k.includes("número da cart") ||
-          k.includes("num. cart") || k.includes("número do cart"))    fields.carteirinha = val;
-      if ((k.includes("telefone") || k.includes("celular")) &&
-          !k.includes("carteirinha"))                                  fields.telefone  = val;
-      if (k.includes("nascimento") || k.includes("data de") ||
-          k.includes("nasc"))                                          fields.nascimento = val;
+export async function getSessionStatus() {
+  const r = await fetch(`${WAHA_URL}/api/sessions/${SESSION}`, { headers: headers() });
+  if (!r.ok) throw new Error(`WAHA status: ${r.status}`);
+  return r.json();
+}
+
+// ── Normalização ──────────────────────────────────────────────────
+
+// Detecta se um ID é um número de telefone válido BR ou internacional
+// IDs longos sem padrão de telefone são grupos/broadcasts/status
+function isValidPhoneId(id) {
+  const digits = id.replace(/@.*$/, "").replace(/\D/g, "");
+  // Telefone BR: 12-13 dígitos (55 + DDD + número)
+  // Internacional: 7-15 dígitos (E.164)
+  // IDs inválidos: >15 dígitos ou padrões estranhos
+  if (digits.length > 15) return false;
+  if (digits.length < 7)  return false;
+  return true;
+}
+
+// Tenta extrair número BR válido de IDs malformados
+// Ex: "5561999611055@c.us" → "5561999611055" (ok)
+// Ex: "276016157200564@c.us" → provavelmente grupo, retorna null
+function extractPhone(rawId) {
+  const cleanId = rawId.replace(/@.*$/, "").replace(/\D/g, "");
+  if (!isValidPhoneId(cleanId)) return null;
+  return cleanId;
+}
+
+export function normalizeChat(wahaChat) {
+  const lm = wahaChat.lastMessage
+    || wahaChat.messages?.[0]
+    || wahaChat.msgs?.[0]
+    || null;
+
+  const lastBody = lm?.body || lm?.text || lm?.content || lm?._data?.body || "";
+  const lastTs   = lm?.timestamp || lm?.t || lm?._data?.t || null;
+  const cleanId  = wahaChat.id.replace(/@.*$/, "");
+  const phone    = extractPhone(wahaChat.id);
+
+  // pushname = nome público que o contato definiu no WhatsApp
+  const pushname = wahaChat.name || wahaChat.pushname || wahaChat._data?.pushname || null;
+
+  return {
+    id:          wahaChat.id,
+    name:        pushname || cleanId,
+    pushname:    pushname,
+    phone:       phone ? ("+" + phone) : (pushname || cleanId),
+    isValidPhone: !!phone,
+    lastMsg:     lastBody,
+    lastTime:    lastTs
+      ? new Date(lastTs * 1000).toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" })
+      : "",
+    lastTs:      lastTs ? new Date(lastTs * 1000).toISOString() : null,
+    unread:      wahaChat.unreadCount ?? wahaChat.unread ?? 0,
+    status:      "open",
+    assignedTo:  null,
+    tags:        [],
+    avatar:      (pushname || cleanId || "??").slice(0, 2).toUpperCase(),
+    avatarColor: stringToColor(wahaChat.id),
+    photoUrl:    null,
+  };
+}
+
+export function normalizeMessage(wahaMsg) {
+  const body = wahaMsg.body
+    || wahaMsg.text
+    || wahaMsg.content
+    || wahaMsg._data?.body
+    || "";
+
+  const tsRaw = wahaMsg.timestamp || wahaMsg._data?.messageTimestamp || wahaMsg.t || null;
+  const tsMs  = tsRaw ? tsRaw * 1000 : Date.now();
+  const ts    = new Date(tsMs).toISOString();
+
+  const chatId = wahaMsg.chatId
+    || wahaMsg.from?.replace(/:.*@/, "@")
+    || null;
+
+  // ── Detecção de mídia (NOWEB engine) ────────────────────────────
+  // NOWEB: hasMedia=true, media=null, type="image", _data.message.imageMessage={...}
+  const type     = wahaMsg.type || "text";
+  const hasMedia = wahaMsg.hasMedia === true ||
+                   ["image","video","audio","voice","document","sticker"].includes(type);
+
+  let media = null;
+  if (hasMedia) {
+    // Tenta extrair de _data.message.* (NOWEB)
+    const msgData = wahaMsg._data?.message || {};
+    const imgMsg  = msgData.imageMessage  || {};
+    const vidMsg  = msgData.videoMessage  || {};
+    const audMsg  = msgData.audioMessage  || {};
+    const docMsg  = msgData.documentMessage || {};
+    const sticMsg = msgData.stickerMessage || {};
+
+    // Pega o objeto certo dependendo do tipo
+    const mediaData = imgMsg.mimetype  ? imgMsg
+                    : vidMsg.mimetype  ? vidMsg
+                    : audMsg.mimetype  ? audMsg
+                    : docMsg.mimetype  ? docMsg
+                    : sticMsg.mimetype ? sticMsg
+                    : {};
+
+    // Mimetype real
+    const mimetype = wahaMsg.media?.mimetype
+                  || mediaData.mimetype
+                  || wahaMsg._data?.mimetype
+                  || null;
+
+    // Thumbnail em base64 (NOWEB retorna jpegThumbnail como Buffer)
+    const thumbBuf  = mediaData.jpegThumbnail?.data || mediaData.jpegThumbnail || null;
+    const thumbB64  = thumbBuf
+      ? (typeof thumbBuf === "string" ? thumbBuf : btoa(String.fromCharCode(...new Uint8Array(thumbBuf))))
+      : null;
+    const thumbUrl  = thumbB64 ? `data:image/jpeg;base64,${thumbB64}` : null;
+
+    // Detecta o tipo real a partir do mimetype
+    const realType = mimetype?.startsWith("image/") ? "image"
+                   : mimetype?.startsWith("video/") ? "video"
+                   : mimetype?.startsWith("audio/") ? "audio"
+                   : type;
+
+    // NUNCA usa a URL do CDN do WhatsApp (mmg.whatsapp.net) — retorna arquivo .enc criptografado
+    // Sempre usa o endpoint /download-media do WAHA que descriptografa automaticamente
+    // Se WAHA já serviu o arquivo em /api/files/... usa direto via proxy
+    const rawUrl = wahaMsg.media?.url || null;
+    const isWAUrl = rawUrl?.includes("mmg.whatsapp.net") || rawUrl?.includes("whatsapp.net");
+    const mediaUrl = (rawUrl && !isWAUrl)
+      ? `/api/waha?path=${encodeURIComponent(rawUrl)}`
+      : null;  // null → ChatWindow vai usar /download-media pelo msgId
+
+    media = {
+      type:      realType,
+      mimetype:  mimetype,
+      filename:  wahaMsg.media?.filename || mediaData.fileName || mediaData.title || null,
+      thumbUrl,              // miniatura base64 para exibir antes do download
+      url:       mediaUrl,   // URL via proxy (com auth)
+      msgId:     wahaMsg.id || null,  // fallback: download pelo ID
+      hasMedia:  true,
+    };
+  }
+
+  return {
+    id:       wahaMsg.id || `tmp-${tsMs}`,
+    from:     wahaMsg.fromMe ? "operator" : "patient",
+    text:     body,
+    time:     new Date(tsMs).toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" }),
+    ts,
+    chatId,
+    type,
+    media,
+    operator: wahaMsg.fromMe ? (wahaMsg.senderName || wahaMsg._data?.pushName || "Você") : null,
+    hasPatientCard: !hasMedia && detectPatientCard(body),
+  };
+}
+
+function detectPatientCard(text) {
+  if (!text) return false;
+
+  // NUNCA detecta mensagens de operador/bot
+  // Operador começa com "Nome do operador: mensagem longa"
+  // Mas NÃO bloqueia quando a primeira linha é um label de formulário (ex: "Nome completo: João")
+  const firstLine = text.split("\n")[0] || "";
+  const firstColon = firstLine.indexOf(":");
+  if (firstColon > 0 && firstColon < 30) {
+    const beforeColon = firstLine.slice(0, firstColon).toLowerCase().trim();
+    const afterColon  = firstLine.slice(firstColon + 1).trim();
+    // Só bloqueia se a parte antes dos ":" NÃO for um label de formulário
+    const isFormLabel = /^(nome|cpf|e-?mail|telefone|convên|convenio|nasc|data|carteirinha|whatsapp)/i.test(beforeColon);
+    if (!isFormLabel && afterColon.length > 20 &&
+        !RE_CPF_SIMPLE.test(afterColon) && !RE_EMAIL.test(afterColon)) {
+      return false; // ex: "Recepcionista: Para agendamento..."
     }
-    return fields;
   }
 
-  // ── Modo livre: extrai por padrão do texto (inclui texto corrido) ──
-  const fullText = text; // usa texto original para regex
+  const t = text.toLowerCase();
 
-  // Email
-  const emailM = fullText.match(RE_EMAIL);
-  if (emailM) fields.email = emailM[0];
+  // Formato estruturado: tem labels de formulário
+  const temLabels = (t.includes("nome") || t.includes("cpf")) &&
+    (t.includes("email") || t.includes("e-mail") || t.includes("telefone") ||
+     t.includes("whatsapp") || t.includes("nascimento") ||
+     t.includes("convênio") || t.includes("convenio") || t.includes("carteirinha"));
 
-  // CPF (11 dígitos) — extrai e formata
-  const textSemEmail = emailM ? fullText.replace(emailM[0], "") : fullText;
-  const cpfM = textSemEmail.match(RE_CPF);
-  if (cpfM) fields.cpf = cpfM[0].replace(/\D/g, "");
-
-  // Data de nascimento
-  const dateMatches = [...fullText.matchAll(new RegExp(RE_DATE.source, "g"))];
-  if (dateMatches.length > 0) {
-    fields.nascimento = dateMatches[dateMatches.length - 1][0];
+  if (temLabels) {
+    if (isTemplateVazio(text)) return false;
+    return true;
   }
 
-  // Telefones — pega todos, remove o que pode ser CPF/data
-  const textSemCpf = fields.cpf ? textSemEmail.replace(
-    new RegExp(fields.cpf.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, "$1.?$2.?$3-?$4")), ""
-  ) : textSemEmail;
-  const phones = [...textSemCpf.matchAll(RE_PHONE)].map(m => m[0].replace(/\D/g, ""));
-  const validPhones = phones.filter(p => p.length >= 10 && p.length <= 13);
-  if (validPhones.length > 0) fields.telefone = validPhones[0];
-  // Segundo telefone diferente do primeiro
-  if (validPhones.length > 1 && validPhones[1] !== validPhones[0]) {
-    if (!fields.telefone2) fields.telefone2 = validPhones[1];
-  }
+  // Formato livre: dados sem labels
+  const temEmail    = RE_EMAIL.test(text);
+  const temCpf      = RE_CPF_FLEX.test(text);   // aceita espaços entre grupos
+  const temData     = RE_DATA_FLEX.test(text);   // aceita espaços entre dia/mês/ano
+  const temTelefone = RE_TELEFONE.test(text);
+  const temNome     = /[A-ZÀ-Ú][a-zà-ú]+ [A-ZÀ-Ú][a-zà-ú]+/.test(text);
 
-  // Convênio — detecta convênios conhecidos OU palavra após "Convênio:"
-  const convenioLabelM = fullText.match(/(?:convênio|convênio\/particular|plano)\s*[:\-]?\s*([^\n,]{2,30})/i);
-  if (convenioLabelM) {
-    fields.convenio = convenioLabelM[1].trim();
-  } else {
-    const convenioM = fullText.match(RE_CONVENIO_KNOWN);
-    if (convenioM) {
-      // Pega a linha/trecho que contém o convênio
-      for (const line of lines) {
-        if (RE_CONVENIO_KNOWN.test(line)) { fields.convenio = line.trim(); break; }
-      }
-    }
-  }
-
-  // Nome — primeira linha que parece nome próprio (Maiúscula Maiúscula, sem números)
-  const RE_NAME = /^[A-ZÀ-Ú][a-zà-ú]+(\s+[A-ZÀ-Úa-zà-ú]+){1,6}$/;
-  for (const line of lines) {
-    const clean = line.trim();
-    if (clean.length > 5 && clean.length < 60 && RE_NAME.test(clean) &&
-        !RE_EMAIL.test(clean) && !/\d{5,}/.test(clean)) {
-      fields.nome = clean;
-      break;
-    }
-  }
-  // Fallback: primeira linha sem muitos números
-  if (!fields.nome) {
-    for (const line of lines) {
-      const digits = line.replace(/\D/g, "");
-      if (digits.length < 4 && line.length > 5 && line.length < 70 &&
-          !RE_EMAIL.test(line)) {
-        fields.nome = line.trim();
-        break;
-      }
-    }
-  }
-
-  return fields;
+  const score = [temEmail, temCpf, temData, temTelefone].filter(Boolean).length;
+  return temNome && score >= 2;
 }
 
 function isTemplateVazio(text) {
   const labels = ["Nome completo:","CPF:","E-mail:","Convênio","Número da carteirinha:","Telefone:","Data de nascimento:"];
   const temLabels = labels.filter(l => text.includes(l)).length >= 3;
   if (!temLabels) return false;
-  // Checa se todas as linhas com ":" de formulário têm valor vazio depois
   const linhas = text.split("\n").map(l => l.trim()).filter(Boolean);
   const labelsFormulario = linhas.filter(l => {
     const k = (l.split(":")[0] || "").toLowerCase();
     return k.includes("nome") || k.includes("cpf") || k.includes("e-mail") ||
            k.includes("email") || k.includes("telefone") || k.includes("convênio") ||
-           k.includes("nascimento") || k.includes("cartão");
+           k.includes("nascimento") || k.includes("cartão") || k.includes("carteirinha");
   });
   if (labelsFormulario.length < 3) return false;
   const comValor = labelsFormulario.filter(l => {
@@ -160,289 +319,69 @@ function isTemplateVazio(text) {
     if (idx === -1) return false;
     return l.slice(idx+1).trim().length > 0;
   });
-  // Template vazio = menos de 1 campo preenchido
   return comValor.length === 0;
 }
 
-export default function PatientCardDetected({ msg }) {
-  const [showModal, setShowModal] = useState(false);
-  const [modalAction, setModalAction] = useState(null);
-  const [status, setStatus]  = useState("idle");
-  const [result, setResult]  = useState(null); // { patient_id, url }
-  const [error, setError]    = useState(null);
-  const data = parsePatientData(msg.text);
-  const iKey = import.meta.env.VITE_INTERNAL_API_KEY || "";
+const RE_CPF_SIMPLE = /\b\d{3}[\s.]?\d{3}[\s.]?\d{3}[-\s.]?\d{2}\b/;
+// CPF com espaços entre todos os grupos: "786 054 401 63"
+const RE_CPF_FLEX   = /\b\d{3}[\s.\-]?\d{3}[\s.\-]?\d{3}[\s.\-]?\d{2}\b/;
+// Data com /, - ou espaço: "28/06/1998", "09 09 76", "09-09-1976"
+const RE_DATA_FLEX  = /\b\d{1,2}[\s\/\-]\d{1,2}[\s\/\-]\d{2,4}\b/;
+// Telefone BR flexível
+const RE_TELEFONE   = /(?:\(?\d{2}\)?\s?)(?:9\s?\d{4}|\d{4})[\s\-]?\d{4}/;
+const RE_EMAIL      = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/;
 
-  // Não exibe card se template vazio
-  if (isTemplateVazio(msg.text)) {
-    return (
-      <div style={{ display:"flex", justifyContent:"flex-start", marginBottom:2 }}>
-        <div style={{ maxWidth:"70%", background:T.bubble, border:`1px solid ${T.border}`,
-          borderRadius:"2px 12px 12px 12px", padding:"8px 12px",
-          boxShadow:"0 1px 3px rgba(0,0,0,.3)" }}>
-          <div style={{ color:T.text, fontSize:13, lineHeight:1.55, whiteSpace:"pre-wrap" }}>
-            {msg.text}
-          </div>
-          <div style={{ color:T.sub, fontSize:10, marginTop:4, textAlign:"right" }}>
-            {msg.time}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  const camposVazios = CAMPOS.filter(c => !data[c] || data[c].trim() === "");
-  const algumDado    = CAMPOS.some(c => data[c] && data[c].trim() !== "");
-
-  function handleAction(action) {
-    setError(null);
-    if (camposVazios.length > 0) {
-      setModalAction(action);
-      setShowModal(true);
-    } else {
-      executar(action, data);
-    }
-  }
-
-  async function executar(action, formData) {
-    if (action === "doctoralia") {
-      setStatus("loading");
-      setError(null);
-      try {
-        const r = await fetch("/api/doctoralia?action=create", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Internal-Key": iKey },
-          body: JSON.stringify(formData),
-        });
-        const json = await r.json();
-        if (json.tokenExpired) {
-          setError("Token Doctoralia expirado — atualize DOCTORALIA_TOKEN no Vercel.");
-          setStatus("error");
-          return;
-        }
-        if (!r.ok) throw new Error(json.error || `Erro ${r.status}`);
-        setResult(json);
-        setStatus("success_doctoralia");
-      } catch (e) {
-        setError(e.message);
-        setStatus("error");
-      }
-      return;
-    }
-
-    // Codental
-    if (action !== "codental") return;
-    setStatus("loading");
-    setError(null);
-    try {
-      const r = await fetch("/api/codental?action=create", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Internal-Key": iKey },
-        body: JSON.stringify(formData),
-      });
-      const json = await r.json();
-      if (!r.ok) throw new Error(json.error || `Erro ${r.status}`);
-      setResult(json);
-      setStatus("success_codental");
-    } catch (e) {
-      setError(e.message);
-      setStatus("error");
-    }
-  }
-
-  const isSuccess = status === "success_codental" || status === "success_doctoralia";
-  const isLoading = status === "loading";
-  const isError   = status === "error";
-
-  return (
-    <>
-      <div style={{ display:"flex", justifyContent:"flex-start", marginBottom:2 }}>
-        <div style={{ maxWidth:"78%" }}>
-          {/* Bolha original */}
-          <div style={{ background:T.bubble, border:`1px solid ${T.border}`,
-            borderRadius:"2px 12px 0 0", padding:"8px 12px",
-            boxShadow:"0 1px 3px rgba(0,0,0,.3)" }}>
-            <div style={{ color:T.text, fontSize:13, lineHeight:1.55, whiteSpace:"pre-wrap" }}>
-              {msg.text}
-            </div>
-            <div style={{ color:T.sub, fontSize:10, marginTop:4, textAlign:"right" }}>
-              {msg.time}
-            </div>
-          </div>
-
-          {/* Card detectado */}
-          <div style={{ background:T.card, border:`1px solid ${T.cardBord}`,
-            borderRadius:"0 0 12px 12px", padding:"10px 12px",
-            borderTop:`2px solid ${T.accent}` }}>
-
-            {/* Título */}
-            <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:8 }}>
-              <span style={{ fontSize:13 }}>🦷</span>
-              <span style={{ fontSize:10, fontWeight:700, color:T.accent,
-                textTransform:"uppercase", letterSpacing:.5 }}>
-                Dados de Paciente Detectados
-              </span>
-              {camposVazios.length > 0 ? (
-                <span style={{ marginLeft:"auto", fontSize:9, fontWeight:700,
-                  color:T.warn, background:T.warnBg,
-                  padding:"2px 6px", borderRadius:4 }}>
-                  {camposVazios.length} ausente{camposVazios.length>1?"s":""}
-                </span>
-              ) : (
-                <span style={{ marginLeft:"auto", fontSize:9, fontWeight:700,
-                  color:T.green, background:T.greenBg,
-                  padding:"2px 6px", borderRadius:4 }}>
-                  Completo
-                </span>
-              )}
-            </div>
-
-            {/* Grid de dados */}
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr",
-              gap:"5px 12px", marginBottom:10 }}>
-              {[["nome","Nome"],["cpf","CPF"],["convenio","Convênio"],["carteirinha","Carteirinha"],
-                ["nascimento","Nascimento"],["email","Email"],["telefone","Telefone"]
-              ].map(([k,l]) => (
-                <div key={k}>
-                  <div style={{ fontSize:9, fontWeight:700, color:T.sub,
-                    textTransform:"uppercase", letterSpacing:.5, marginBottom:1 }}>{l}</div>
-                  <div style={{ fontSize:12,
-                    color: data[k] ? T.text : "#555",
-                    fontFamily: k==="cpf"||k==="telefone" ? "'DM Mono',monospace" : "inherit" }}>
-                    {k==="cpf" && data[k]
-                      ? data[k].replace(/(\d{3})(\d{3})(\d{3})(\d{2})/,"$1.$2.$3-$4")
-                      : data[k] || "—"}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Botões */}
-            {isSuccess ? (
-              <div style={{ background:T.greenBg, border:`1px solid ${T.green}44`,
-                borderRadius:6, padding:"8px 12px", color:T.green,
-                fontSize:12, fontWeight:600, textAlign:"center" }}>
-                ✓ {status === "success_codental" ? "Paciente adicionado ao Codental!" : "Paciente adicionado ao Doctoralia!"}
-                {result?.url && (
-                  <a href={result.url} target="_blank" rel="noreferrer"
-                    style={{ display:"block", marginTop:4, color:T.accent,
-                      fontSize:11, textDecoration:"underline" }}>
-                    {status === "success_codental" ? "Ver prontuário →" : "Ver no Doctoralia →"}
-                  </a>
-                )}
-              </div>
-            ) : (
-              <>
-                {isError && (
-                  <div style={{ background:"#2a1010", border:"1px solid #c0412c44",
-                    borderRadius:6, padding:"6px 10px", color:"#e57373",
-                    fontSize:11, marginBottom:6 }}>
-                    ⚠ {error}
-                  </div>
-                )}
-                <div style={{ display:"flex", gap:6 }}>
-                  <button onClick={() => handleAction("codental")} disabled={isLoading}
-                    style={{ flex:1, background:T.accentBg, border:`1px solid ${T.accent}44`,
-                      borderRadius:6, padding:"7px 8px", color:T.accent,
-                      fontSize:11, fontWeight:600, cursor: isLoading ? "not-allowed" : "pointer",
-                      opacity: isLoading ? .6 : 1 }}>
-                    {isLoading ? "⏳ Adicionando..." : camposVazios.length > 0 ? "✏️ Completar + Codental" : "+ Prontuário Codental"}
-                  </button>
-                  <button onClick={() => handleAction("doctoralia")} disabled={isLoading}
-                    style={{ flex:1, background:"#1a1e3a", border:"1px solid #3a4a8a44",
-                      borderRadius:6, padding:"7px 8px", color:"#7a9af8",
-                      fontSize:11, fontWeight:600, cursor:"pointer",
-                      opacity: isLoading ? .6 : 1 }}>
-                    🗓 Doctoralia
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Modal para preencher dados ausentes */}
-      {showModal && (
-        <Modal
-          data={data}
-          camposVazios={camposVazios}
-          action={modalAction}
-          onConfirm={(formData) => {
-            setShowModal(false);
-            executar(modalAction, formData);
-          }}
-          onClose={() => setShowModal(false)}
-        />
-      )}
-    </>
-  );
+function stringToColor(str) {
+  const colors = ["#0d7d62","#1a5fa8","#b56a00","#c0412c","#5b3db8","#2d7d8c"];
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) hash = str.charCodeAt(i) + ((hash << 5) - hash);
+  return colors[Math.abs(hash) % colors.length];
 }
 
-function Modal({ data, camposVazios, action, onConfirm, onClose }) {
-  const [form, setForm] = useState({
-    nome:       data.nome       || "",
-    cpf:        data.cpf        || "",
-    convenio:   data.convenio   || "",
-    nascimento: data.nascimento || "",
-    email:      data.email      || "",
-    telefone:   data.telefone   || "",
-  });
+// ── WebSocket ─────────────────────────────────────────────────────
 
-  return (
-    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.7)",
-      zIndex:1000, display:"flex", alignItems:"center", justifyContent:"center" }}
-      onClick={onClose}>
-      <div style={{ background:"#252525", borderRadius:12, padding:24,
-        width:460, maxWidth:"90vw", boxShadow:"0 20px 60px rgba(0,0,0,.6)",
-        border:"1px solid #383838" }}
-        onClick={e => e.stopPropagation()}>
+export function createWAHASocket({ onMessage, onStatus, onError }) {
+  const wsUrl = WAHA_URL.replace(/^http/, "ws");
+  // Escuta message e message.any (enviadas por mim também)
+  const url = `${wsUrl}/ws?session=${SESSION}&events=message,message.any&x-api-key=${WAHA_KEY}`;
 
-        <div style={{ fontWeight:700, fontSize:15, color:"#ececec", marginBottom:4 }}>
-          Completar dados do paciente
-        </div>
-        <div style={{ color:"#8e8e8e", fontSize:12, marginBottom:16 }}>
-          Preencha os campos ausentes antes de adicionar ao {action === "codental" ? "Codental" : "Doctoralia"}.
-        </div>
+  let ws, reconnectTimer;
+  let dead = false;
 
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"10px 16px", marginBottom:20 }}>
-          {[["nome","Nome completo","span 2"],["cpf","CPF","span 1"],
-            ["convenio","Convênio / Plano","span 1"],["carteirinha","Nº da carteirinha","span 1"],
-            ["nascimento","Data de nascimento","span 1"],["telefone","Telefone","span 1"],
-            ["email","E-mail","span 2"]
-          ].map(([k,l,col]) => (
-            <div key={k} style={{ gridColumn:col }}>
-              <label style={{ display:"block", fontSize:10, fontWeight:700,
-                color: camposVazios.includes(k) ? "#c9a84c" : "#8e8e8e",
-                marginBottom:4, textTransform:"uppercase", letterSpacing:.5 }}>
-                {l}{camposVazios.includes(k) ? " *" : ""}
-              </label>
-              <input value={form[k]} onChange={e => setForm(p=>({...p,[k]:e.target.value}))}
-                placeholder={camposVazios.includes(k) ? "Obrigatório..." : ""}
-                style={{ width:"100%", background: camposVazios.includes(k) ? "#2a2010" : "#1e1e1e",
-                  border:`1px solid ${camposVazios.includes(k) ? "#c9a84c66" : "#383838"}`,
-                  borderRadius:6, padding:"8px 10px", color:"#ececec",
-                  fontSize:13, outline:"none", boxSizing:"border-box",
-                  fontFamily:"'DM Sans', sans-serif" }}
-                onFocus={e => e.target.style.borderColor="#d4956a"}
-                onBlur={e => e.target.style.borderColor=camposVazios.includes(k)?"#c9a84c66":"#383838"} />
-            </div>
-          ))}
-        </div>
+  function connect() {
+    if (dead) return;
+    ws = new WebSocket(url);
+    ws.onopen  = () => { onStatus?.("connected"); };
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (
+          (data.event === "message" || data.event === "message.any") &&
+          data.payload
+        ) {
+          const msg = normalizeMessage(data.payload);
+          // Injeta chatId se vier em data.payload.from ou data.payload.chatId
+          if (!msg.chatId && data.payload.from) {
+            msg.chatId = data.payload.from.replace(/:.*@/, "@");
+          }
+          onMessage?.(msg);
+        }
+      } catch (e) {
+        console.warn("[WAHA WS] parse error", e);
+      }
+    };
+    ws.onerror  = (e) => { onError?.(e); };
+    ws.onclose  = () => {
+      if (dead) return;
+      onStatus?.("reconnecting");
+      reconnectTimer = setTimeout(connect, 3000);
+    };
+  }
 
-        <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
-          <button onClick={onClose} style={{ background:"transparent",
-            border:"1px solid #383838", borderRadius:6, padding:"8px 16px",
-            color:"#8e8e8e", fontSize:13, cursor:"pointer" }}>
-            Cancelar
-          </button>
-          <button onClick={() => onConfirm(form)} style={{ background:"#3a2a1e",
-            border:"1px solid #d4956a44", borderRadius:6, padding:"8px 16px",
-            color:"#d4956a", fontSize:13, fontWeight:600, cursor:"pointer" }}>
-            ✓ Confirmar e adicionar
-          </button>
-        </div>
-      </div>
-    </div>
-  );
+  connect();
+
+  return {
+    send:  (data) => ws?.readyState === WebSocket.OPEN && ws.send(JSON.stringify(data)),
+    close: () => { dead = true; clearTimeout(reconnectTimer); ws?.close(); },
+  };
 }
