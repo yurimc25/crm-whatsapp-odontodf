@@ -529,73 +529,48 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
     };
   }, []);
 
+  // Helper: resolve binary from a WAHA endpoint.
+  // O endpoint ?downloadMedia=true retorna JSON com media.url — precisa re-buscar o binário.
+  async function resolveMediaBinary(url) {
+    const r = await fetch(url, { headers: { "X-Internal-Key": iKey }, cache: "no-store" });
+    if (!r.ok) return { ok: false, status: r.status };
+    const ct = r.headers.get("content-type") || "";
+    if (ct.includes("application/json")) {
+      const json = await r.json().catch(() => null);
+      const mediaUrl = json?.media?.url;
+      if (!mediaUrl) return { ok: false, status: 404 };
+      console.debug(`[media] JSON response — fetching media.url=${mediaUrl}`);
+      const proxied = `/api/waha?path=${encodeURIComponent(mediaUrl)}`;
+      const r2 = await fetch(proxied, { headers: { "X-Internal-Key": iKey }, cache: "no-store" });
+      if (!r2.ok) return { ok: false, status: r2.status };
+      const buf = await r2.arrayBuffer();
+      return { ok: true, buf, ct: r2.headers.get("content-type") || mimeHint };
+    }
+    const buf = await r.arrayBuffer();
+    return { ok: true, buf, ct: ct || mimeHint };
+  }
+
   async function fetchMedia() {
-    if (fullUrl || !urlToFetch || downloading) { console.debug(`[media] fetch skipped fullUrl=${!!fullUrl} urlToFetch=${!!urlToFetch} downloading=${downloading}`); return; }
+    if (fullUrl || !urlToFetch || downloading) return;
     console.debug(`[media] fetch start msgId=${msgId} url=${urlToFetch}`);
     setDownload(true);
     setError(false);
     try {
-      const r = await fetch(urlToFetch, {
-        headers: { "X-Internal-Key": iKey },
-        cache: "no-store",
-      });
-      if (!r.ok) {
-        const errBody = await r.text().catch(() => "");
-        console.warn(`[media] download ${r.status} for ${msgId}`, errBody.slice(0, 200));
-        
-        // Se o endpoint principal falhar, tenta o fallback
-        if (r.status === 404 && fallbackDownloadPath && !proxiedUrl) {
-          console.debug(`[media] trying fallback endpoint ${fallbackDownloadPath}`);
-          try {
-            const r2 = await fetch(fallbackDownloadPath, {
-              headers: { "X-Internal-Key": iKey },
-              cache: "no-store",
-            });
-            if (r2.ok) {
-              const ct  = r2.headers.get("content-type") || mimeHint;
-              const buf = await r2.arrayBuffer();
-              console.debug(`[media] fallback endpoint ok msgId=${msgId} size=${buf.byteLength}`);
-              if (buf.byteLength > 0) {
-                const blob = new Blob([buf], { type: ct });
-                const url  = URL.createObjectURL(blob);
-                blobUrlRef.current = url;
-                setFullUrl(url);
-                setDownload(false);
-                return;
-              }
-            } else {
-              console.warn(`[media] fallback endpoint returned ${r2.status}`);
-            }
-          } catch (e) {
-            console.warn(`[media] fallback endpoint error:`, e.message);
-          }
-        }
-        
-        // Mantém a thumbnail visível em vez de mostrar erro
-        if (r.status === 404) {
-          console.debug(`[media] download 404 — keeping thumbnail`);
-          setDownload(false);
-          return;
-        }
-        // Outros erros mostram mensagem de erro
-        setError(true);
-        setDownload(false);
-        return;
+      let result = await resolveMediaBinary(urlToFetch);
+      if (!result.ok && result.status === 404 && fallbackDownloadPath && !proxiedUrl) {
+        console.debug(`[media] trying fallback endpoint ${fallbackDownloadPath}`);
+        result = await resolveMediaBinary(fallbackDownloadPath).catch(() => ({ ok: false, status: 0 }));
       }
-      const ct  = r.headers.get("content-type") || mimeHint;
-      const buf = await r.arrayBuffer();
-      console.debug(`[media] fetch ok msgId=${msgId} content-type=${ct} size=${buf.byteLength}`);
-      if (buf.byteLength === 0) {
-        setError(true);
-        setDownload(false);
-        return;
+      if (!result.ok) {
+        if (result.status === 404) { setDownload(false); return; }
+        setError(true); setDownload(false); return;
       }
-      const blob = new Blob([buf], { type: ct });
+      if (!result.buf || result.buf.byteLength === 0) { setError(true); setDownload(false); return; }
+      const blob = new Blob([result.buf], { type: result.ct });
       const url  = URL.createObjectURL(blob);
       blobUrlRef.current = url;
-      console.debug(`[media] objectURL created for msgId=${msgId}`, url);
+      console.debug(`[media] objectURL created for msgId=${msgId}`);
       setFullUrl(url);
-      console.debug(`[media] fullUrl set for msgId=${msgId}`);
     } catch (e) {
       console.error("[media] fetch error:", e?.message || e);
       setError(true);
@@ -613,60 +588,22 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
       setDownload(true);
       setError(false);
       try {
-        const r = await fetch(urlToFetch, {
-          headers: { "X-Internal-Key": iKey },
-          cache: "no-store",
-        });
+        let result = await resolveMediaBinary(urlToFetch);
         if (cancelled) return;
-        if (!r.ok) {
-          const errBody = await r.text().catch(() => "");
-          console.warn(`[media] autoLoad ${r.status} for ${msgId}`, errBody.slice(0,200));
-          
-          // Se o endpoint principal falhar, tenta o fallback
-          if (r.status === 404 && fallbackDownloadPath && !proxiedUrl) {
-            console.debug(`[media] autoLoad trying fallback endpoint`);
-            try {
-              const r2 = await fetch(fallbackDownloadPath, {
-                headers: { "X-Internal-Key": iKey },
-                cache: "no-store",
-              });
-              if (cancelled) return;
-              if (r2.ok) {
-                const ct  = r2.headers.get("content-type") || mimeHint;
-                const buf = await r2.arrayBuffer();
-                console.debug(`[media] autoLoad fallback endpoint ok size=${buf.byteLength}`);
-                if (cancelled) return;
-                if (buf.byteLength > 0) {
-                  const blob = new Blob([buf], { type: ct });
-                  const url  = URL.createObjectURL(blob);
-                  blobUrlRef.current = url;
-                  if (!cancelled) setFullUrl(url);
-                  if (!cancelled) setDownload(false);
-                  return;
-                }
-              }
-            } catch (e) {
-              console.warn(`[media] autoLoad fallback endpoint error:`, e.message);
-            }
-          }
-          
-          // Silenciosamente mantém a thumbnail visible
-          if (r.status === 404) {
-            console.debug(`[media] autoLoad 404 — keeping thumbnail`);
-            setDownload(false);
-            return;
-          }
+        if (!result.ok && result.status === 404 && fallbackDownloadPath && !proxiedUrl) {
+          console.debug(`[media] autoLoad trying fallback endpoint`);
+          result = await resolveMediaBinary(fallbackDownloadPath).catch(() => ({ ok: false, status: 0 }));
+          if (cancelled) return;
+        }
+        if (!result.ok) {
+          if (result.status === 404) { setDownload(false); return; }
           setError(true); setDownload(false); return;
         }
-        const ct  = r.headers.get("content-type") || mimeHint;
-        const buf = await r.arrayBuffer();
-        console.debug(`[media] autoLoad ok msgId=${msgId} size=${buf.byteLength}`);
-        if (cancelled) return;
-        if (buf.byteLength === 0) { setError(true); setDownload(false); return; }
-        const blob = new Blob([buf], { type: ct });
+        if (!result.buf || result.buf.byteLength === 0) { setError(true); setDownload(false); return; }
+        const blob = new Blob([result.buf], { type: result.ct });
         const url  = URL.createObjectURL(blob);
         blobUrlRef.current = url;
-        console.debug(`[media] autoLoad objectURL created for msgId=${msgId}`, url);
+        console.debug(`[media] autoLoad objectURL created for msgId=${msgId}`);
         if (!cancelled) setFullUrl(url);
       } catch (e) {
         console.error(`[media] autoLoad error for ${msgId}:`, e?.message || e);

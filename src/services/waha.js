@@ -295,13 +295,20 @@ export function normalizeMessage(wahaMsg) {
       ? `/api/waha?path=${encodeURIComponent(directUrl)}`
       : null;  // null → ChatWindow vai usar /download-media pelo msgId como last resort
 
+    // Para WAHA NOWEB, o msgId para o endpoint de download é o hex curto
+    // "false_186208474898514@lid_3A4B8E43562008A405D5" → "3A4B8E43562008A405D5"
+    const rawMsgId = wahaMsg.id || null;
+    const shortMsgId = (typeof rawMsgId === "string" && rawMsgId.includes("_"))
+      ? (rawMsgId.split("_").pop() || rawMsgId)
+      : rawMsgId;
+
     media = {
       type:      realType,
       mimetype:  mimetype,
       filename:  wahaMsg.media?.filename || mediaData.fileName || mediaData.title || null,
       thumbUrl,              // miniatura base64 para exibir antes do download
       url:       mediaUrl,   // URL via proxy (com auth)
-      msgId:     wahaMsg.id || null,  // ID direto do WAHA — já em formato correto "true_11111111111@c.us_AAABBBCCC"
+      msgId:     shortMsgId, // hex curto: "3A4B8E43562008A405D5"
       hasMedia:  true,
     };
   }
