@@ -36,20 +36,22 @@ export default async function handler(req, res) {
       grant_type:    "refresh_token",
     }),
   });
+  console.log(`[contacts] token endpoint status: ${tokenRes.status}`);
+  
   if (!tokenRes.ok) {
     const err = await tokenRes.text();
-    console.error("[contacts] token error:", err);
+    console.error("[contacts] TOKEN FETCH FAILED:", err);
     return res.status(502).json({ error: "Failed to get Google token", detail: err });
   }
   const tokenData = await tokenRes.json();
   const access_token = tokenData.access_token;
   
   if (!access_token) {
-    console.error("[contacts] no access_token in response:", tokenData);
+    console.error("[contacts] NO ACCESS_TOKEN in response:", JSON.stringify(tokenData).slice(0, 500));
     return res.status(502).json({ error: "No access token returned", detail: tokenData });
   }
   
-  console.debug(`[contacts] token obtained successfully`);
+  console.log(`[contacts] TOKEN OBTAINED SUCCESSFULLY - token starts with: ${access_token.slice(0, 20)}...`);
 
 // ── Busca individual por número ou nome ──────────────────────────
   if (req.query.action === "search") {
@@ -74,15 +76,19 @@ export default async function handler(req, res) {
         try {
           const url = `https://people.googleapis.com/v1/people:searchContacts` +
             `?query=${encodeURIComponent(query)}&readMask=names,phoneNumbers&pageSize=5`;
-          console.debug(`[contacts] searching by phone with query: ${query}`);
+          console.log(`[contacts/search] PHONE SEARCH: trying query='${query}'`);
           const r = await fetch(url, { headers: { Authorization: `Bearer ${access_token}` } });
+          console.log(`[contacts/search] PHONE SEARCH response: ${r.status}`);
+          
           if (!r.ok) {
             const errBody = await r.text();
-            console.warn(`[contacts] search by phone query '${query}' returned ${r.status}: ${errBody.slice(0, 200)}`);
+            console.warn(`[contacts/search] PHONE SEARCH ${r.status} for '${query}': ${errBody.slice(0, 500)}`);
             continue;
           }
           const data = await r.json();
-          console.debug(`[contacts] search by phone query '${query}' returned ${data.results?.length || 0} results`);
+          const count = data.results?.length || 0;
+          console.log(`[contacts/search] PHONE SEARCH got ${count} results for '${query}'`);
+          
           for (const result of (data.results || [])) {
             const person = result.person;
             const nm   = person?.names?.[0]?.displayName;
@@ -92,22 +98,24 @@ export default async function handler(req, res) {
               const d = ph.value.replace(/\D/g, "");
               if (variants.includes(d) || makeVariants(d).some(v => variants.includes(v))) {
                 results.set(nm, makeVariants(d));
+                console.log(`[contacts/search] PHONE MATCH: ${nm} → ${d}`);
                 break;
               }
             }
           }
           if (results.size > 0) break; // achou, para
         } catch (e) {
-          console.error(`[contacts] search by phone error on query '${query}':`, e.message);
+          console.error(`[contacts/search] PHONE SEARCH EXCEPTION on '${query}':`, e.message);
         }
       }
 
       if (results.size === 0) {
+        console.log(`[contacts/search] PHONE SEARCH COMPLETE: phone='${phone}' NOT FOUND`);
         return res.json({ found: false, name: null, variants: [] });
       }
 
       const [[nm, foundVariants]] = results.entries();
-      console.log(`[contacts/search] phone ${phone} → ${nm}`);
+      console.log(`[contacts/search] PHONE SEARCH COMPLETE: ${phone} → ${nm}`);
       return res.json({ found: true, name: nm, variants: foundVariants });
     }
 
@@ -116,35 +124,43 @@ export default async function handler(req, res) {
       try {
         const url = `https://people.googleapis.com/v1/people:searchContacts` +
           `?query=${encodeURIComponent(name)}&readMask=names,phoneNumbers&pageSize=10`;
-        console.debug(`[contacts] searching by name: '${name}'`);
+        console.log(`[contacts/search] NAME SEARCH STARTING: query='${name}' url=${url}`);
         const r = await fetch(url, { headers: { Authorization: `Bearer ${access_token}` } });
+        console.log(`[contacts/search] Google API response status: ${r.status}`);
+        
         if (!r.ok) {
           const errBody = await r.text();
-          console.warn(`[contacts] search by name '${name}' returned ${r.status}: ${errBody.slice(0, 200)}`);
+          console.error(`[contacts/search] NAME SEARCH FAILED ${r.status}: ${errBody}`);
           return res.json({ found: false, contacts: [] });
         }
+        
         const data = await r.json();
-        console.debug(`[contacts] search by name '${name}' returned ${data.results?.length || 0} results`);
+        const resultsCount = data.results?.length || 0;
+        console.log(`[contacts/search] NAME SEARCH got ${resultsCount} raw results`);
+        console.log(`[contacts/search] Full Google API response:`, JSON.stringify(data).slice(0, 1000));
+        
         const contacts = [];
         for (const result of (data.results || [])) {
           const person = result.person;
           const nm     = person?.names?.[0]?.displayName;
           const phones = person?.phoneNumbers || [];
+          console.log(`[contacts/search] Processing person: name='${nm}' phones=${phones.length}`);
+          
           if (!nm || phones.length === 0) {
-            console.debug(`[contacts] skipping result: name=${nm}, phones=${phones.length}`);
+            console.debug(`[contacts/search] SKIP: name=${nm}, phones=${phones.length}`);
             continue;
           }
           // Retorna todos os contatos com seus telefones
           for (const ph of phones) {
             const digits = ph.value.replace(/\D/g, "");
             contacts.push({ name: nm, phone: digits });
-            console.debug(`[contacts] found contact: ${nm} → ${digits}`);
+            console.log(`[contacts/search] MATCH ADDED: ${nm} → ${digits}`);
           }
         }
-        console.log(`[contacts/search] name "${name}" → ${contacts.length} contatos`);
+        console.log(`[contacts/search] NAME SEARCH COMPLETE: query='${name}' found ${contacts.length} contacts`, contacts);
         return res.json({ found: contacts.length > 0, contacts });
       } catch (e) {
-        console.error("[contacts/search] error:", e.message);
+        console.error("[contacts/search] EXCEPTION:", e.message, e.stack);
         return res.json({ found: false, contacts: [] });
       }
     }

@@ -478,24 +478,25 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
   const iKey    = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
   const SESSION = chatSession || import.meta.env.VITE_WAHA_SESSION || "default";
 
-  // msgId já vem no formato correto do WAHA: "true_11111111111@c.us_AAAABBBBCCCC"
-  // chatId: "11111111111@c.us" (o sender)
+  // msgId vem como ID curto: "3A1C485A49F42B436809"
+  // chatId: "556198141141@c.us" (o sender)
   const cleanMsgId   = msgId ? encodeURIComponent(String(msgId)) : null;
   const cleanChatId  = chatId ? encodeURIComponent(String(chatId)) : null;
   
-  const downloadPath = cleanMsgId
-    ? `/api/waha?path=/api/${SESSION}/messages/${cleanMsgId}/download-media`
+  // Endpoint principal: /chats/{chatId}/messages/{msgId}?downloadMedia=true (recomendado pelo WAHA)
+  const downloadPath = (cleanMsgId && cleanChatId)
+    ? `/api/waha?path=/api/${SESSION}/chats/${cleanChatId}/messages/${cleanMsgId}&downloadMedia=true`
     : null;
   
-  // Endpoint alternativo: /chats/{chatId}/messages/{msgId}?downloadMedia=true
-  const alternativeDownloadPath = (cleanMsgId && cleanChatId)
-    ? `/api/waha?path=/api/${SESSION}/chats/${cleanChatId}/messages/${cleanMsgId}&downloadMedia=true`
+  // Endpoint fallback: /messages/{msgId}/download-media (ID curto pode não funcionar aqui)
+  const fallbackDownloadPath = cleanMsgId
+    ? `/api/waha?path=/api/${SESSION}/messages/${cleanMsgId}/download-media`
     : null;
 
   // Se o WAHA já serviu a mídia via media.url, prefira essa URL
-  // (WAHA retorna "media.url": "http://localhost:3000/api/files/true_11111111111@c.us_AAAABBBBCCCC.pdf")
+  // (WAHA retorna "media.url": "http://localhost:3000/api/files/...")
   const proxiedUrl = media.url || null;
-  const urlToFetch = proxiedUrl || downloadPath;
+  const urlToFetch = proxiedUrl || downloadPath;  // downloadPath é o principal
 
   const isImage = media.type === "image" || media.type === "sticker" ||
                   (media.mimetype || "").startsWith("image/");
@@ -513,9 +514,9 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
     media, msgId, chatId, isImage, isVideo, isAudio, mimeHint, thumbSrc,
     mediaUrl: media?.url,
     downloadPath,
-    alternativePath: alternativeDownloadPath,
+    fallbackPath: fallbackDownloadPath,
   };
-  console.debug(`[media] init msgId=${msgId} proxiedUrl=${proxiedUrl ? proxiedUrl : 'null'} downloadPath=${downloadPath ? downloadPath : 'null'} alternativePath=${alternativeDownloadPath ? alternativeDownloadPath : 'null'} urlToFetch=${urlToFetch ? urlToFetch : 'null'}`, debugInfo);
+  console.debug(`[media] init msgId=${msgId} proxiedUrl=${proxiedUrl ? 'yes' : 'no'} downloadPath=${!!downloadPath} fallbackPath=${!!fallbackDownloadPath} urlToFetch=${!!urlToFetch}`, debugInfo);
 
   // Revoga objectURL ao desmontar
   const blobUrlRef = useRef(null);
@@ -540,21 +541,20 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
       });
       if (!r.ok) {
         const errBody = await r.text().catch(() => "");
-        console.warn(`[media] download ${r.status} for ${msgId} -> ${urlToFetch}`, errBody.slice(0, 200));
+        console.warn(`[media] download ${r.status} for ${msgId}`, errBody.slice(0, 200));
         
-        // 404 em download-media é esperado para mensagens de grupo (WAHA pode não ter indexado)
-        // Tenta o endpoint alternativo /chats/{chatId}/messages/{msgId}?downloadMedia=true
-        if (r.status === 404 && alternativeDownloadPath) {
-          console.debug(`[media] trying alternative endpoint ${alternativeDownloadPath}`);
+        // Se o endpoint principal falhar, tenta o fallback
+        if (r.status === 404 && fallbackDownloadPath && !proxiedUrl) {
+          console.debug(`[media] trying fallback endpoint ${fallbackDownloadPath}`);
           try {
-            const r2 = await fetch(alternativeDownloadPath, {
+            const r2 = await fetch(fallbackDownloadPath, {
               headers: { "X-Internal-Key": iKey },
               cache: "no-store",
             });
             if (r2.ok) {
               const ct  = r2.headers.get("content-type") || mimeHint;
               const buf = await r2.arrayBuffer();
-              console.debug(`[media] alternative endpoint ok msgId=${msgId} content-type=${ct} size=${buf.byteLength}`);
+              console.debug(`[media] fallback endpoint ok msgId=${msgId} size=${buf.byteLength}`);
               if (buf.byteLength > 0) {
                 const blob = new Blob([buf], { type: ct });
                 const url  = URL.createObjectURL(blob);
@@ -564,16 +564,16 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
                 return;
               }
             } else {
-              console.warn(`[media] alternative endpoint returned ${r2.status}`);
+              console.warn(`[media] fallback endpoint returned ${r2.status}`);
             }
           } catch (e) {
-            console.warn(`[media] alternative endpoint error:`, e.message);
+            console.warn(`[media] fallback endpoint error:`, e.message);
           }
         }
         
         // Mantém a thumbnail visível em vez de mostrar erro
         if (r.status === 404) {
-          console.debug(`[media] download 404 (expected for group messages) — keeping thumbnail`);
+          console.debug(`[media] download 404 — keeping thumbnail`);
           setDownload(false);
           return;
         }
@@ -620,14 +620,13 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
         if (cancelled) return;
         if (!r.ok) {
           const errBody = await r.text().catch(() => "");
-          console.warn(`[media] autoLoad ${r.status} for ${msgId} -> ${urlToFetch}`, errBody.slice(0,200));
+          console.warn(`[media] autoLoad ${r.status} for ${msgId}`, errBody.slice(0,200));
           
-          // 404 em download-media é esperado para mensagens de grupo
-          // Tenta o endpoint alternativo
-          if (r.status === 404 && alternativeDownloadPath) {
-            console.debug(`[media] autoLoad trying alternative endpoint ${alternativeDownloadPath}`);
+          // Se o endpoint principal falhar, tenta o fallback
+          if (r.status === 404 && fallbackDownloadPath && !proxiedUrl) {
+            console.debug(`[media] autoLoad trying fallback endpoint`);
             try {
-              const r2 = await fetch(alternativeDownloadPath, {
+              const r2 = await fetch(fallbackDownloadPath, {
                 headers: { "X-Internal-Key": iKey },
                 cache: "no-store",
               });
@@ -635,7 +634,7 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
               if (r2.ok) {
                 const ct  = r2.headers.get("content-type") || mimeHint;
                 const buf = await r2.arrayBuffer();
-                console.debug(`[media] autoLoad alternative endpoint ok msgId=${msgId} content-type=${ct} size=${buf.byteLength}`);
+                console.debug(`[media] autoLoad fallback endpoint ok size=${buf.byteLength}`);
                 if (cancelled) return;
                 if (buf.byteLength > 0) {
                   const blob = new Blob([buf], { type: ct });
@@ -647,13 +646,13 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
                 }
               }
             } catch (e) {
-              console.warn(`[media] autoLoad alternative endpoint error:`, e.message);
+              console.warn(`[media] autoLoad fallback endpoint error:`, e.message);
             }
           }
           
-          // Silenciosamente mantém a thumbnail visible no lugar de mostrar erro
+          // Silenciosamente mantém a thumbnail visible
           if (r.status === 404) {
-            console.debug(`[media] autoLoad 404 (expected for group messages) — keeping thumbnail visible`);
+            console.debug(`[media] autoLoad 404 — keeping thumbnail`);
             setDownload(false);
             return;
           }
@@ -661,7 +660,7 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
         }
         const ct  = r.headers.get("content-type") || mimeHint;
         const buf = await r.arrayBuffer();
-        console.debug(`[media] autoLoad ok msgId=${msgId} content-type=${ct} size=${buf.byteLength}`);
+        console.debug(`[media] autoLoad ok msgId=${msgId} size=${buf.byteLength}`);
         if (cancelled) return;
         if (buf.byteLength === 0) { setError(true); setDownload(false); return; }
         const blob = new Blob([buf], { type: ct });
