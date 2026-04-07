@@ -270,9 +270,23 @@ export function normalizeMessage(wahaMsg) {
 
     // Extrai URL da mídia — tenta múltiplas localizações (NOWEB pode variar)
     // Prioridade: 1) mediaData.url (imageMessage.url direto)
-    //             2) wahaMsg.media.url (passthrough do WAHA)
-    //             3) null (usar /download-media pelo msgId como fallback)
-    const directUrl = mediaData.url || wahaMsg.media?.url || null;
+    //             2) mediaData.directPath (Baileys raw path)
+    //             3) wahaMsg.media.url (passthrough do WAHA)
+    //             4) null (usar /download-media pelo msgId como fallback)
+    const directUrl = mediaData.url 
+      || mediaData.directPath
+      || wahaMsg.media?.url 
+      || null;
+    
+    // Log para debug — sem URL significa que vai tentar download-media
+    if (!directUrl && hasMedia) {
+      console.debug(`[waha] media extracted but NO URL found for ${type} message (will retry via download-media)`, {
+        msgId: normalizeWahaId(wahaMsg.id),
+        mediaDataKeys: Object.keys(mediaData),
+        wahaMediaKeys: Object.keys(wahaMsg.media || {}),
+      });
+    }
+    
     const isWAUrl = directUrl?.includes("mmg.whatsapp.net") || directUrl?.includes("whatsapp.net");
     const mediaUrl = (directUrl && !isWAUrl)
       ? `/api/waha?path=${encodeURIComponent(directUrl)}`

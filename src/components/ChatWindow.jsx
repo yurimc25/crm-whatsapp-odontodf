@@ -460,7 +460,13 @@ function MediaContent({ media, msgId, chatSession }) {
 
   const thumbSrc = media.thumbUrl || null;
   // Debug inicial: mostra quais URLs estarão disponíveis para fetch
-  console.debug(`[media] init msgId=${validMsgId} proxiedUrl=${proxiedUrl ? proxiedUrl : 'null'} downloadPath=${downloadPath ? downloadPath : 'null'} urlToFetch=${urlToFetch ? urlToFetch : 'null'}`, { media, msgId, isImage, isVideo, isAudio, mimeHint, thumbSrc });
+  const debugInfo = { 
+    media, msgId, isImage, isVideo, isAudio, mimeHint, thumbSrc,
+    mediaUrl: media?.url,
+    sanitized: sanitizedMsgId,
+    validMsgId,
+  };
+  console.debug(`[media] init msgId=${validMsgId} proxiedUrl=${proxiedUrl ? proxiedUrl : 'null'} downloadPath=${downloadPath ? downloadPath : 'null'} urlToFetch=${urlToFetch ? urlToFetch : 'null'}`, debugInfo);
 
   // Revoga objectURL ao desmontar
   const blobUrlRef = useRef(null);
