@@ -136,28 +136,48 @@ function formatForSearch(digits) {
   return digits;
 }
 
-// Gera variações do número para cobrir todos os formatos do WhatsApp
+// Gera variações do número — IDÊNTICA ao frontend (useContacts.js)
 function makeVariants(digits) {
   const variants = new Set();
-  const d = digits.replace(/\D/g, "");
+  const d = (digits || "").replace(/\D/g, "");
+  if (!d) return [];
+
   variants.add(d);
 
-  // Isola o número local (sem 55)
   const isBR = d.startsWith("55") && d.length >= 12;
   const local = isBR ? d.slice(2) : d;
 
-  if (local.length >= 10) {
+  if (local.length >= 8) {
     variants.add(local);
     variants.add("55" + local);
 
-    // Lida com o 9º dígito
+    const ddd = local.slice(0, 2);
+    const num = local.slice(2);
+
+    // Sem DDD
+    variants.add(num);
+
+    if (num.length === 9 && num.startsWith("9")) {
+      const sem9 = num.slice(1);
+      variants.add(sem9);
+      variants.add(ddd + sem9);
+      variants.add("55" + ddd + sem9);
+    }
+
+    if (num.length === 8) {
+      const com9 = "9" + num;
+      variants.add(com9);
+      variants.add(ddd + com9);
+      variants.add("55" + ddd + com9);
+    }
+
     if (local.length === 11 && local[2] === "9") {
-      // Tem o 9: gera a versão sem o 9
       const sem9 = local.slice(0, 2) + local.slice(3);
       variants.add(sem9);
-      variants.add("55" + sem9); // O bug estava aqui: faltava essa linha
-    } else if (local.length === 10) {
-      // Não tem o 9: gera a versão com o 9
+      variants.add("55" + sem9);
+    }
+
+    if (local.length === 10) {
       const com9 = local.slice(0, 2) + "9" + local.slice(2);
       variants.add(com9);
       variants.add("55" + com9);

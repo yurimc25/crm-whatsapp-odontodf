@@ -26,16 +26,55 @@ export function formatPhone(digits) {
   return d || "—";
 }
 
-// Gera variantes de um número para lookup no mapa
+// Gera variantes de um número — IDÊNTICA ao backend (contacts.js e sync-contacts.js)
 function phoneVariants(digits) {
-  const v = new Set([digits]);
-  const local = digits.startsWith("55") ? digits.slice(2) : digits;
-  v.add(local);
-  if (!digits.startsWith("55")) v.add("55" + digits);
-  // Com/sem o 9 (celular brasileiro)
-  if (local.length === 11 && local[2] === "9") v.add(local.slice(0,2) + local.slice(3));
-  if (local.length === 10) v.add(local.slice(0,2) + "9" + local.slice(2));
-  return [...v];
+  const variants = new Set();
+  const d = (digits || "").replace(/\D/g, "");
+  if (!d) return [];
+
+  variants.add(d);
+
+  const isBR = d.startsWith("55") && d.length >= 12;
+  const local = isBR ? d.slice(2) : d;
+
+  if (local.length >= 8) {
+    variants.add(local);
+    variants.add("55" + local);
+
+    const ddd = local.slice(0, 2);
+    const num = local.slice(2);
+
+    // Sem DDD
+    variants.add(num);
+
+    if (num.length === 9 && num.startsWith("9")) {
+      const sem9 = num.slice(1);
+      variants.add(sem9);
+      variants.add(ddd + sem9);
+      variants.add("55" + ddd + sem9);
+    }
+
+    if (num.length === 8) {
+      const com9 = "9" + num;
+      variants.add(com9);
+      variants.add(ddd + com9);
+      variants.add("55" + ddd + com9);
+    }
+
+    if (local.length === 11 && local[2] === "9") {
+      const sem9 = local.slice(0, 2) + local.slice(3);
+      variants.add(sem9);
+      variants.add("55" + sem9);
+    }
+
+    if (local.length === 10) {
+      const com9 = local.slice(0, 2) + "9" + local.slice(2);
+      variants.add(com9);
+      variants.add("55" + com9);
+    }
+  }
+
+  return [...variants];
 }
 
 // Salva no localStorage renovando TTL
@@ -119,10 +158,18 @@ export function useContacts() {
     return () => clearInterval(iv);
   }, [fetchGoogle]);
 
-  // Busca no mapa (todas as variantes)
+  // Busca no mapa — variantes exatas primeiro, depois match parcial por sufixo
   const findInMap = useCallback((phone, map) => {
-    for (const v of phoneVariants(phone)) {
+    const variants = phoneVariants(phone);
+    // Match exato
+    for (const v of variants) {
       if (map[v]) return map[v];
+    }
+    // Match parcial: chave do mapa termina com variante ou vice-versa
+    for (const key of Object.keys(map)) {
+      if (variants.some(v => v.length >= 8 && (key.endsWith(v) || v.endsWith(key)))) {
+        return map[key];
+      }
     }
     return null;
   }, []);
@@ -137,7 +184,10 @@ export function useContacts() {
         if (!phone || !name) continue;
         const digits = phone.replace(/\D/g, "");
         for (const v of phoneVariants(digits)) {
-          if (!prev[v]) { updated[v] = name; changed = true; }
+          if (!prev[v] || prev[v] !== name) {
+            updated[v] = name;
+            changed = true;
+          }
         }
       }
       if (!changed) return prev;
@@ -146,7 +196,7 @@ export function useContacts() {
     });
   }, []);
 
-  // 4. Lookup individual — só Google (Codental alimenta o mapa via addLocalContact no PatientPanel)
+  // 4. Lookup individual — tenta todas as variantes do número
   const lookupPhone = useCallback(async (wahaId) => {
     const phone = wahaIdToPhone(wahaId);
     if (!phone || phone.length < 7) return;
@@ -154,27 +204,35 @@ export function useContacts() {
     if (findInMap(phone, contactMap)) return;
     lookedUp.current.add(phone);
 
-    // Google Contacts individual lookup
-    try {
-      const r = await fetch(
-        `/api/contacts?action=search&phone=${phone}`,
-        { headers: { "X-Internal-Key": internalKey } }
-      );
-      if (!r.ok) return;
-      const { found, name, variants } = await r.json();
-      if (!found || !name) return;
-      setContactMap(prev => {
-        const updated = { ...prev };
-        let changed = false;
-        for (const v of (variants || phoneVariants(phone))) {
-          if (!prev[v]) { updated[v] = name; changed = true; }
-        }
-        if (!changed) return prev;
-        persistMap(updated);
-        console.log(`[contacts] Google individual ${phone} → ${name}`);
-        return updated;
-      });
-    } catch {}
+    // Tenta cada variante até achar
+    const variants = phoneVariants(phone);
+    for (const v of variants) {
+      try {
+        const r = await fetch(
+          `/api/contacts?action=search&phone=${v}`,
+          { headers: { "X-Internal-Key": internalKey } }
+        );
+        if (!r.ok) continue;
+        const { found, name, variants: foundVariants } = await r.json();
+        if (!found || !name) continue;
+
+        setContactMap(prev => {
+          const updated = { ...prev };
+          let changed = false;
+          for (const fv of (foundVariants || phoneVariants(phone))) {
+            if (!prev[fv] || prev[fv] !== name) {
+              updated[fv] = name;
+              changed = true;
+            }
+          }
+          if (!changed) return prev;
+          persistMap(updated);
+          console.log(`[contacts] Google individual ${phone} → ${name}`);
+          return updated;
+        });
+        break; // achou, para
+      } catch {}
+    }
   }, [contactMap, internalKey, findInMap]);
 
   const resolveName = useCallback((wahaId, pushname) => {
