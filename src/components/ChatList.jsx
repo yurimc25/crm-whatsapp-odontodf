@@ -1,4 +1,4 @@
-import { useMemo, useState, useRef, useEffect } from "react";
+import { useMemo, useState, useRef, useEffect, useCallback } from "react";
 import { useContactsCtx } from "../App";
 import { formatPhone, wahaIdToPhone } from "../hooks/useContacts";
 
@@ -32,9 +32,185 @@ function formatTimeSince(ts) {
 
 export default function ChatList({
   chats, activeId, search, onSearch, onSelect,
-  onForward, onMarkRead, onMarkUnread, loading
+  onForward, onMarkRead, onMarkUnread, loading, operator
 }) {
-  const [ctxMenu, setCtxMenu] = useState(null); // { chat, x, y }
+  const [ctxMenu, setCtxMenu] = useState(null);
+  const { lookupPhone, contactMap } = useContactsCtx();
+
+  // ── Sync progress ─────────────────────────────────────────────
+  const [syncTotal,   setSyncTotal]   = useState(0);
+  const [syncDone,    setSyncDone]    = useState(0);
+  const [syncActive,  setSyncActive]  = useState(false);
+  const syncingRef = useRef(false);
+  const syncedRef  = useRef(new Set()); // IDs já processados nesta sessão
+
+  // Dispara lookup paralelo para todos os contatos sem nome
+  // Roda quando a lista muda e quando o contactMap é atualizado
+  useEffect(() => {
+    if (!chats.length || syncingRef.current) return;
+
+    // Filtra chats que ainda não têm nome no mapa
+    const semNome = chats.filter(c => {
+      if (syncedRef.current.has(c.id)) return false;
+      const phone = wahaIdToPhone(c.id);
+      if (!phone || phone.length < 7) return false;
+      // Verifica se alguma variante já está no mapa
+      return !c.name || c.name === formatPhone(phone) || c.name === phone;
+    });
+
+    if (semNome.length === 0) return;
+
+    syncingRef.current = true;
+    setSyncTotal(semNome.length);
+    setSyncDone(0);
+    setSyncActive(true);
+
+    // Lookup em lotes de 5 paralelos para não sobrecarregar
+    const BATCH = 5;
+    let done = 0;
+
+    async function runBatch(items) {
+      await Promise.allSettled(
+        items.map(async (chat) => {
+          syncedRef.current.add(chat.id);
+          await lookupPhone(chat.id);
+          done++;
+          setSyncDone(done);
+        })
+      );
+    }
+
+    async function runAll() {
+      for (let i = 0; i < semNome.length; i += BATCH) {
+        await runBatch(semNome.slice(i, i + BATCH));
+        // Pequena pausa entre lotes para não travar o browser
+        await new Promise(r => setTimeout(r, 200));
+      }
+      setSyncActive(false);
+      syncingRef.current = false;
+    }
+
+    runAll();
+  }, [chats.length]); // só re-roda quando a lista muda de tamanho
+
+  const sorted = useMemo(() => {
+    return [...chats].sort((a, b) => {
+      const tsA = a.lastPatientTs ? new Date(a.lastPatientTs).getTime() : 0;
+      const tsB = b.lastPatientTs ? new Date(b.lastPatientTs).getTime() : 0;
+      if (tsA && tsB) return tsA - tsB;
+      if (tsA) return -1;
+      if (tsB) return 1;
+      return 0;
+    });
+  }, [chats]);
+
+  const filtered = useMemo(() => {
+    if (!search) return sorted;
+    const s = search.toLowerCase();
+    return sorted.filter(c =>
+      c.name?.toLowerCase().includes(s) || c.id?.includes(s) || c.phone?.includes(s)
+    );
+  }, [sorted, search]);
+
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const close = () => setCtxMenu(null);
+    const onKey  = e => e.key === "Escape" && close();
+    window.addEventListener("click", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [ctxMenu]);
+
+  function openMenu(e, chat) {
+    e.preventDefault();
+    e.stopPropagation();
+    setCtxMenu({ chat, x: e.clientX, y: e.clientY });
+  }
+
+  const syncPct = syncTotal > 0 ? Math.round((syncDone / syncTotal) * 100) : 0;
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden",
+      background:T.bg, fontFamily:"'DM Sans', sans-serif" }}>
+
+      {/* Busca */}
+      <div style={{ padding:"10px 12px", borderBottom:`1px solid ${T.border}` }}>
+        <div style={{ position:"relative" }}>
+          <span style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)",
+            color:T.sub, fontSize:13, pointerEvents:"none" }}>🔍</span>
+          <input value={search} onChange={e => onSearch(e.target.value)}
+            placeholder="Buscar paciente ou número..."
+            style={{ width:"100%", background:T.inputBg, border:`1px solid ${T.border}`,
+              borderRadius:8, padding:"8px 12px 8px 32px", color:T.text,
+              fontSize:13, outline:"none", boxSizing:"border-box" }} />
+        </div>
+      </div>
+
+      {/* Barra de sincronização */}
+      {syncActive && (
+        <div style={{ padding:"4px 12px 6px", borderBottom:`1px solid ${T.border}`,
+          background:"#141414" }}>
+          <div style={{ display:"flex", justifyContent:"space-between",
+            alignItems:"center", marginBottom:4 }}>
+            <span style={{ color:T.sub, fontSize:10 }}>
+              Sincronizando contatos…
+            </span>
+            <span style={{ color:T.accent, fontSize:10, fontWeight:600 }}>
+              {syncDone}/{syncTotal}
+            </span>
+          </div>
+          <div style={{ height:3, background:"#2a2a2a", borderRadius:2, overflow:"hidden" }}>
+            <div style={{
+              height:"100%", borderRadius:2,
+              width:`${syncPct}%`,
+              background:`linear-gradient(90deg, ${T.accent}, ${T.green})`,
+              transition:"width .3s ease",
+            }} />
+          </div>
+        </div>
+      )}
+
+      {/* Lista */}
+      <div style={{ flex:1, overflowY:"auto" }}>
+        {loading && (
+          <div style={{ padding:24, textAlign:"center", color:T.sub, fontSize:13 }}>
+            Carregando conversas...
+          </div>
+        )}
+        {!loading && filtered.length === 0 && (
+          <div style={{ padding:24, textAlign:"center", color:T.sub, fontSize:13 }}>
+            Nenhuma conversa encontrada
+          </div>
+        )}
+        {filtered.map(chat => (
+          <ChatItem
+            key={chat.id}
+            chat={chat}
+            active={chat.id === activeId}
+            onClick={() => onSelect(chat)}
+            onOpenMenu={(e) => openMenu(e, chat)}
+          />
+        ))}
+      </div>
+
+      {/* Menu de contexto */}
+      {ctxMenu && (
+        <ContextMenu
+          x={ctxMenu.x}
+          y={ctxMenu.y}
+          chat={ctxMenu.chat}
+          onClose={() => setCtxMenu(null)}
+          onForward={onForward}
+          onMarkRead={onMarkRead}
+          onMarkUnread={onMarkUnread}
+        />
+      )}
+    </div>
+  );
+}
 
   const sorted = useMemo(() => {
     return [...chats].sort((a, b) => {
@@ -131,17 +307,9 @@ export default function ChatList({
 }
 
 function ChatItem({ chat, active, onClick, onOpenMenu }) {
-  const { displayInfo, lookupPhone } = useContactsCtx();
+  const { displayInfo } = useContactsCtx();
   const info = displayInfo(chat.id, chat.name, chat.pushname);
   const hasUnread = !active && (chat.unread > 0);
-
-  // Busca individual no Google Contacts se não encontrou no bulk load
-  // useEffect com debounce de 2s para não sobrecarregar a API
-  useEffect(() => {
-    if (info.hasContact) return; // já tem nome, não precisa buscar
-    const t = setTimeout(() => lookupPhone(chat.id), 2000);
-    return () => clearTimeout(t);
-  }, [chat.id, info.hasContact]);
 
   const timeSince = chat.lastPatientTs ? formatTimeSince(chat.lastPatientTs) : null;
   const waitMs    = chat.lastPatientTs ? Date.now() - new Date(chat.lastPatientTs).getTime() : 0;
@@ -153,6 +321,16 @@ function ChatItem({ chat, active, onClick, onOpenMenu }) {
 
   const photoUrl = info.photoUrl || chat.photoUrl || null;
 
+  // Formata última mensagem para preview
+  const lastMsgPreview = (() => {
+    const msg = chat.lastMsg;
+    if (!msg) return null;
+    // Remove prefixo de operador "Nome: mensagem" → mostra só "mensagem"
+    const colonIdx = msg.indexOf(": ");
+    const preview  = colonIdx > 0 && colonIdx < 25 ? msg.slice(colonIdx + 2) : msg;
+    return preview.length > 44 ? preview.slice(0, 44) + "…" : preview;
+  })();
+
   // Long press para mobile (500ms)
   const longPressTimer = useRef(null);
   const longPressTriggered = useRef(false);
@@ -161,31 +339,25 @@ function ChatItem({ chat, active, onClick, onOpenMenu }) {
     longPressTriggered.current = false;
     longPressTimer.current = setTimeout(() => {
       longPressTriggered.current = true;
-      // Simula evento de contexto com posição do toque
       const touch = e.touches[0];
       onOpenMenu({ preventDefault:()=>{}, stopPropagation:()=>{},
         clientX: touch.clientX, clientY: touch.clientY });
     }, 500);
   }
 
-  function onTouchEnd() {
-    clearTimeout(longPressTimer.current);
-  }
-
-  function onTouchMove() {
-    clearTimeout(longPressTimer.current);
-  }
+  function onTouchEnd()  { clearTimeout(longPressTimer.current); }
+  function onTouchMove() { clearTimeout(longPressTimer.current); }
 
   function handleClick() {
-    if (longPressTriggered.current) return; // não abre chat se foi long press
+    if (longPressTriggered.current) return;
     onClick();
   }
 
   return (
     <div
       onClick={handleClick}
-      onContextMenu={onOpenMenu}       // botão direito no desktop
-      onTouchStart={onTouchStart}      // long press no mobile
+      onContextMenu={onOpenMenu}
+      onTouchStart={onTouchStart}
       onTouchEnd={onTouchEnd}
       onTouchMove={onTouchMove}
       style={{
@@ -223,8 +395,9 @@ function ChatItem({ chat, active, onClick, onOpenMenu }) {
       <div style={{ flex:1, minWidth:0 }}>
         <div style={{ display:"flex", justifyContent:"space-between",
           alignItems:"baseline", marginBottom:1 }}>
-          <span style={{ color:T.text, fontSize:13,
-            fontWeight: hasUnread ? 700 : 500,
+          <span style={{ color: info.hasContact ? T.text : T.sub,
+            fontSize:13,
+            fontWeight: hasUnread ? 700 : info.hasContact ? 500 : 400,
             overflow:"hidden", textOverflow:"ellipsis",
             whiteSpace:"nowrap", maxWidth:160 }}>
             {info.hasContact ? info.name : info.phone}
@@ -247,9 +420,12 @@ function ChatItem({ chat, active, onClick, onOpenMenu }) {
         <div style={{ color: hasUnread ? "#ccc" : T.sub,
           fontSize:12, fontWeight: hasUnread ? 500 : 400,
           overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
-          {chat.lastMsg
-            ? (chat.lastMsg.length > 44 ? chat.lastMsg.slice(0,44)+"…" : chat.lastMsg)
-            : <span style={{ fontStyle:"italic", color:"#555", fontWeight:400 }}>Sem mensagens</span>}
+          {lastMsgPreview
+            ? lastMsgPreview
+            : <span style={{ fontStyle:"italic", color:"#444", fontWeight:400, fontSize:11 }}>
+                {info.hasContact ? "Sem mensagens recentes" : "Sincronizando…"}
+              </span>
+          }
         </div>
       </div>
 
