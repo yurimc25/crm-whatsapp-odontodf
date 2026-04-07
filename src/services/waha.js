@@ -167,6 +167,52 @@ export function normalizeChat(wahaChat) {
   };
 }
 
+// Normaliza ID do WAHA NOWEB para uso no /download-media
+// O WAHA espera: "false_556194530566@c.us_3EB0ABC123" (sem sufixo @lid)
+// Mensagens de grupo via LID chegam como: "false_120363...@g.us_3EB0..._186208...@lid"
+function normalizeWahaId(raw) {
+  if (!raw) return null;
+
+  let serialized = null;
+
+  if (typeof raw === "object") {
+    // Objeto com _serialized
+    if (raw._serialized) serialized = raw._serialized;
+    // Objeto com key separada (ex: _data.key)
+    else if (raw.remoteJid && raw.id) {
+      const fromMe = raw.fromMe ? "true" : "false";
+      serialized = `${fromMe}_${raw.remoteJid}_${raw.id}`;
+    }
+    else serialized = raw.id || null;
+  } else if (typeof raw === "string") {
+    serialized = raw;
+  }
+
+  if (!serialized) return null;
+
+  // Remove sufixo @lid de mensagens de grupo via LID addressing
+  // "false_120363@g.us_3EB0ABC_186208@lid" → "false_120363@g.us_3EB0ABC"
+  // O sufixo @lid aparece como o último segmento após o 3º underscore
+  const parts = serialized.split("_");
+  if (parts.length > 3 && parts[parts.length - 1].includes("@lid")) {
+    serialized = parts.slice(0, -1).join("_");
+  }
+
+  return serialized;
+}
+
+// Constrói msgId correto para /download-media a partir dos dados da mensagem
+function buildMsgId(wahaMsg) {
+  // Prioridade 1: _data.key tem o ID mais preciso
+  const key = wahaMsg._data?.key;
+  if (key?.remoteJid && key?.id) {
+    const fromMe = key.fromMe ? "true" : "false";
+    return `${fromMe}_${key.remoteJid}_${key.id}`;
+  }
+  // Prioridade 2: wahaMsg.id normalizado
+  return normalizeWahaId(wahaMsg.id);
+}
+
 export function normalizeMessage(wahaMsg) {
   const body = wahaMsg.body
     || wahaMsg.text
@@ -240,13 +286,13 @@ export function normalizeMessage(wahaMsg) {
       filename:  wahaMsg.media?.filename || mediaData.fileName || mediaData.title || null,
       thumbUrl,              // miniatura base64 para exibir antes do download
       url:       mediaUrl,   // URL via proxy (com auth)
-      msgId:     wahaMsg.id || null,  // fallback: download pelo ID
+      msgId:     buildMsgId(wahaMsg) || normalizeWahaId(wahaMsg.id) || null,  // ID correto para /download-media
       hasMedia:  true,
     };
   }
 
   return {
-    id:       wahaMsg.id || `tmp-${tsMs}`,
+    id:       normalizeWahaId(wahaMsg.id) || `tmp-${tsMs}`,
     from:     wahaMsg.fromMe ? "operator" : "patient",
     text:     body,
     time:     new Date(tsMs).toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" }),
