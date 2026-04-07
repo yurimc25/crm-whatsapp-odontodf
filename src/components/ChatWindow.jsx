@@ -447,6 +447,7 @@ function MessageBubble({ msg, currentOperator }) {
             <MediaContent
               media={msg.media}
               msgId={msg.media.msgId || msg.id}
+              chatId={msg.chatId}
               chatSession={import.meta.env.VITE_WAHA_SESSION || "default"}
             />
           )}
@@ -469,7 +470,7 @@ function MessageBubble({ msg, currentOperator }) {
 }
 
 // ── Renderizador de mídia ──────────────────────────────────────────
-function MediaContent({ media, msgId, chatSession }) {
+function MediaContent({ media, msgId, chatId, chatSession }) {
   const [lightbox,    setLightbox]  = useState(false);
   const [fullUrl,     setFullUrl]   = useState(null);
   const [downloading, setDownload]  = useState(false);
@@ -478,6 +479,7 @@ function MediaContent({ media, msgId, chatSession }) {
   const SESSION = chatSession || import.meta.env.VITE_WAHA_SESSION || "default";
 
   // WAHA NOWEB: usa /download-media pelo ID serializado da mensagem
+  // OU /chats/{chatId}/messages/{msgId}?downloadMedia=true como fallback
   // ID válido tem formato: "false_556...@c.us_AABBCC..." (tem "@" ou "_")
   // Remove segmentos do tipo `_participant@lid` quando presentes (causam 404 no endpoint)
   const sanitizedMsgId = msgId ? String(msgId).replace(/_[^_@]+@lid\b/g, "") : null;
@@ -493,6 +495,12 @@ function MediaContent({ media, msgId, chatSession }) {
   const cleanId      = validMsgId ? encodeURIComponent(validMsgId) : null;
   const downloadPath = cleanId
     ? `/api/waha?path=/api/${SESSION}/messages/${cleanId}/download-media`
+    : null;
+  
+  // Endpoint alternativo: /chats/{chatId}/messages/{msgId}?downloadMedia=true
+  const cleanChatId = chatId ? encodeURIComponent(chatId) : null;
+  const alternativeDownloadPath = (cleanId && cleanChatId)
+    ? `/api/waha?path=/api/${SESSION}/chats/${cleanChatId}/messages/${cleanId}&downloadMedia=true`
     : null;
 
   // Se o WAHA já serviu a mídia via /api/files/... ou outra URL proxy, prefira essa URL
@@ -517,8 +525,9 @@ function MediaContent({ media, msgId, chatSession }) {
     mediaUrl: media?.url,
     sanitized: sanitizedMsgId,
     validMsgId,
+    alternativePath: alternativeDownloadPath,
   };
-  console.debug(`[media] init msgId=${validMsgId} proxiedUrl=${proxiedUrl ? proxiedUrl : 'null'} downloadPath=${downloadPath ? downloadPath : 'null'} urlToFetch=${urlToFetch ? urlToFetch : 'null'}`, debugInfo);
+  console.debug(`[media] init msgId=${validMsgId} proxiedUrl=${proxiedUrl ? proxiedUrl : 'null'} downloadPath=${downloadPath ? downloadPath : 'null'} alternativePath=${alternativeDownloadPath ? alternativeDownloadPath : 'null'} urlToFetch=${urlToFetch ? urlToFetch : 'null'}`, debugInfo);
 
   // Revoga objectURL ao desmontar
   const blobUrlRef = useRef(null);
@@ -544,7 +553,36 @@ function MediaContent({ media, msgId, chatSession }) {
       if (!r.ok) {
         const errBody = await r.text().catch(() => "");
         console.warn(`[media] download ${r.status} for ${validMsgId} -> ${urlToFetch}`, errBody.slice(0, 200));
+        
         // 404 em download-media é esperado para mensagens de grupo (WAHA pode não ter indexado)
+        // Tenta o endpoint alternativo /chats/{chatId}/messages/{msgId}?downloadMedia=true
+        if (r.status === 404 && alternativeDownloadPath) {
+          console.debug(`[media] trying alternative endpoint ${alternativeDownloadPath}`);
+          try {
+            const r2 = await fetch(alternativeDownloadPath, {
+              headers: { "X-Internal-Key": iKey },
+              cache: "no-store",
+            });
+            if (r2.ok) {
+              const ct  = r2.headers.get("content-type") || mimeHint;
+              const buf = await r2.arrayBuffer();
+              console.debug(`[media] alternative endpoint ok msgId=${validMsgId} content-type=${ct} size=${buf.byteLength}`);
+              if (buf.byteLength > 0) {
+                const blob = new Blob([buf], { type: ct });
+                const url  = URL.createObjectURL(blob);
+                blobUrlRef.current = url;
+                setFullUrl(url);
+                setDownload(false);
+                return;
+              }
+            } else {
+              console.warn(`[media] alternative endpoint returned ${r2.status}`);
+            }
+          } catch (e) {
+            console.warn(`[media] alternative endpoint error:`, e.message);
+          }
+        }
+        
         // Mantém a thumbnail visível em vez de mostrar erro
         if (r.status === 404) {
           console.debug(`[media] download 404 (expected for group messages) — keeping thumbnail`);
@@ -595,14 +633,42 @@ function MediaContent({ media, msgId, chatSession }) {
         if (!r.ok) {
           const errBody = await r.text().catch(() => "");
           console.warn(`[media] autoLoad ${r.status} for ${validMsgId} -> ${urlToFetch}`, errBody.slice(0,200));
-          // Para grupo messages, 404 é esperado pois /download-media pode não ter a mensagem
-          // Nesse caso, só mantém a thumbnail visível em vez de mostrar erro
+          
+          // 404 em download-media é esperado para mensagens de grupo
+          // Tenta o endpoint alternativo
+          if (r.status === 404 && alternativeDownloadPath) {
+            console.debug(`[media] autoLoad trying alternative endpoint ${alternativeDownloadPath}`);
+            try {
+              const r2 = await fetch(alternativeDownloadPath, {
+                headers: { "X-Internal-Key": iKey },
+                cache: "no-store",
+              });
+              if (cancelled) return;
+              if (r2.ok) {
+                const ct  = r2.headers.get("content-type") || mimeHint;
+                const buf = await r2.arrayBuffer();
+                console.debug(`[media] autoLoad alternative endpoint ok msgId=${validMsgId} content-type=${ct} size=${buf.byteLength}`);
+                if (cancelled) return;
+                if (buf.byteLength > 0) {
+                  const blob = new Blob([buf], { type: ct });
+                  const url  = URL.createObjectURL(blob);
+                  blobUrlRef.current = url;
+                  if (!cancelled) setFullUrl(url);
+                  if (!cancelled) setDownload(false);
+                  return;
+                }
+              }
+            } catch (e) {
+              console.warn(`[media] autoLoad alternative endpoint error:`, e.message);
+            }
+          }
+          
+          // Silenciosamente mantém a thumbnail visible no lugar de mostrar erro
           if (r.status === 404) {
             console.debug(`[media] autoLoad 404 (expected for group messages) — keeping thumbnail visible`);
             setDownload(false);
             return;
           }
-          // Outros erros (401, 500, etc) mostram overlay de erro
           setError(true); setDownload(false); return;
         }
         const ct  = r.headers.get("content-type") || mimeHint;

@@ -43,56 +43,93 @@ export default async function handler(req, res) {
   }
   const { access_token } = await tokenRes.json();
 
-// ── Busca individual por número ──────────────────────────────────
+// ── Busca individual por número ou nome ──────────────────────────
   if (req.query.action === "search") {
     const phone = (req.query.phone || "").replace(/\D/g, "");
-    if (!phone) return res.status(400).json({ error: "phone obrigatório" });
+    const name  = (req.query.q || "").trim();
 
-    const variants = makeVariants(phone);
+    // Busca por número
+    if (phone && phone.length >= 8) {
+      const variants = makeVariants(phone);
 
-    // Cria um Set de queries para buscar na API do Google
-    // Isso garante que ele tente achar tanto (61) 98141-1141 quanto (61) 8141-1141
-    const searchQueries = new Set();
-    variants.forEach(v => {
-      searchQueries.add(v);
-      searchQueries.add(formatForSearch(v));
-    });
+      // Cria um Set de queries para buscar na API do Google
+      // Isso garante que ele tente achar tanto (61) 98141-1141 quanto (61) 8141-1141
+      const searchQueries = new Set();
+      variants.forEach(v => {
+        searchQueries.add(v);
+        searchQueries.add(formatForSearch(v));
+      });
 
-    const results = new Map();
+      const results = new Map();
 
-    for (const query of searchQueries) {
+      for (const query of searchQueries) {
+        try {
+          const r = await fetch(
+            `https://people.googleapis.com/v1/people:searchContacts` +
+            `?query=${encodeURIComponent(query)}&readMask=names,phoneNumbers&pageSize=5`,
+            { headers: { Authorization: `Bearer ${access_token}` } }
+          );
+          if (!r.ok) continue;
+          const data = await r.json();
+          for (const result of (data.results || [])) {
+            const person = result.person;
+            const nm   = person?.names?.[0]?.displayName;
+            if (!nm) continue;
+            // Verifica se algum telefone do contato bate com alguma variante
+            for (const ph of (person.phoneNumbers || [])) {
+              const d = ph.value.replace(/\D/g, "");
+              if (variants.includes(d) || makeVariants(d).some(v => variants.includes(v))) {
+                results.set(nm, makeVariants(d));
+                break;
+              }
+            }
+          }
+          if (results.size > 0) break; // achou, para
+        } catch {}
+      }
+
+      if (results.size === 0) {
+        return res.json({ found: false, name: null, variants: [] });
+      }
+
+      const [[nm, foundVariants]] = results.entries();
+      console.log(`[contacts/search] phone ${phone} → ${nm}`);
+      return res.json({ found: true, name: nm, variants: foundVariants });
+    }
+
+    // Busca por nome
+    if (name && name.length >= 2) {
       try {
         const r = await fetch(
           `https://people.googleapis.com/v1/people:searchContacts` +
-          `?query=${encodeURIComponent(query)}&readMask=names,phoneNumbers&pageSize=5`,
+          `?query=${encodeURIComponent(name)}&readMask=names,phoneNumbers&pageSize=10`,
           { headers: { Authorization: `Bearer ${access_token}` } }
         );
-        if (!r.ok) continue;
+        if (!r.ok) {
+          return res.json({ found: false, contacts: [] });
+        }
         const data = await r.json();
+        const contacts = [];
         for (const result of (data.results || [])) {
           const person = result.person;
-          const name   = person?.names?.[0]?.displayName;
-          if (!name) continue;
-          // Verifica se algum telefone do contato bate com alguma variante
-          for (const ph of (person.phoneNumbers || [])) {
-            const d = ph.value.replace(/\D/g, "");
-            if (variants.includes(d) || makeVariants(d).some(v => variants.includes(v))) {
-              results.set(name, makeVariants(d));
-              break;
-            }
+          const nm     = person?.names?.[0]?.displayName;
+          const phones = person?.phoneNumbers || [];
+          if (!nm || phones.length === 0) continue;
+          // Retorna todos os contatos com seus telefones
+          for (const ph of phones) {
+            const digits = ph.value.replace(/\D/g, "");
+            contacts.push({ name: nm, phone: digits });
           }
         }
-        if (results.size > 0) break; // achou, para
-      } catch {}
+        console.log(`[contacts/search] name "${name}" → ${contacts.length} contatos`);
+        return res.json({ found: contacts.length > 0, contacts });
+      } catch (e) {
+        console.error("[contacts/search] error:", e.message);
+        return res.json({ found: false, contacts: [] });
+      }
     }
 
-    if (results.size === 0) {
-      return res.json({ found: false, name: null, variants: [] });
-    }
-
-    const [[name, foundVariants]] = results.entries();
-    console.log(`[contacts/search] ${phone} → ${name}`);
-    return res.json({ found: true, name, variants: foundVariants });
+    return res.status(400).json({ error: "phone ou q obrigatório" });
   }
 
   // ── Busca em bulk (comportamento original) ───────────────────────

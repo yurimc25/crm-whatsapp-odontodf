@@ -32,17 +32,24 @@ export function ContactLookupModal({ phoneNumber, chatId, onClose, onSelectConta
     setSelectedIdx(0);
 
     try {
-      // Extrai apenas dígitos do input
-      const digits = query.replace(/\D/g, "");
+      let url;
       
-      if (digits.length < 8) {
-        setError("Digite um número com pelo menos 8 dígitos");
+      // Detecta se é número ou nome
+      const digits = query.replace(/\D/g, "");
+      const isPhone = digits.length >= 8;
+
+      if (isPhone) {
+        // Busca por número
+        url = `/api/contacts?action=search&phone=${encodeURIComponent(digits)}&_t=${Date.now()}`;
+      } else if (query.trim().length >= 2) {
+        // Busca por nome
+        url = `/api/contacts?action=search&q=${encodeURIComponent(query.trim())}&_t=${Date.now()}`;
+      } else {
+        setError("Digite um número com 8+ dígitos ou um nome com 2+ caracteres");
         setLoading(false);
         return;
       }
 
-      const url = `/api/contacts?action=search&phone=${encodeURIComponent(digits)}&_t=${Date.now()}`;
-      
       const r = await fetch(url, {
         headers: { "X-Internal-Key": ikey },
         cache: "no-store",
@@ -56,11 +63,20 @@ export function ContactLookupModal({ phoneNumber, chatId, onClose, onSelectConta
 
       const data = await r.json();
       
-      if (data.found && data.name) {
-        // Busca por número encontrou um contato
-        setResults([{ phone: digits, name: data.name, variants: data.variants }]);
+      if (isPhone) {
+        // Resultado de busca por número
+        if (data.found && data.name) {
+          setResults([{ phone: digits, name: data.name, variants: data.variants }]);
+        } else {
+          setError("Contato não encontrado no Google");
+        }
       } else {
-        setError("Contato não encontrado no Google");
+        // Resultado de busca por nome
+        if (data.found && data.contacts && Array.isArray(data.contacts)) {
+          setResults(data.contacts.slice(0, 10)); // Máximo 10 resultados
+        } else {
+          setError("Nenhum contato encontrado com esse nome");
+        }
       }
     } catch (e) {
       setError(e.message);
@@ -145,7 +161,7 @@ export function ContactLookupModal({ phoneNumber, chatId, onClose, onSelectConta
                 setResults([]);
               }}
               onKeyDown={handleKeyDown}
-              placeholder="Digite um número de telefone..."
+              placeholder="Nome ou número do contato..."
               autoFocus
               style={{
                 flex: 1,
@@ -269,7 +285,7 @@ export function ContactLookupModal({ phoneNumber, chatId, onClose, onSelectConta
             color: T.sub,
             fontSize: 13,
           }}>
-            Digite o número de telefone do contato para buscar no Google Contatos.
+            Digite um <strong>nome</strong> (mínimo 2 caracteres) ou <strong>número</strong> (mínimo 8 dígitos) para buscar no Google Contatos.
           </div>
         )}
 
