@@ -3,6 +3,7 @@ import PatientCardDetected from "./modules/PatientCardDetected";
 import { QuickMessages } from "./modules/QuickMessages";
 import { useContactsCtx } from "../App";
 import { normalizeMessage } from "../services/waha";
+import { ContactLookupModal } from "./ContactLookupModal";
 
 // Renderiza formatação WhatsApp: *negrito* _itálico_ ~riscado~
 function renderText(text) {
@@ -86,13 +87,15 @@ export default function ChatWindow({
   const [oldestDate, setOldestDate]   = useState(null);
   const [showQuick, setShowQuick]     = useState(false);
   const [quickQuery, setQuickQuery]   = useState("");
+  const [showContactLookup, setShowContactLookup] = useState(false);
+  const [confirmMsg, setConfirmMsg]   = useState(null);
   // Auto-refresh a cada 5s
   const [lastRefresh, setLastRefresh] = useState(Date.now());
 
   const bottomRef   = useRef(null);
   const scrollRef   = useRef(null);
   const prevScrollH = useRef(0);
-  const { displayInfo } = useContactsCtx();
+  const { displayInfo, addLocalContact } = useContactsCtx();
   const info = displayInfo(chat.id, chat.name, chat.pushname);
 
   // Auto-refresh a cada 5 segundos
@@ -207,8 +210,20 @@ export default function ChatWindow({
             {info.hasContact ? info.name : info.phone}
           </div>
           {info.hasContact && (
-            <div style={{ color:T.sub, fontSize:11, fontFamily:"'DM Mono', monospace" }}>
-              {info.phone}
+            <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+              <div style={{ color:T.sub, fontSize:11, fontFamily:"'DM Mono', monospace" }}>
+                {info.phone}
+              </div>
+              <button onClick={() => setShowContactLookup(true)} title="Atualizar contato no Google"
+                style={{
+                  background:"transparent", border:"none", cursor:"pointer",
+                  color:T.sub, padding:"0 4px", fontSize:10,
+                  transition:"color .15s", display:"flex", alignItems:"center"
+                }}
+                onMouseEnter={e => e.currentTarget.style.color = T.accent}
+                onMouseLeave={e => e.currentTarget.style.color = T.sub}>
+                🔍
+              </button>
             </div>
           )}
         </div>
@@ -362,6 +377,45 @@ export default function ChatWindow({
           {sending ? "…" : "↑"}
         </button>
       </div>
+
+      {/* Modal de busca de contatos */}
+      {showContactLookup && (
+        <ContactLookupModal
+          phoneNumber={info.phone}
+          chatId={chat.id}
+          onClose={() => setShowContactLookup(false)}
+          onSelectContact={(name) => {
+            addLocalContact({ phone: info.phone, name });
+            setShowContactLookup(false);
+            setConfirmMsg(`✓ Contato atualizado: ${name}`);
+            setTimeout(() => setConfirmMsg(null), 3000);
+          }}
+        />
+      )}
+
+      {/* Mensagem de confirmação */}
+      {confirmMsg && (
+        <div style={{
+          position: "fixed", bottom: 20, right: 20, zIndex: 999,
+          background: T.green,
+          color: "#fff",
+          padding: "12px 16px",
+          borderRadius: 8,
+          fontSize: 13,
+          fontWeight: 600,
+          boxShadow: "0 4px 12px rgba(76, 175, 135, 0.4)",
+          animation: "slideIn 0.3s ease",
+        }}>
+          {confirmMsg}
+        </div>
+      )}
+
+      <style>{`
+        @keyframes slideIn {
+          from { transform: translateX(400px); opacity: 0; }
+          to { transform: translateX(0); opacity: 1; }
+        }
+      `}</style>
     </div>
   );
 }
