@@ -16,27 +16,44 @@ export default async function handler(req, res) {
     return res.status(401).json({ error: "Unauthorized" });
   }
 
-  const { path, ...rest } = req.query;
-  if (!path) return res.status(400).json({ error: "path obrigatório" });
+  const { path: qpath, ...rest } = req.query;
+  if (!qpath) return res.status(400).json({ error: "path obrigatório" });
 
   const params = new URLSearchParams(rest);
   // Adiciona timestamp para garantir que o WAHA nunca use cache/ETag
   params.set("_t", Date.now().toString());
   const qs = params.toString() ? `?${params.toString()}` : "";
-  const url = `${WAHA_URL}${path}${qs}`;
+
+  // Aceita que `path` seja uma URL absoluta (já retornada pelo WAHA) ou um path relativo.
+  // Se for absoluta, usa diretamente; caso contrário concatena com WAHA_URL assegurando barras.
+  let url;
+  try {
+    const raw = String(qpath);
+    if (raw.startsWith("http://") || raw.startsWith("https://")) {
+      url = raw + qs;
+    } else {
+      const base = (WAHA_URL || "").replace(/\/$/, "");
+      const p = raw.startsWith("/") ? raw : ("/" + raw);
+      url = `${base}${p}${qs}`;
+    }
+  } catch (e) {
+    return res.status(400).json({ error: "path inválido" });
+  }
+  console.debug(`[waha-proxy] proxying to ${url}`);
 
   try {
+    // Não força Content-Type para GET (pode ser binário). Só adiciona quando houver corpo.
+    const forwardHeaders = {
+      "X-Api-Key": WAHA_KEY,
+      "Cache-Control": "no-cache",
+      "Pragma": "no-cache",
+    };
+    if (req.method !== "GET") forwardHeaders["Content-Type"] = "application/json";
+
     const wahaRes = await fetch(url, {
       method: req.method,
-      headers: {
-        "Content-Type": "application/json",
-        "X-Api-Key": WAHA_KEY,
-        // Nunca repassa If-None-Match/If-Modified-Since — queremos dados frescos sempre
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-      },
-      ...(req.method !== "GET" && req.body
-        ? { body: JSON.stringify(req.body) } : {}),
+      headers: forwardHeaders,
+      ...(req.method !== "GET" && req.body ? { body: JSON.stringify(req.body) } : {}),
     });
 
     // 304 = sem mudança — retorna null para o frontend manter estado anterior

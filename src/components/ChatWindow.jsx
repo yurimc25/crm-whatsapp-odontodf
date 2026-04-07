@@ -566,24 +566,34 @@ function MediaContent({ media, msgId, chatSession }) {
                 objectFit:"cover", borderRadius:8, display:"block",
                 filter: (!fullUrl && thumbSrc) ? "blur(4px)" : "none",
                 transition:"filter .4s" }} />
-          ) : error ? (
-            <div style={{ width:200, height:100, background:"#2a1a1a", borderRadius:8,
-              display:"flex", alignItems:"center", justifyContent:"center",
-              color:"#e57373", fontSize:12, flexDirection:"column", gap:6 }}>
-              <span>⚠️ Erro ao carregar</span>
-              <button onClick={e => { e.stopPropagation(); setError(false); fetchMedia(); }}
-                style={{ fontSize:10, color:"#d4956a", background:"none",
-                  border:"1px solid #d4956a", borderRadius:4, padding:"2px 8px", cursor:"pointer" }}>
-                Tentar novamente
-              </button>
-            </div>
           ) : (
             <div style={{ width:200, height:100, background:"#2a2a2a", borderRadius:8,
               display:"flex", alignItems:"center", justifyContent:"center",
               color:"#555", fontSize:13 }}>
-              {downloading ? "⏳ carregando..." : "🖼️"}
+              {thumbSrc ? (
+                <img src={thumbSrc} alt="thumb" style={{ width:"100%", height:"100%", objectFit:"cover", filter:"blur(3px)", opacity:.9 }} />
+              ) : (downloading ? "⏳ carregando..." : "🖼️")}
             </div>
           )}
+
+          {/* Spinner overlay enquanto baixa */}
+          {downloading && (
+            <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center" }}>
+              <div style={{ width:28, height:28, borderRadius:"50%", border:`4px solid rgba(255,255,255,.12)`, borderTopColor:T.accent, animation:"spin 0.8s linear infinite" }} />
+            </div>
+          )}
+
+          {/* Overlay de erro (mantém miniatura por baixo) */}
+          {error && (
+            <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", gap:8 }}>
+              <div style={{ background:"rgba(0,0,0,.6)", padding:"6px 10px", borderRadius:6, color:"#e57373" }}>⚠️ Erro ao carregar</div>
+              <button onClick={e => { e.stopPropagation(); setError(false); fetchMedia(); }}
+                style={{ fontSize:12, color:T.accent, background:"transparent", border:`1px solid ${T.accent}`, borderRadius:6, padding:"6px 10px", cursor:"pointer" }}>
+                Tentar novamente
+              </button>
+            </div>
+          )}
+
           {fullUrl && (
             <div style={{ position:"absolute", top:6, right:6, background:"rgba(0,0,0,.5)",
               borderRadius:6, padding:"3px 7px", fontSize:11, color:"#fff" }}>🔍</div>
@@ -617,12 +627,31 @@ function MediaContent({ media, msgId, chatSession }) {
             {thumbSrc && <img src={thumbSrc} alt="" style={{ position:"absolute",
               inset:0, width:"100%", height:"100%", objectFit:"cover",
               filter:"blur(3px)", opacity:.4 }} />}
+
+            {/* Spinner overlay enquanto baixa */}
+            {downloading && (
+              <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center" }}>
+                <div style={{ width:36, height:36, borderRadius:"50%", border:`4px solid rgba(255,255,255,.12)`, borderTopColor:T.accent, animation:"spin 0.8s linear infinite" }} />
+              </div>
+            )}
+
             <span style={{ fontSize:32, position:"relative" }}>
-              {downloading ? "⏳" : error ? "⚠️" : "▶️"}
+              {error ? "⚠️" : "▶️"}
             </span>
             <span style={{ color:"#aaa", fontSize:11, position:"relative" }}>
               {downloading ? "baixando..." : error ? "Erro — tente novamente" : "Toque para ver vídeo"}
             </span>
+
+            {/* Overlay de erro (mantém miniatura por baixo) */}
+            {error && (
+              <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", gap:8 }}>
+                <div style={{ background:"rgba(0,0,0,.6)", padding:"6px 10px", borderRadius:6, color:"#e57373" }}>⚠️ Erro ao carregar</div>
+                <button onClick={e => { e.stopPropagation(); setError(false); fetchMedia(); }}
+                  style={{ fontSize:12, color:T.accent, background:"transparent", border:`1px solid ${T.accent}`, borderRadius:6, padding:"6px 10px", cursor:"pointer" }}>
+                  Tentar novamente
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
