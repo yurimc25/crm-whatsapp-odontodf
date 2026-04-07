@@ -485,7 +485,15 @@ function MediaContent({ media, msgId, chatSession }) {
       });
       if (!r.ok) {
         const errBody = await r.text().catch(() => "");
-        console.error(`[media] download ${r.status} for ${validMsgId} -> ${urlToFetch}`, errBody.slice(0, 200));
+        console.warn(`[media] download ${r.status} for ${validMsgId} -> ${urlToFetch}`, errBody.slice(0, 200));
+        // 404 em download-media é esperado para mensagens de grupo (WAHA pode não ter indexado)
+        // Mantém a thumbnail visível em vez de mostrar erro
+        if (r.status === 404) {
+          console.debug(`[media] download 404 (expected for group messages) — keeping thumbnail`);
+          setDownload(false);
+          return;
+        }
+        // Outros erros mostram mensagem de erro
         setError(true);
         setDownload(false);
         return;
@@ -528,7 +536,15 @@ function MediaContent({ media, msgId, chatSession }) {
         if (cancelled) return;
         if (!r.ok) {
           const errBody = await r.text().catch(() => "");
-          console.error(`[media] autoLoad ${r.status} for ${validMsgId} -> ${urlToFetch}`, errBody.slice(0,200));
+          console.warn(`[media] autoLoad ${r.status} for ${validMsgId} -> ${urlToFetch}`, errBody.slice(0,200));
+          // Para grupo messages, 404 é esperado pois /download-media pode não ter a mensagem
+          // Nesse caso, só mantém a thumbnail visível em vez de mostrar erro
+          if (r.status === 404) {
+            console.debug(`[media] autoLoad 404 (expected for group messages) — keeping thumbnail visible`);
+            setDownload(false);
+            return;
+          }
+          // Outros erros (401, 500, etc) mostram overlay de erro
           setError(true); setDownload(false); return;
         }
         const ct  = r.headers.get("content-type") || mimeHint;

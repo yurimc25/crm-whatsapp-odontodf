@@ -268,14 +268,15 @@ export function normalizeMessage(wahaMsg) {
                    : mimetype?.startsWith("audio/") ? "audio"
                    : type;
 
-    // NUNCA usa a URL do CDN do WhatsApp (mmg.whatsapp.net) — retorna arquivo .enc criptografado
-    // Sempre usa o endpoint /download-media do WAHA que descriptografa automaticamente
-    // Se WAHA já serviu o arquivo em /api/files/... usa direto via proxy
-    const rawUrl = wahaMsg.media?.url || null;
-    const isWAUrl = rawUrl?.includes("mmg.whatsapp.net") || rawUrl?.includes("whatsapp.net");
-    const mediaUrl = (rawUrl && !isWAUrl)
-      ? `/api/waha?path=${encodeURIComponent(rawUrl)}`
-      : null;  // null → ChatWindow vai usar /download-media pelo msgId
+    // Extrai URL da mídia — tenta múltiplas localizações (NOWEB pode variar)
+    // Prioridade: 1) mediaData.url (imageMessage.url direto)
+    //             2) wahaMsg.media.url (passthrough do WAHA)
+    //             3) null (usar /download-media pelo msgId como fallback)
+    const directUrl = mediaData.url || wahaMsg.media?.url || null;
+    const isWAUrl = directUrl?.includes("mmg.whatsapp.net") || directUrl?.includes("whatsapp.net");
+    const mediaUrl = (directUrl && !isWAUrl)
+      ? `/api/waha?path=${encodeURIComponent(directUrl)}`
+      : null;  // null → ChatWindow vai usar /download-media pelo msgId como last resort
 
     media = {
       type:      realType,

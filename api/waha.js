@@ -56,7 +56,7 @@ export default async function handler(req, res) {
       ...(req.method !== "GET" && req.body ? { body: JSON.stringify(req.body) } : {}),
     });
 
-    // 304 = sem mudança — retorna null para o frontend manter estado anterior
+        // 304 = sem mudança — retorna null para o frontend manter estado anterior
     if (wahaRes.status === 304) {
       res.setHeader("Cache-Control", "no-store");
       return res.status(200).json(null);
@@ -73,7 +73,11 @@ export default async function handler(req, res) {
           return res.status(wahaRes.status).json(data);
         }
         // Encaminha erros do WAHA com o mesmo código
-        console.error("[waha-proxy] upstream error JSON:", wahaRes.status, data);
+        if (qpath.includes("download-media") && wahaRes.status === 404) {
+          console.warn(`[waha-proxy] upstream 404 on /download-media for path=${qpath} — expected for group messages, fallback to thumbnail`);
+        } else {
+          console.error("[waha-proxy] upstream error JSON:", wahaRes.status, data);
+        }
         return res.status(wahaRes.status).json(data);
       } catch (e) {
         // Se falhou o parse de JSON, cai no texto
