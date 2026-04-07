@@ -108,20 +108,17 @@ export function useWAHA(operator) {
       let fromTs = null;
 
       if (cached.length > 0) {
-        // Tem cache: busca desde última atualização + 1 dia de margem
         const lastTs = Math.max(...cached.map(c => {
           const ts = c.lastTs || c.lastTime;
           return ts ? new Date(ts).getTime() : 0;
         }).filter(Boolean));
         if (lastTs > 0) {
-          // Dias desde última atualização + 1 dia de margem
           const daysSince = Math.ceil((Date.now() - lastTs) / 86400000) + 1;
           const daysToFetch = Math.min(daysSince, 100);
           fromTs = Math.floor((Date.now() - daysToFetch * 86400000) / 1000);
           console.log(`[waha] cache hit: buscando últimos ${daysToFetch} dias`);
         }
       } else {
-        // Primeira vez: últimos 100 dias
         fromTs = Math.floor((Date.now() - 100 * 86400000) / 1000);
         console.log("[waha] first load: buscando últimos 100 dias");
       }
@@ -129,28 +126,27 @@ export function useWAHA(operator) {
       const raw = await getChats();
       if (!Array.isArray(raw)) return;
 
-      // Filtra por período se necessário
       const filtered = fromTs
         ? raw.filter(c => {
             const lm = c.lastMessage;
             const ts = lm?.timestamp || lm?.t || 0;
-            return ts === 0 || ts >= fromTs; // inclui chats sem ts (grupos etc)
+            return ts === 0 || ts >= fromTs;
           })
         : raw;
 
-      // Normaliza e mescla com metadata do MongoDB
+      // Metadata do MongoDB
       const dbRes = await fetch(`/api/db?action=chats`, {
         headers: { "X-Internal-Key": ikey() }
       }).then(r => r.json()).catch(() => ({ chats: {} }));
       const dbMeta = dbRes.chats || {};
 
       const normalized = filtered.map(c => {
-        const n = normalizeChat(c);
+        const n    = normalizeChat(c);
         const meta = dbMeta[n.id] || {};
         return { ...n, ...meta };
       });
 
-      // Mescla com cache local preservando estado (unread, lastPatientTs)
+      // Mescla com cache local
       setChats(prev => {
         const prevMap = Object.fromEntries(prev.map(c => [c.id, c]));
         const merged  = normalized.map(n => ({
@@ -158,19 +154,140 @@ export function useWAHA(operator) {
           unread:        prevMap[n.id]?.unread        ?? n.unread,
           lastPatientTs: prevMap[n.id]?.lastPatientTs ?? n.lastPatientTs,
           lastMsg:       n.lastMsg || prevMap[n.id]?.lastMsg || "",
+          photoUrl:      prevMap[n.id]?.photoUrl      ?? null,
         }));
         cache.set(CHATS_KEY, merged, CHATS_TTL);
         return merged;
       });
 
-      // Carrega última mensagem por chat em lotes (sem bloquear UI)
-      loadLastMessages(normalized.map(c => c.id));
+      const chatIds = normalized.map(c => c.id);
+
+      // ── Prioridade 1: fotos de perfil (lotes de 10, cache 24h) ──
+      loadProfilePictures(chatIds);
+
+      // ── Prioridade 2: auto-resolve 30 dias sem resposta ──────────
+      autoResolveOldChats(normalized, dbMeta);
+
+      // ── Prioridade 3: última mensagem por chat ────────────────────
+      loadLastMessages(chatIds);
 
     } catch (e) {
       console.error("[waha] loadChats:", e.message);
       setError("Erro ao carregar conversas");
     } finally {
       setLoading(false);
+    }
+  }
+
+  // ── Fotos de perfil — lotes de 10, cache 24h no localStorage ──
+  async function loadProfilePictures(chatIds) {
+    const PHOTO_KEY = "waha_photos_v2";
+    const PHOTO_TTL = 24 * 60 * 60 * 1000;
+    let photoCache  = {};
+    try {
+      const raw = localStorage.getItem(PHOTO_KEY);
+      if (raw) {
+        const p = JSON.parse(raw);
+        if (Date.now() < p.expires) photoCache = p.value || {};
+      }
+    } catch {}
+
+    // Filtra só quem não tem foto em cache
+    const semFoto = chatIds.filter(id => !(id in photoCache));
+
+    const BATCH = 10;
+    for (let i = 0; i < semFoto.length; i += BATCH) {
+      const batch = semFoto.slice(i, i + BATCH);
+      const results = await Promise.allSettled(
+        batch.map(async (chatId) => {
+          const url = await getProfilePicture(chatId).catch(() => null);
+          return { chatId, url };
+        })
+      );
+      const updates = {};
+      for (const r of results) {
+        if (r.status === "fulfilled") {
+          const { chatId, url } = r.value;
+          photoCache[chatId] = url;
+          updates[chatId]    = url;
+        }
+      }
+      // Atualiza cache localStorage
+      try {
+        localStorage.setItem(PHOTO_KEY, JSON.stringify({
+          value: photoCache, expires: Date.now() + PHOTO_TTL,
+        }));
+      } catch {}
+      // Atualiza chats com fotos
+      if (Object.keys(updates).length) {
+        setChats(prev => {
+          const updated = prev.map(c =>
+            c.id in updates ? { ...c, photoUrl: updates[c.id] } : c
+          );
+          cache.set(CHATS_KEY, updated, CHATS_TTL);
+          return updated;
+        });
+      }
+      if (i + BATCH < semFoto.length) await new Promise(r => setTimeout(r, 500));
+    }
+
+    // Aplica fotos já em cache imediatamente
+    const comFoto = Object.entries(photoCache).filter(([, v]) => v);
+    if (comFoto.length) {
+      setChats(prev => {
+        const updated = prev.map(c => {
+          const url = photoCache[c.id];
+          return url !== undefined ? { ...c, photoUrl: url } : c;
+        });
+        cache.set(CHATS_KEY, updated, CHATS_TTL);
+        return updated;
+      });
+    }
+  }
+
+  // ── Auto-resolve chats com >30 dias sem resposta do paciente ──
+  async function autoResolveOldChats(chats, dbMeta) {
+    const TRINTA_DIAS = 30 * 24 * 60 * 60 * 1000;
+    const agora       = Date.now();
+    const toResolve   = chats.filter(c => {
+      if (c.status === "resolved") return false;
+      if (!c.lastPatientTs) return false;
+      const diff = agora - new Date(c.lastPatientTs).getTime();
+      return diff > TRINTA_DIAS;
+    });
+
+    if (!toResolve.length) return;
+    console.log(`[waha] auto-resolve: ${toResolve.length} chats com >30 dias`);
+
+    // Atualiza estado local imediatamente
+    setChats(prev => {
+      const updated = prev.map(c => {
+        if (!toResolve.find(r => r.id === c.id)) return c;
+        return { ...c, status: "resolved", unread: 0, lastPatientTs: null };
+      });
+      cache.set(CHATS_KEY, updated, CHATS_TTL);
+      return updated;
+    });
+
+    // Persiste no MongoDB em lotes de 5
+    const BATCH = 5;
+    for (let i = 0; i < toResolve.length; i += BATCH) {
+      const batch = toResolve.slice(i, i + BATCH);
+      await Promise.allSettled(batch.map(c =>
+        fetch("/api/db?action=chat", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json", "X-Internal-Key": ikey() },
+          body: JSON.stringify({
+            chatId:        c.id,
+            status:        "resolved",
+            unread:        0,
+            lastPatientTs: null,
+            autoResolved:  true,
+            autoResolvedAt: new Date().toISOString(),
+          }),
+        }).catch(() => {})
+      ));
+      if (i + BATCH < toResolve.length) await new Promise(r => setTimeout(r, 200));
     }
   }
 
