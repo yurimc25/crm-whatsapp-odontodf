@@ -43,6 +43,18 @@ const CHATS_TTL   = 7  * 24 * 60 * 60 * 1000; // 7 dias
 const MSGS_TTL    = 30 * 24 * 60 * 60 * 1000; // 30 dias
 const ikey        = () => import.meta.env.VITE_INTERNAL_API_KEY || "";
 
+// Persiste chats no cache utility E no localStorage diretamente
+// Garante que F5 sempre lê o estado correto
+function persistChats(chats) {
+  persistChats(chats);
+  try {
+    localStorage.setItem("crm_" + CHATS_KEY, JSON.stringify({
+      value:   chats,
+      expires: Date.now() + CHATS_TTL,
+    }));
+  } catch {}
+}
+
 // Palavras de despedida para auto-resolver
 const FAREWELL_PATTERNS = [
   /^(ok|okay|oks|okey)[\s!.]*$/i,
@@ -63,7 +75,19 @@ function detectAutoResolve(msgs) {
 }
 
 export function useWAHA(operator) {
-  const [chats,    setChats]    = useState(() => cache.get(CHATS_KEY) || []);
+  const [chats,    setChats]    = useState(() => {
+    // Tenta cache utility primeiro, depois localStorage direto como fallback
+    const fromCache = cache.get(CHATS_KEY);
+    if (fromCache?.length) return fromCache;
+    try {
+      const raw = localStorage.getItem("crm_" + CHATS_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.value?.length && Date.now() < parsed.expires) return parsed.value;
+      }
+    } catch {}
+    return [];
+  });
   const [messages, setMessages] = useState({});
   const [loading,  setLoading]  = useState(false);
   const [error,    setError]    = useState(null);
@@ -103,12 +127,25 @@ export function useWAHA(operator) {
   async function loadChats() {
     setLoading(true);
     try {
-      // Calcula período a buscar
-      const cached = cache.get(CHATS_KEY) || [];
-      let fromTs = null;
+      // Lê cache do localStorage diretamente (mais confiável que cache utility após F5)
+      let cachedChats = cache.get(CHATS_KEY) || [];
+      if (!cachedChats.length) {
+        try {
+          const raw = localStorage.getItem("crm_" + CHATS_KEY);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (parsed?.value?.length && Date.now() < parsed.expires) {
+              cachedChats = parsed.value;
+              // Restaura estado imediatamente do localStorage
+              setChats(cachedChats);
+            }
+          }
+        } catch {}
+      }
 
-      if (cached.length > 0) {
-        const lastTs = Math.max(...cached.map(c => {
+      let fromTs = null;
+      if (cachedChats.length > 0) {
+        const lastTs = Math.max(...cachedChats.map(c => {
           const ts = c.lastTs || c.lastTime;
           return ts ? new Date(ts).getTime() : 0;
         }).filter(Boolean));
@@ -146,17 +183,27 @@ export function useWAHA(operator) {
         return { ...n, ...meta };
       });
 
-      // Mescla com cache local
+      // Mescla com cache local — cache local TEM PRIORIDADE sobre WAHA
+      // O WAHA não conhece status/resolved/lastPatientTs — só o local sabe
       setChats(prev => {
         const prevMap = Object.fromEntries(prev.map(c => [c.id, c]));
-        const merged  = normalized.map(n => ({
-          ...n,
-          unread:        prevMap[n.id]?.unread        ?? n.unread,
-          lastPatientTs: prevMap[n.id]?.lastPatientTs ?? n.lastPatientTs,
-          lastMsg:       n.lastMsg || prevMap[n.id]?.lastMsg || "",
-          photoUrl:      prevMap[n.id]?.photoUrl      ?? null,
-        }));
-        cache.set(CHATS_KEY, merged, CHATS_TTL);
+        const merged  = normalized.map(n => {
+          const local = prevMap[n.id];
+          if (!local) return n; // chat novo — usa o do WAHA
+          return {
+            ...n,
+            // Preserva estado local que o WAHA não conhece
+            status:        local.status        ?? n.status,        // resolved/open/waiting
+            assignedTo:    local.assignedTo    ?? n.assignedTo,
+            unread:        local.unread        ?? n.unread,
+            // Se resolvido: mantém lastPatientTs nulo para não voltar ao topo
+            lastPatientTs: local.status === "resolved" ? null : (local.lastPatientTs ?? n.lastPatientTs),
+            lastMsg:       n.lastMsg           || local.lastMsg    || "",
+            photoUrl:      local.photoUrl      ?? null,
+            tags:          local.tags          ?? n.tags,
+          };
+        });
+        persistChats(merged);
         return merged;
       });
 
@@ -165,8 +212,9 @@ export function useWAHA(operator) {
       // ── Prioridade 1: fotos de perfil (lotes de 10, cache 24h) ──
       loadProfilePictures(chatIds);
 
-      // ── Prioridade 2: auto-resolve 30 dias sem resposta ──────────
-      autoResolveOldChats(normalized, dbMeta);
+      // ── Prioridade 2: auto-resolve 30 dias (usa estado já mesclado) ──
+      // setTimeout garante que setChats do merge já processou
+      setTimeout(() => autoResolveOldChats(), 100);
 
       // ── Prioridade 3: última mensagem por chat ────────────────────
       loadLastMessages(chatIds);
@@ -224,7 +272,7 @@ export function useWAHA(operator) {
           const updated = prev.map(c =>
             c.id in updates ? { ...c, photoUrl: updates[c.id] } : c
           );
-          cache.set(CHATS_KEY, updated, CHATS_TTL);
+          persistChats(updated);
           return updated;
         });
       }
@@ -239,56 +287,51 @@ export function useWAHA(operator) {
           const url = photoCache[c.id];
           return url !== undefined ? { ...c, photoUrl: url } : c;
         });
-        cache.set(CHATS_KEY, updated, CHATS_TTL);
+        persistChats(updated);
         return updated;
       });
     }
   }
 
   // ── Auto-resolve chats com >30 dias sem resposta do paciente ──
-  async function autoResolveOldChats(chats, dbMeta) {
+  // Usa estado atual do React (já mesclado com local) — não dados crus do WAHA
+  function autoResolveOldChats() {
     const TRINTA_DIAS = 30 * 24 * 60 * 60 * 1000;
     const agora       = Date.now();
-    const toResolve   = chats.filter(c => {
-      if (c.status === "resolved") return false;
-      if (!c.lastPatientTs) return false;
-      const diff = agora - new Date(c.lastPatientTs).getTime();
-      return diff > TRINTA_DIAS;
-    });
 
-    if (!toResolve.length) return;
-    console.log(`[waha] auto-resolve: ${toResolve.length} chats com >30 dias`);
-
-    // Atualiza estado local imediatamente
     setChats(prev => {
-      const updated = prev.map(c => {
-        if (!toResolve.find(r => r.id === c.id)) return c;
-        return { ...c, status: "resolved", unread: 0, lastPatientTs: null };
+      const toResolve = prev.filter(c => {
+        if (c.status === "resolved") return false;
+        if (!c.lastPatientTs) return false;
+        return agora - new Date(c.lastPatientTs).getTime() > TRINTA_DIAS;
       });
-      cache.set(CHATS_KEY, updated, CHATS_TTL);
-      return updated;
-    });
+      if (!toResolve.length) return prev;
+      console.log(`[waha] auto-resolve: ${toResolve.length} chats com >30 dias`);
 
-    // Persiste no MongoDB em lotes de 5
-    const BATCH = 5;
-    for (let i = 0; i < toResolve.length; i += BATCH) {
-      const batch = toResolve.slice(i, i + BATCH);
-      await Promise.allSettled(batch.map(c =>
+      const updated = prev.map(c =>
+        toResolve.find(r => r.id === c.id)
+          ? { ...c, status: "resolved", unread: 0, lastPatientTs: null }
+          : c
+      );
+      persistChats(updated);
+
+      // Persiste no MongoDB em background
+      Promise.allSettled(toResolve.map(c =>
         fetch("/api/db?action=chat", {
           method: "PATCH",
           headers: { "Content-Type": "application/json", "X-Internal-Key": ikey() },
           body: JSON.stringify({
-            chatId:        c.id,
-            status:        "resolved",
-            unread:        0,
-            lastPatientTs: null,
-            autoResolved:  true,
+            chatId:         c.id,
+            status:         "resolved",
+            unread:         0,
+            lastPatientTs:  null,
+            autoResolved:   true,
             autoResolvedAt: new Date().toISOString(),
           }),
         }).catch(() => {})
       ));
-      if (i + BATCH < toResolve.length) await new Promise(r => setTimeout(r, 200));
-    }
+      return updated;
+    });
   }
 
   // ── Carrega APENAS última mensagem de cada chat (lotes de 5) ──
@@ -323,7 +366,7 @@ export function useWAHA(operator) {
                 lastPatientTs: isPatient && !autoRes ? msg.ts : c.lastPatientTs,
               };
             });
-            cache.set(CHATS_KEY, updated, CHATS_TTL);
+            persistChats(updated);
             return updated;
           });
         } catch {}
@@ -367,7 +410,7 @@ export function useWAHA(operator) {
               unread: isPatient && !isActive && !autoRes ? (c.unread || 0) + 1 : c.unread,
             };
           });
-          cache.set(CHATS_KEY, updated, CHATS_TTL);
+          persistChats(updated);
           return updated;
         });
       },
@@ -390,7 +433,7 @@ export function useWAHA(operator) {
     // Zera unread
     setChats(prev => {
       const updated = prev.map(c => c.id === chatId ? { ...c, unread: 0 } : c);
-      cache.set(CHATS_KEY, updated, CHATS_TTL);
+      persistChats(updated);
       return updated;
     });
 
@@ -438,7 +481,7 @@ export function useWAHA(operator) {
           lastPatientTs: novoLPTs,
           unread:        0,
         });
-        cache.set(CHATS_KEY, updated, CHATS_TTL);
+        persistChats(updated);
         return updated;
       });
     } catch (e) { console.error("loadMessages", e); }
@@ -550,7 +593,7 @@ export function useWAHA(operator) {
       const updated = prev.map(c => c.id !== chatId ? c : {
         ...c, lastMsg: formatted, lastTime: tmpMsg.time, lastPatientTs: null,
       });
-      cache.set(CHATS_KEY, updated, CHATS_TTL);
+      persistChats(updated);
       return updated;
     });
     persistChat(chatId, { lastPatientTs: null, unread: 0 });
@@ -569,7 +612,7 @@ export function useWAHA(operator) {
   const forwardChat = useCallback((chatId, toRole) => {
     setChats(prev => {
       const updated = prev.map(c => c.id === chatId ? { ...c, assignedTo: toRole, status: "open" } : c);
-      cache.set(CHATS_KEY, updated, CHATS_TTL);
+      persistChats(updated);
       return updated;
     });
     persistChat(chatId, { assignedTo: toRole, status: "open" });
@@ -589,7 +632,7 @@ export function useWAHA(operator) {
           unread:        newSt === "resolved" ? 0    : c.unread,
         };
       });
-      cache.set(CHATS_KEY, updated, CHATS_TTL);
+      persistChats(updated);
       // Persiste no MongoDB
       persistChat(chatId, {
         status:        newSt,
@@ -605,7 +648,7 @@ export function useWAHA(operator) {
       const updated = prev.map(c =>
         c.id === chatId ? { ...c, unread: 0, lastPatientTs: null } : c
       );
-      cache.set(CHATS_KEY, updated, CHATS_TTL);
+      persistChats(updated);
       return updated;
     });
     persistChat(chatId, { unread: 0, lastPatientTs: null });
@@ -614,7 +657,7 @@ export function useWAHA(operator) {
   const markUnread = useCallback((chatId) => {
     setChats(prev => {
       const updated = prev.map(c => c.id === chatId ? { ...c, unread: 1 } : c);
-      cache.set(CHATS_KEY, updated, CHATS_TTL);
+      persistChats(updated);
       return updated;
     });
   }, []);
