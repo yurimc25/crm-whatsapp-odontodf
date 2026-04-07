@@ -46,7 +46,7 @@ const ikey        = () => import.meta.env.VITE_INTERNAL_API_KEY || "";
 // Persiste chats no cache utility E no localStorage diretamente
 // Garante que F5 sempre lê o estado correto
 function persistChats(chats) {
-  persistChats(chats);
+  cache.set(CHATS_KEY, chats, CHATS_TTL);
   try {
     localStorage.setItem("crm_" + CHATS_KEY, JSON.stringify({
       value:   chats,
