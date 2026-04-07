@@ -95,12 +95,28 @@ export default function ChatList({
 
   const sorted = useMemo(() => {
     return [...chats].sort((a, b) => {
+      // Resolvidos sempre no final
+      const aResolved = a.status === "resolved";
+      const bResolved = b.status === "resolved";
+      if (aResolved !== bResolved) return aResolved ? 1 : -1;
+
+      // Entre resolvidos: mais recente primeiro (por lastTs)
+      if (aResolved && bResolved) {
+        const ta = a.lastTs ? new Date(a.lastTs).getTime() : 0;
+        const tb = b.lastTs ? new Date(b.lastTs).getTime() : 0;
+        return tb - ta;
+      }
+
+      // Abertos/aguardando: quem tem lastPatientTs mais ANTIGO fica no topo (esperando há mais tempo)
       const tsA = a.lastPatientTs ? new Date(a.lastPatientTs).getTime() : 0;
       const tsB = b.lastPatientTs ? new Date(b.lastPatientTs).getTime() : 0;
-      if (tsA && tsB) return tsA - tsB;
-      if (tsA) return -1;
-      if (tsB) return 1;
-      return 0;
+      if (tsA && tsB) return tsA - tsB;   // mais antigo no topo
+      if (tsA) return -1;                  // tem pendência → sobe
+      if (tsB) return 1;                   // tem pendência → sobe
+      // Sem pendência: mais recente no topo
+      const ta = a.lastTs ? new Date(a.lastTs).getTime() : 0;
+      const tb = b.lastTs ? new Date(b.lastTs).getTime() : 0;
+      return tb - ta;
     });
   }, [chats]);
 

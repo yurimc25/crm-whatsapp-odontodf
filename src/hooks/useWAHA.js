@@ -185,39 +185,64 @@ export function useWAHA(operator) {
 
       // Mescla com cache local — cache local TEM PRIORIDADE sobre WAHA
       // O WAHA não conhece status/resolved/lastPatientTs — só o local sabe
+      // Auto-resolve 30 dias também feito aqui dentro para garantir estado correto
+      const TRINTA_DIAS = 30 * 24 * 60 * 60 * 1000;
+      const agora = Date.now();
+      const toAutoResolveIds = new Set();
+
       setChats(prev => {
         const prevMap = Object.fromEntries(prev.map(c => [c.id, c]));
         const merged  = normalized.map(n => {
           const local = prevMap[n.id];
-          if (!local) return n; // chat novo — usa o do WAHA
+          // Chat novo sem histórico local — usa dados do WAHA
+          if (!local) {
+            // Verifica se já deveria ser auto-resolvido
+            const lpt = n.lastPatientTs ? new Date(n.lastPatientTs).getTime() : 0;
+            if (lpt && agora - lpt > TRINTA_DIAS && n.status !== "resolved") {
+              toAutoResolveIds.add(n.id);
+              return { ...n, status: "resolved", unread: 0, lastPatientTs: null };
+            }
+            return n;
+          }
+          // Chat existente — preserva estado local
+          const resolvedLocally = local.status === "resolved";
+          const lpt = resolvedLocally ? null
+            : (local.lastPatientTs ?? n.lastPatientTs);
+          // Auto-resolve: aberto + lastPatientTs > 30 dias
+          const shouldAutoResolve = !resolvedLocally && lpt &&
+            agora - new Date(lpt).getTime() > TRINTA_DIAS;
+          if (shouldAutoResolve) toAutoResolveIds.add(n.id);
           return {
             ...n,
-            // Preserva estado local que o WAHA não conhece
-            status:        local.status        ?? n.status,        // resolved/open/waiting
-            assignedTo:    local.assignedTo    ?? n.assignedTo,
-            unread:        local.unread        ?? n.unread,
-            // Se resolvido: mantém lastPatientTs nulo para não voltar ao topo
-            lastPatientTs: local.status === "resolved" ? null : (local.lastPatientTs ?? n.lastPatientTs),
-            lastMsg:       n.lastMsg           || local.lastMsg    || "",
-            photoUrl:      local.photoUrl      ?? null,
-            tags:          local.tags          ?? n.tags,
+            status:        shouldAutoResolve ? "resolved" : (local.status ?? n.status),
+            assignedTo:    local.assignedTo  ?? n.assignedTo,
+            unread:        shouldAutoResolve ? 0 : (local.unread ?? n.unread),
+            lastPatientTs: (resolvedLocally || shouldAutoResolve) ? null : lpt,
+            lastMsg:       n.lastMsg   || local.lastMsg || "",
+            photoUrl:      local.photoUrl ?? null,
+            tags:          local.tags    ?? n.tags,
           };
         });
         persistChats(merged);
+        // Persiste auto-resolves no MongoDB em background
+        if (toAutoResolveIds.size > 0) {
+          console.log(`[waha] auto-resolve: ${toAutoResolveIds.size} chats com >30 dias`);
+          Promise.allSettled([...toAutoResolveIds].map(id =>
+            fetch("/api/db?action=chat", {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json", "X-Internal-Key": ikey() },
+              body: JSON.stringify({
+                chatId: id, status: "resolved", unread: 0,
+                lastPatientTs: null, autoResolved: true,
+                autoResolvedAt: new Date().toISOString(),
+              }),
+            }).catch(() => {})
+          ));
+        }
         return merged;
       });
 
       const chatIds = normalized.map(c => c.id);
-
-      // ── Prioridade 1: fotos de perfil (lotes de 10, cache 24h) ──
-      loadProfilePictures(chatIds);
-
-      // ── Prioridade 2: auto-resolve 30 dias (usa estado já mesclado) ──
-      // setTimeout garante que setChats do merge já processou
-      setTimeout(() => autoResolveOldChats(), 100);
-
-      // ── Prioridade 3: última mensagem por chat ────────────────────
-      loadLastMessages(chatIds);
 
     } catch (e) {
       console.error("[waha] loadChats:", e.message);
@@ -295,45 +320,6 @@ export function useWAHA(operator) {
 
   // ── Auto-resolve chats com >30 dias sem resposta do paciente ──
   // Usa estado atual do React (já mesclado com local) — não dados crus do WAHA
-  function autoResolveOldChats() {
-    const TRINTA_DIAS = 30 * 24 * 60 * 60 * 1000;
-    const agora       = Date.now();
-
-    setChats(prev => {
-      const toResolve = prev.filter(c => {
-        if (c.status === "resolved") return false;
-        if (!c.lastPatientTs) return false;
-        return agora - new Date(c.lastPatientTs).getTime() > TRINTA_DIAS;
-      });
-      if (!toResolve.length) return prev;
-      console.log(`[waha] auto-resolve: ${toResolve.length} chats com >30 dias`);
-
-      const updated = prev.map(c =>
-        toResolve.find(r => r.id === c.id)
-          ? { ...c, status: "resolved", unread: 0, lastPatientTs: null }
-          : c
-      );
-      persistChats(updated);
-
-      // Persiste no MongoDB em background
-      Promise.allSettled(toResolve.map(c =>
-        fetch("/api/db?action=chat", {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json", "X-Internal-Key": ikey() },
-          body: JSON.stringify({
-            chatId:         c.id,
-            status:         "resolved",
-            unread:         0,
-            lastPatientTs:  null,
-            autoResolved:   true,
-            autoResolvedAt: new Date().toISOString(),
-          }),
-        }).catch(() => {})
-      ));
-      return updated;
-    });
-  }
-
   // ── Carrega APENAS última mensagem de cada chat (lotes de 5) ──
   async function loadLastMessages(chatIds) {
     const BATCH = 5;
