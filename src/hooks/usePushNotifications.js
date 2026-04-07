@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback } from 'react';
 
 const VAPID_PUBLIC = import.meta.env.VITE_VAPID_PUBLIC_KEY;
-const iKey = () => import.meta.env.VITE_INTERNAL_API_KEY || '';
+const iKey = () => import.meta.env.VITE_INTERNAL_API_KEY || '@Deuse10';
 
 export function usePushNotifications(operator) {
   const [supported,   setSupported]   = useState(false);

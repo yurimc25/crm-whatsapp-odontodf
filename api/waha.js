@@ -81,12 +81,54 @@ export default async function handler(req, res) {
     }
 
     // Mídia binária — aceita qualquer content-type não-JSON quando é download de mídia
-    const isMediaDownload = path.includes("download-media") || path.includes("/api/files/");
+    const isMediaDownload = qpath.includes("download-media") || qpath.includes("/api/files/");
     if (isMediaDownload ||
         ct.startsWith("image/") || ct.startsWith("video/") ||
         ct.startsWith("audio/") || ct.includes("octet-stream") ||
         ct.includes("pdf")) {
       try {
+        // Se o WAHA retornou 404 para /messages/.../download-media, tentamos um fallback
+        if (wahaRes.status === 404 && qpath.includes("download-media")) {
+          console.warn(`[waha-proxy] upstream 404 for download-media, attempting /api/files fallback for path=${qpath}`);
+          try {
+            // Extrai o messageId do path: /api/{session}/messages/{msgId}/download-media
+            const m = qpath.match(/messages\/(.*?)\/download-media/);
+            if (m) {
+              const rawId = decodeURIComponent(m[1]);
+              const lastSeg = rawId.split("_").pop();
+              const fileId = String(lastSeg || "").replace(/@lid\b/g, "");
+              const waBase = WAHA_URL.replace(/\/$/, "");
+              const candidates = [
+                `${waBase}/api/files/default/${fileId}.jpeg`,
+                `${waBase}/api/files/default/${fileId}.jpg`,
+                `${waBase}/api/files/default/${fileId}`,
+                `${waBase}/api/files/${SESSION}/${fileId}.jpeg`,
+                `${waBase}/api/files/${SESSION}/${fileId}`,
+              ];
+              for (const c of candidates) {
+                try {
+                  console.debug(`[waha-proxy] trying fallback URL ${c}`);
+                  const fr = await fetch(c, { headers: forwardHeaders });
+                  if (fr.ok) {
+                    const buf = await fr.arrayBuffer();
+                    const ctype = fr.headers.get("content-type") || "application/octet-stream";
+                    res.setHeader("Content-Type", ctype);
+                    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+                    return res.status(200).end(Buffer.from(buf));
+                  } else {
+                    const txt = await fr.text().catch(() => "");
+                    console.debug(`[waha-proxy] fallback ${c} returned ${fr.status}: ${txt.slice ? txt.slice(0,200) : txt}`);
+                  }
+                } catch (e) {
+                  console.debug(`[waha-proxy] fallback ${c} error:`, e.message || e);
+                }
+              }
+            }
+          } catch (e) {
+            console.error('[waha-proxy] fallback error', e.message || e);
+          }
+        }
+
         const buf = await wahaRes.arrayBuffer();
         if (buf.byteLength === 0) {
           return res.status(404).json({ error: "Mídia vazia ou não encontrada" });
@@ -94,7 +136,7 @@ export default async function handler(req, res) {
         res.setHeader("Content-Type", ct || "application/octet-stream");
         return res.status(wahaRes.status || 200).end(Buffer.from(buf));
       } catch (e) {
-        console.error("[waha-proxy] binary error:", e.message);
+        console.error("[waha-proxy] binary error:", e.message || e);
         return res.status(502).json({ error: "Erro ao baixar mídia" });
       }
     }

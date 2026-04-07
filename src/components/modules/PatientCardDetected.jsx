@@ -211,7 +211,7 @@ export default function PatientCardDetected({ msg }) {
   const [result, setResult]  = useState(null); // { patient_id, url }
   const [error, setError]    = useState(null);
   const data = parsePatientData(msg.text);
-  const iKey = import.meta.env.VITE_INTERNAL_API_KEY || "";
+  const iKey = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
 
   // Não exibe card se template vazio
   if (isTemplateVazio(msg.text)) {

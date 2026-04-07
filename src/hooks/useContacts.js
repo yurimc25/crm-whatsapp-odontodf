@@ -85,8 +85,8 @@ function markMongoSync() {
 export function useContacts() {
   const [contactMap, setContactMap] = useState(() => readLocalMap());
   const [loading, setLoading]       = useState(false);
-  const internalKey = import.meta.env.VITE_INTERNAL_API_KEY || "";
-  const codKey      = import.meta.env.VITE_INTERNAL_API_KEY || "";
+  const internalKey = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
+  const codKey      = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
 
   // Rastreia números já pesquisados nesta sessão
   const lookedUp    = useRef(new Set());

@@ -422,7 +422,7 @@ function MediaContent({ media, msgId, chatSession }) {
   const [fullUrl,     setFullUrl]   = useState(null);
   const [downloading, setDownload]  = useState(false);
   const [error,       setError]     = useState(false);
-  const iKey    = import.meta.env.VITE_INTERNAL_API_KEY || "";
+  const iKey    = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
   const SESSION = chatSession || import.meta.env.VITE_WAHA_SESSION || "default";
 
   // WAHA NOWEB: usa /download-media pelo ID serializado da mensagem

@@ -297,7 +297,7 @@ function PerfilTab({ paciente, uploads, evols, buscando, onReload, onPacienteUpd
   const [editing, setEditing] = useState(false);
   const [saving,  setSaving]  = useState(false);
   const [form,    setForm]    = useState({});
-  const iKey = import.meta.env.VITE_INTERNAL_API_KEY || "";
+  const iKey = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
 
   const ultimosDentistas = evols?.length > 0
     ? [...new Map(evols.filter(e=>e.dentista||e.dentist).map(e=>{const n=e.dentista||e.dentist||"";return[n,n];})).values()].slice(0,3)
@@ -568,7 +568,7 @@ function UploadsGrid({ uploads, paciente, maxItems = 9, onUploaded }) {
   const [dragging, setDragging]     = useState(false);
   const [uploading, setUploading]   = useState(false);
   const [uploadMsg, setUploadMsg]   = useState(null);
-  const iKey = import.meta.env.VITE_INTERNAL_API_KEY || "";
+  const iKey = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
   const inputRef = useRef(null);
 
   async function enviarArquivo(file) {

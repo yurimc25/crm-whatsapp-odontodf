@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react";
 
-const ikey = () => import.meta.env.VITE_INTERNAL_API_KEY || "";
+const ikey = () => import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
 
 export function useCodental() {
   const [loading, setLoading] = useState(false);

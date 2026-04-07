@@ -41,7 +41,7 @@ const CHATS_KEY   = "waha_chats";
 const MSGS_PREFIX = "waha_msgs_";
 const CHATS_TTL   = 7  * 24 * 60 * 60 * 1000; // 7 dias
 const MSGS_TTL    = 30 * 24 * 60 * 60 * 1000; // 30 dias
-const ikey        = () => import.meta.env.VITE_INTERNAL_API_KEY || "";
+const ikey        = () => import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
 
 // Persiste chats no cache utility E no localStorage diretamente
 // Garante que F5 sempre lê o estado correto
@@ -670,7 +670,7 @@ function persistChat(chatId, data) {
     method: "PATCH",
     headers: {
       "Content-Type": "application/json",
-      "X-Internal-Key": import.meta.env.VITE_INTERNAL_API_KEY || "",
+      "X-Internal-Key": import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10",
     },
     body: JSON.stringify({ chatId, ...data }),
   }).catch(() => {});
