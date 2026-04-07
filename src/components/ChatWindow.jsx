@@ -427,9 +427,11 @@ function MediaContent({ media, msgId, chatSession }) {
 
   // WAHA NOWEB: usa /download-media pelo ID serializado da mensagem
   // ID válido tem formato: "false_556...@c.us_AABBCC..." (tem "@" ou "_")
+  // Remove segmentos do tipo `_participant@lid` quando presentes (causam 404 no endpoint)
+  const sanitizedMsgId = msgId ? String(msgId).replace(/_[^_@]+@lid\b/g, "") : null;
   const validMsgId = (() => {
-    if (!msgId) return null;
-    const s = String(msgId);
+    if (!sanitizedMsgId) return null;
+    const s = sanitizedMsgId;
     // ID serializado do NOWEB: tem "@" (contém número@c.us) ou tem "_" com 3 partes
     if (s.includes("@") || (s.match(/_/g) || []).length >= 2) return s;
     // ID curto ou inválido — loga para debug

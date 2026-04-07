@@ -189,14 +189,11 @@ function normalizeWahaId(raw) {
   }
 
   if (!serialized) return null;
+  if (!serialized) return null;
 
-  // Remove sufixo @lid de mensagens de grupo via LID addressing
-  // "false_120363@g.us_3EB0ABC_186208@lid" → "false_120363@g.us_3EB0ABC"
-  // O sufixo @lid aparece como o último segmento após o 3º underscore
-  const parts = serialized.split("_");
-  if (parts.length > 3 && parts[parts.length - 1].includes("@lid")) {
-    serialized = parts.slice(0, -1).join("_");
-  }
+  // Remove segmentos do tipo `_participant@lid` que aparecem em alguns IDs.
+  // Ex: "false_120363@g.us_3EB0ABC_186208@lid" -> "false_120363@g.us_3EB0ABC"
+  serialized = serialized.replace(/_[^_@]+@lid\b/g, "");
 
   return serialized;
 }
