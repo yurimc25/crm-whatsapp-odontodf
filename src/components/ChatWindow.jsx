@@ -418,16 +418,18 @@ function MessageBubble({ msg, currentOperator }) {
 
 // ── Renderizador de mídia ──────────────────────────────────────────
 function MediaContent({ media, msgId, chatSession }) {
-  const [lightbox, setLightbox]    = useState(false);
-  const [fullUrl, setFullUrl]      = useState(null);
-  const [downloading, setDownload] = useState(false);
+  const [lightbox,    setLightbox]  = useState(false);
+  const [fullUrl,     setFullUrl]   = useState(null);
+  const [downloading, setDownload]  = useState(false);
+  const [error,       setError]     = useState(false);
   const iKey    = import.meta.env.VITE_INTERNAL_API_KEY || "";
   const SESSION = chatSession || import.meta.env.VITE_WAHA_SESSION || "default";
 
-  // URL direta via proxy (se WAHA já serviu o arquivo)
-  // Fallback: endpoint download-media pelo ID da mensagem
-  const downloadPath = media.url ||
-    (msgId ? `/api/waha?path=/api/${SESSION}/messages/${encodeURIComponent(msgId)}/download-media` : null);
+  // WAHA NOWEB: sempre usa /download-media pelo ID da mensagem
+  const cleanId      = msgId ? encodeURIComponent(msgId) : null;
+  const downloadPath = cleanId
+    ? `/api/waha?path=/api/${SESSION}/messages/${cleanId}/download-media`
+    : null;
 
   const isImage = media.type === "image" || media.type === "sticker" ||
                   (media.mimetype || "").startsWith("image/");
@@ -435,67 +437,118 @@ function MediaContent({ media, msgId, chatSession }) {
   const isAudio = media.type === "audio" || media.type === "voice" ||
                   (media.mimetype || "").startsWith("audio/");
 
+  // Mimetype correto — NOWEB às vezes não traz
+  const mimeHint = media.mimetype ||
+    (isImage ? "image/jpeg" : isVideo ? "video/mp4" : isAudio ? "audio/ogg" : "application/octet-stream");
+
   const thumbSrc = media.thumbUrl || null;
 
-  // Função manual de download (vídeo, documento, botão download)
+  // Revoga objectURL ao desmontar
+  const blobUrlRef = useRef(null);
+  useEffect(() => {
+    return () => { if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current); };
+  }, []);
+
   async function fetchMedia() {
     if (fullUrl || !downloadPath || downloading) return;
     setDownload(true);
+    setError(false);
     try {
-      const r = await fetch(downloadPath, { headers: { "X-Internal-Key": iKey } });
-      if (r.ok) {
-        const blob = await r.blob();
-        setFullUrl(URL.createObjectURL(blob));
+      const r = await fetch(downloadPath, {
+        headers: { "X-Internal-Key": iKey },
+        cache: "no-store",
+      });
+      if (!r.ok) {
+        console.error(`[media] download-media ${r.status} for ${msgId}`);
+        setError(true);
+        setDownload(false);
+        return;
       }
-    } catch {}
+      const ct  = r.headers.get("content-type") || mimeHint;
+      const buf = await r.arrayBuffer();
+      if (buf.byteLength === 0) {
+        setError(true);
+        setDownload(false);
+        return;
+      }
+      const blob = new Blob([buf], { type: ct });
+      const url  = URL.createObjectURL(blob);
+      blobUrlRef.current = url;
+      setFullUrl(url);
+    } catch (e) {
+      console.error("[media] fetch error:", e.message);
+      setError(true);
+    }
     setDownload(false);
   }
 
-  // Auto-carrega imagem e áudio ao montar
+  // Auto-carrega imagem e áudio
   useEffect(() => {
     if (!isImage && !isAudio) return;
     if (!downloadPath || fullUrl) return;
     let cancelled = false;
-    async function load() {
+    async function autoLoad() {
       setDownload(true);
+      setError(false);
       try {
-        const r = await fetch(downloadPath, { headers: { "X-Internal-Key": iKey } });
-        if (!cancelled && r.ok) {
-          const blob = await r.blob();
-          if (!cancelled) setFullUrl(URL.createObjectURL(blob));
-        }
-      } catch {}
+        const r = await fetch(downloadPath, {
+          headers: { "X-Internal-Key": iKey },
+          cache: "no-store",
+        });
+        if (cancelled) return;
+        if (!r.ok) { setError(true); setDownload(false); return; }
+        const ct  = r.headers.get("content-type") || mimeHint;
+        const buf = await r.arrayBuffer();
+        if (cancelled) return;
+        if (buf.byteLength === 0) { setError(true); setDownload(false); return; }
+        const blob = new Blob([buf], { type: ct });
+        const url  = URL.createObjectURL(blob);
+        blobUrlRef.current = url;
+        if (!cancelled) setFullUrl(url);
+      } catch {
+        if (!cancelled) setError(true);
+      }
       if (!cancelled) setDownload(false);
     }
-    load();
+    autoLoad();
     return () => { cancelled = true; };
   }, [downloadPath, isImage, isAudio]);
 
   const displaySrc = fullUrl || thumbSrc;
 
+  // ── Imagem ──────────────────────────────────────────────────
   if (isImage) {
     return (
       <>
-        <div style={{ position:"relative", cursor:"pointer" }}
-          onClick={() => displaySrc && setLightbox(true)}>
+        <div style={{ position:"relative", cursor: displaySrc ? "pointer" : "default" }}
+          onClick={() => displaySrc && !downloading && setLightbox(true)}>
           {displaySrc ? (
             <img src={displaySrc} alt="imagem"
               style={{ width:"100%", maxWidth:260, maxHeight:200,
                 objectFit:"cover", borderRadius:8, display:"block",
-                filter: (!fullUrl && thumbSrc) ? "blur(3px)" : "none",
+                filter: (!fullUrl && thumbSrc) ? "blur(4px)" : "none",
                 transition:"filter .4s" }} />
-          ) : (
-            <div style={{ width:200, height:130, background:"#2a2a2a", borderRadius:8,
+          ) : error ? (
+            <div style={{ width:200, height:100, background:"#2a1a1a", borderRadius:8,
               display:"flex", alignItems:"center", justifyContent:"center",
-              color:T.sub, fontSize:13, gap:6 }}>
-              {downloading ? "⏳ carregando..." : "🖼️ imagem"}
+              color:"#e57373", fontSize:12, flexDirection:"column", gap:6 }}>
+              <span>⚠️ Erro ao carregar</span>
+              <button onClick={e => { e.stopPropagation(); setError(false); fetchMedia(); }}
+                style={{ fontSize:10, color:"#d4956a", background:"none",
+                  border:"1px solid #d4956a", borderRadius:4, padding:"2px 8px", cursor:"pointer" }}>
+                Tentar novamente
+              </button>
+            </div>
+          ) : (
+            <div style={{ width:200, height:100, background:"#2a2a2a", borderRadius:8,
+              display:"flex", alignItems:"center", justifyContent:"center",
+              color:"#555", fontSize:13 }}>
+              {downloading ? "⏳ carregando..." : "🖼️"}
             </div>
           )}
-          {displaySrc && (
+          {fullUrl && (
             <div style={{ position:"absolute", top:6, right:6, background:"rgba(0,0,0,.5)",
-              borderRadius:6, padding:"3px 7px", fontSize:11, color:"#fff" }}>
-              {!fullUrl && downloading ? "⏳" : "🔍"}
-            </div>
+              borderRadius:6, padding:"3px 7px", fontSize:11, color:"#fff" }}>🔍</div>
           )}
         </div>
         {lightbox && (
@@ -509,24 +562,28 @@ function MediaContent({ media, msgId, chatSession }) {
     );
   }
 
+  // ── Vídeo ───────────────────────────────────────────────────
   if (isVideo) {
     return (
       <div style={{ padding:"4px" }}>
         {fullUrl ? (
           <video controls style={{ width:"100%", maxWidth:280, borderRadius:8 }}>
-            <source src={fullUrl} type={media.mimetype || "video/mp4"} />
+            <source src={fullUrl} type={mimeHint} />
           </video>
         ) : (
           <div style={{ width:240, height:140, background:"#2a2a2a", borderRadius:8,
             display:"flex", flexDirection:"column", alignItems:"center",
-            justifyContent:"center", gap:8, cursor:"pointer" }}
-            onClick={fetchMedia}>
+            justifyContent:"center", gap:8, cursor:"pointer", position:"relative",
+            overflow:"hidden" }}
+            onClick={!error ? fetchMedia : () => { setError(false); fetchMedia(); }}>
             {thumbSrc && <img src={thumbSrc} alt="" style={{ position:"absolute",
-              width:"100%", height:"100%", objectFit:"cover", borderRadius:8,
-              filter:"blur(3px)", opacity:.5 }} />}
-            <span style={{ fontSize:28, position:"relative" }}>▶️</span>
-            <span style={{ color:T.sub, fontSize:11, position:"relative" }}>
-              {downloading ? "baixando..." : "Toque para ver vídeo"}
+              inset:0, width:"100%", height:"100%", objectFit:"cover",
+              filter:"blur(3px)", opacity:.4 }} />}
+            <span style={{ fontSize:32, position:"relative" }}>
+              {downloading ? "⏳" : error ? "⚠️" : "▶️"}
+            </span>
+            <span style={{ color:"#aaa", fontSize:11, position:"relative" }}>
+              {downloading ? "baixando..." : error ? "Erro — tente novamente" : "Toque para ver vídeo"}
             </span>
           </div>
         )}
@@ -534,24 +591,33 @@ function MediaContent({ media, msgId, chatSession }) {
     );
   }
 
+  // ── Áudio ───────────────────────────────────────────────────
   if (isAudio) {
-    if (!fullUrl && !downloading) fetchMedia();
     return (
       <div style={{ padding:"8px 6px", minWidth:220 }}>
         {fullUrl ? (
           <audio controls style={{ width:"100%", minWidth:220 }}>
-            <source src={fullUrl} type={media.mimetype || "audio/ogg"} />
+            <source src={fullUrl} type={mimeHint} />
           </audio>
+        ) : error ? (
+          <div style={{ display:"flex", alignItems:"center", gap:8, padding:"4px 8px" }}>
+            <span style={{ color:"#e57373", fontSize:12 }}>⚠️ Erro ao carregar áudio</span>
+            <button onClick={() => { setError(false); fetchMedia(); }}
+              style={{ fontSize:10, color:"#d4956a", background:"none",
+                border:"1px solid #d4956a", borderRadius:4, padding:"2px 8px", cursor:"pointer" }}>
+              Retry
+            </button>
+          </div>
         ) : (
-          <div style={{ color:T.sub, fontSize:12, padding:"4px 8px" }}>
-            {downloading ? "🎵 carregando áudio..." : "🎵 áudio"}
+          <div style={{ color:"#666", fontSize:12, padding:"4px 8px", display:"flex", gap:6 }}>
+            🎵 {downloading ? "carregando áudio..." : "áudio"}
           </div>
         )}
       </div>
     );
   }
 
-  // Documento / arquivo genérico
+  // ── Documento ───────────────────────────────────────────────
   const filename = media.filename || "arquivo";
   return (
     <div style={{ padding:"8px 12px", display:"flex", alignItems:"center", gap:10 }}>
@@ -561,13 +627,21 @@ function MediaContent({ media, msgId, chatSession }) {
           overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
           {filename}
         </div>
-        <div style={{ color:T.sub, fontSize:10 }}>{media.mimetype || "documento"}</div>
+        <div style={{ color:T.sub, fontSize:10 }}>{mimeHint}</div>
       </div>
-      <button onClick={fetchMedia} disabled={downloading}
-        style={{ color:T.accent, fontSize:20, background:"none", border:"none",
-          cursor:"pointer", padding:0 }} title="Baixar">
-        {downloading ? "⏳" : "⬇"}
-      </button>
+      {error ? (
+        <button onClick={() => { setError(false); fetchMedia(); }}
+          style={{ color:"#e57373", fontSize:11, background:"none",
+            border:"1px solid #e57373", borderRadius:4, padding:"2px 8px", cursor:"pointer" }}>
+          ⚠️ Retry
+        </button>
+      ) : (
+        <button onClick={fetchMedia} disabled={downloading}
+          style={{ color:T.accent, fontSize:20, background:"none", border:"none",
+            cursor:"pointer", padding:0 }} title="Baixar">
+          {downloading ? "⏳" : "⬇"}
+        </button>
+      )}
     </div>
   );
 }
