@@ -34,15 +34,13 @@ function _runMediaQueue() {
     const now = Date.now();
     const timeSinceLastExec = now - _mediaLastExecTime;
     const delayNeeded = Math.max(0, MEDIA_QUEUE_DELAY - timeSinceLastExec);
-    
+    const task = _mediaQueue.shift();
+    if (typeof task !== "function") { _mediaActive--; continue; }
     if (delayNeeded > 0) {
-      setTimeout(() => {
-        _mediaLastExecTime = Date.now();
-        _mediaQueue.shift()();
-      }, delayNeeded);
+      setTimeout(() => { _mediaLastExecTime = Date.now(); task(); }, delayNeeded);
     } else {
       _mediaLastExecTime = now;
-      _mediaQueue.shift()();
+      task();
     }
   }
 }

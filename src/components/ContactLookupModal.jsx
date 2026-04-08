@@ -42,14 +42,24 @@ export function ContactLookupModal({ phoneNumber, chatId, onClose, onSelectConta
         return;
       }
 
+      // Número do chat atual (prop phoneNumber) — usado como referência para filtros
+      const chatDigits = (phoneNumber || "").replace(/\D/g, "");
+      // 8 dígitos finais do chat para comparação de correspondência
+      const chatTail8  = chatDigits.slice(-8);
+
+      function matchesChatPhone(cPhone) {
+        const cp = (cPhone || "").replace(/\D/g, "");
+        if (!cp || cp.length < 8) return false;
+        return cp.slice(-8) === chatTail8;
+      }
+
       // ── Google Contacts — busca pelos últimos 4 dígitos (ou nome) ──
-      // Para números, sempre usa q= com últimos 4 dígitos e filtra localmente
+      // Para busca numérica: usa q= com últimos 4 dígitos digitados e filtra localmente
       let googleResults = [];
       try {
-        const last4 = digits.slice(-4);
         const googleQuery = (isDigits && digits.length >= 4)
-          ? last4                // últimos 4 dígitos → retorna lista e filtra localmente
-          : query.trim();        // nome → busca textual direta
+          ? digits.slice(-4)   // últimos 4 dígitos → retorna lista, filtra localmente
+          : query.trim();      // nome → busca textual direta
         const url = `/api/contacts?action=search&q=${encodeURIComponent(googleQuery)}&_t=${Date.now()}`;
 
         const r = await fetch(url, { headers: { "X-Internal-Key": ikey }, cache: "no-store" });
@@ -57,50 +67,37 @@ export function ContactLookupModal({ phoneNumber, chatId, onClose, onSelectConta
           const data = await r.json();
           let candidates = [];
           if (data.found && data.name) {
-            candidates = [{ phone: digits || "", name: data.name }];
+            candidates = [{ phone: "", name: data.name }];
           } else if (data.found && Array.isArray(data.contacts)) {
             candidates = data.contacts;
           }
-
-          // Para busca numérica: filtra localmente os candidatos cujo número termina com os dígitos digitados
-          if (isDigits && digits.length >= 4) {
-            const suffix = digits.replace(/\D/g, "");
-            googleResults = candidates
-              .filter(c => {
-                const cp = (c.phone || "").replace(/\D/g, "");
-                return cp.endsWith(suffix) || cp.slice(-suffix.length) === suffix;
-              })
-              .slice(0, 10)
-              .map(c => ({ ...c, source: "google" }));
-            // Se não achou com filtro, mostra todos mesmo assim
-            if (googleResults.length === 0) {
-              googleResults = candidates.slice(0, 10).map(c => ({ ...c, source: "google" }));
-            }
-          } else {
-            googleResults = candidates.slice(0, 10).map(c => ({ ...c, source: "google" }));
-          }
+          googleResults = candidates.slice(0, 10).map(c => ({ ...c, source: "google" }));
         }
       } catch {}
 
-      // ── Codental — sempre pelo número inteiro (ou suas variantes BR) ──
+      // ── Codental — usa número inteiro do chat para busca, filtra >= 8 dígitos ──
       let codentalResults = [];
-      if (isDigits && digits.length >= 4) {
-        // Usa o número completo do chat (phoneNumber prop) para busca exata no Codental
-        // e os dígitos digitados como fallback
-        const phoneDigits = (phoneNumber || "").replace(/\D/g, "");
-        const searchPhone = phoneDigits.length >= 8 ? phoneDigits : digits;
+      if (isDigits && digits.length >= 4 && chatDigits.length >= 8) {
         try {
+          // Envia o número completo do chat — a API gera as variantes BR
           const r = await fetch(
-            `/api/codental?action=search&phone=${searchPhone}`,
+            `/api/codental?action=search&phone=${chatDigits}`,
             { headers: { "X-Internal-Key": ikey } }
           );
           if (r.ok) {
             const data = await r.json();
-            codentalResults = (data.patients || []).slice(0, 10).map(p => ({
-              name:   p.fullName || p.full_name || p.name || "",
-              phone:  (p.cellphone_formated || p.cellphone || "").replace(/\D/g, ""),
-              source: "codental",
-            })).filter(c => c.name);
+            codentalResults = (data.patients || [])
+              .filter(p => {
+                const pPhone = (p.cellphone_formated || p.cellphone || "").replace(/\D/g, "");
+                return matchesChatPhone(pPhone);
+              })
+              .slice(0, 10)
+              .map(p => ({
+                name:   p.fullName || p.full_name || p.name || "",
+                phone:  (p.cellphone_formated || p.cellphone || "").replace(/\D/g, ""),
+                source: "codental",
+              }))
+              .filter(c => c.name);
           }
         } catch {}
       }

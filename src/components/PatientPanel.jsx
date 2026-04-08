@@ -161,10 +161,28 @@ export default function PatientPanel({ chat, operator }) {
     async function buscar() {
       try {
         const phone = info.phone.replace(/\D/g, "");
+        const tail8 = phone.slice(-8);
+        // Filtra pacientes cujo telefone compartilha >= 8 dígitos finais com o número do chat
+        function matchesPhone(p) {
+          const cp = (p.cellphone_formated || p.cellphone || "").replace(/\D/g, "");
+          return cp.length >= 8 && cp.slice(-8) === tail8;
+        }
         console.log("[buscar] phone=", phone, "chat.id=", chat.id);
         let result = phone ? await searchByPhone(phone) : null;
+        // Filtra localmente — a API Codental faz busca textual (contains), traz resultados irrelevantes
+        if (result?.patients?.length > 0 && tail8.length === 8) {
+          const filtered = result.patients.filter(matchesPhone);
+          result = { ...result, patients: filtered };
+        }
         if (!result?.patients?.length && info.hasContact) {
-          result = await searchByName(info.name.split(" ").slice(0,3).join(" "));
+          const nameResult = await searchByName(info.name.split(" ").slice(0,3).join(" "));
+          // Para busca por nome, ainda filtra por telefone se possível
+          if (nameResult?.patients?.length > 0 && tail8.length === 8) {
+            const filtered = nameResult.patients.filter(matchesPhone);
+            result = { ...nameResult, patients: filtered.length > 0 ? filtered : nameResult.patients };
+          } else {
+            result = nameResult;
+          }
         }
         console.log("[buscar] result patients=", result?.patients?.length);
         if (cancelled) return;

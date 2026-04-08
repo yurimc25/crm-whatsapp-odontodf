@@ -248,19 +248,23 @@ export function useContacts() {
     const found = findInMap(phone, current);
     if (found) return found;
 
+    // Marca como "em progresso" para evitar requisições paralelas duplicadas
+    // (será mantido no Set apenas se a busca falhar — se achar, remove para permitir future retry)
     lookedUp.current.add(phone);
 
     const digits = phone.replace(/\D/g, "");
     const myVariants = new Set(phoneVariants(digits));
 
     // Verifica se um número (string de dígitos) corresponde ao nosso contato
+    // Exige >= 8 dígitos finais coincidentes (cobre com/sem DDI 55, com/sem 9)
     function phoneMatches(cPhone) {
       const cp = (cPhone || "").replace(/\D/g, "");
       if (!cp || cp.length < 8) return false;
       if (myVariants.has(cp)) return true;
-      // Sufixo compartilhado de >= 8 dígitos
-      const minLen = Math.min(cp.length, digits.length);
-      return minLen >= 8 && cp.slice(-minLen) === digits.slice(-minLen);
+      // Compara os últimos 8 dígitos dos dois números
+      const tail8cp  = cp.slice(-8);
+      const tail8me  = digits.slice(-8);
+      return tail8cp.length === 8 && tail8cp === tail8me;
     }
 
     function saveContact(name, cPhone) {
@@ -305,7 +309,27 @@ export function useContacts() {
       }
     } catch {}
 
-    // ── 4. Google — uma requisição com últimos 4 dígitos, filtra localmente ──
+    // ── 4. Google — fase A: busca por phone (exato) com todas as variantes ──
+    for (const variant of [...new Set([digits, ...phoneVariants(digits)])]) {
+      try {
+        const r = await fetch(
+          `/api/contacts?action=search&phone=${variant}&_t=${Date.now()}`,
+          { headers: { "X-Internal-Key": internalKey }, cache: "no-store" }
+        );
+        if (!r.ok) continue;
+        const data = await r.json();
+        if (!data.found || !data.name) continue;
+        const fv = data.variants || [];
+        const cPhone = Array.isArray(fv)
+          ? (fv.find(v => String(v).replace(/\D/g,"").length >= 8) || variant)
+          : String(fv);
+        saveContact(data.name, cPhone);
+        console.log(`[contacts] Google phone=${variant} → ${data.name}`);
+        return data.name;
+      } catch {}
+    }
+
+    // ── 4b. Google — fase B: q= com últimos 4 dígitos, filtra localmente ──
     async function googleSearchQ(q) {
       const r = await fetch(
         `/api/contacts?action=search&q=${encodeURIComponent(q)}&_t=${Date.now()}`,
@@ -314,11 +338,11 @@ export function useContacts() {
       if (!r.ok) return [];
       const data = await r.json();
       if (!data.found) return [];
-      // Normaliza para sempre retornar array de { name, phone }
       if (data.name) {
-        // Resposta direta: { found, name, variants }
         const fv = data.variants || [];
-        const cPhone = Array.isArray(fv) ? (fv.find(v => String(v).replace(/\D/g,"").length >= 8) || "") : fv;
+        const cPhone = Array.isArray(fv)
+          ? (fv.find(v => String(v).replace(/\D/g,"").length >= 8) || "")
+          : fv;
         return [{ name: data.name, phone: String(cPhone).replace(/\D/g,"") }];
       }
       if (Array.isArray(data.contacts)) {
@@ -330,16 +354,15 @@ export function useContacts() {
       return [];
     }
 
-    // Tenta com últimos 4 dígitos primeiro (mais genérico, retorna mais resultados)
-    // Depois sobe para 8 se não achou correspondência
-    for (const suffix of [digits.slice(-4), digits.slice(-8)]) {
-      if (!suffix || suffix.length < 4) continue;
+    // Busca com últimos 4 dígitos (amplo), filtra localmente por >= 8 dígitos coincidentes
+    const suffix4 = digits.slice(-4);
+    if (suffix4.length >= 4) {
       try {
-        const candidates = await googleSearchQ(suffix);
+        const candidates = await googleSearchQ(suffix4);
         const hit = candidates.find(c => phoneMatches(c.phone));
         if (hit) {
           saveContact(hit.name, hit.phone);
-          console.log(`[contacts] Google q=${suffix} → ${hit.name} (${hit.phone})`);
+          console.log(`[contacts] Google q=${suffix4} → ${hit.name} (${hit.phone})`);
           return hit.name;
         }
       } catch {}
