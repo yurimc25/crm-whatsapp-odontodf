@@ -949,12 +949,9 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
     };
   }, []);
 
-  // Helper: resolve binary from a WAHA endpoint.
+  // Helper: resolve binary from a WAHA endpoint (SEM fila — callers já gerenciam a fila).
   // O endpoint ?downloadMedia=true retorna JSON com media.url — precisa re-buscar o binário.
   async function resolveMediaBinary(url) {
-    return mediaQueue(async () => _resolveMediaBinary(url));
-  }
-  async function _resolveMediaBinary(url) {
     const r = await fetch(url, { headers: { "X-Internal-Key": iKey }, cache: "no-store" });
     if (!r.ok) return { ok: false, status: r.status };
     const ct = r.headers.get("content-type") || "";

@@ -237,6 +237,22 @@ export function useContacts() {
     if (Object.keys(incoming).length) mergeMap(incoming, "local");
   }, [mergeMap]);
 
+  // ── lookupPhonePriority — busca on-demand ao abrir chat ──────
+  // Ignora o cache de sessão (lookedUp) e força nova tentativa no Codental + Google.
+  // Deve ser chamado quando o usuário clica num chat sem contato mapeado.
+  const lookupPhonePriority = useCallback(async (wahaId) => {
+    const phone = wahaIdToPhone(wahaId);
+    if (!phone || phone.length < 7) return null;
+    // Remove do cache de sessão para garantir nova tentativa
+    lookedUp.current.delete(phone);
+    // Já tem no mapa local atualizado? Retorna sem buscar
+    const current = readLocalMap();
+    const found = findInMap(phone, current);
+    if (found) return found;
+    // Delega para lookupPhone (que agora vai executar pois limpamos o cache)
+    return lookupPhone(wahaId);
+  }, [findInMap, lookupPhone]);
+
   // ── lookupPhone — hierarquia: Codental → Google ───────────────
   const lookupPhone = useCallback(async (wahaId) => {
     const phone = wahaIdToPhone(wahaId);
@@ -352,7 +368,7 @@ export function useContacts() {
 
   return {
     contactMap, resolveName, displayName, displayInfo,
-    addLocalContact, lookupPhone, searchByName, loading,
+    addLocalContact, lookupPhone, lookupPhonePriority, searchByName, loading,
     refresh: fetchGoogleBulk,
   };
 }

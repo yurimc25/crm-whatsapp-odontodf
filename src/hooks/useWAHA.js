@@ -109,7 +109,7 @@ export function useWAHA(operator) {
 
   const activeChatRef = useRef(null);
   const socketRef     = useRef(null);
-  const { lookupPhone, searchByName, addLocalContact, resolveName } = useContactsCtx();
+  const { lookupPhone, lookupPhonePriority, searchByName, addLocalContact, resolveName } = useContactsCtx();
 
   const perms = { verTodos: operator?.role === "gerente" || operator?.role === "admin" };
 
@@ -549,11 +549,13 @@ export function useWAHA(operator) {
   // ── 4. loadMessages — abre ChatWindow: últimas 60 msgs ────────
   const loadMessages = useCallback(async (chatId) => {
     activeChatRef.current = chatId;
-    // Sincroniza contato se ausente (sem varredura global — só 1 requisição)
+    // Busca contato on-demand com prioridade (ignora cache de sessão)
     try {
       const existing = resolveName(chatId, null);
-      if (!existing && typeof lookupPhone === "function") {
-        lookupPhone(chatId).catch(() => {});
+      if (!existing && typeof lookupPhonePriority === "function") {
+        lookupPhonePriority(chatId).then(name => {
+          if (name) console.log(`[contacts] on-demand ${chatId} → ${name}`);
+        }).catch(() => {});
       }
     } catch {}
     // Zera unread
