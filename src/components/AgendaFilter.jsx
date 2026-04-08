@@ -17,9 +17,11 @@ const T = {
 
 const STATUS_COLOR = {
   0: T.sub,          // Agendado
-  3: T.red,          // Cancelado
+  1: T.red,          // Canc. clínica
+  2: T.red,          // Canc. paciente
+  3: T.yellow,       // Não confirmado
   4: T.green,        // Confirmado
-  6: "#9c7cd4",      // Atendido
+  6: "#4da6ff",      // Conf. Doctoralia
 };
 
 function todayStr() {
@@ -100,9 +102,9 @@ export default function AgendaFilter({ chats, onSelectChat, onStartNewChat }) {
   }
 
   const appointments = agenda?.appointments || [];
-  const cancelados   = appointments.filter(a => a.status === 3).length;
-  const confirmados  = appointments.filter(a => a.status === 4).length;
-  const atendidos    = appointments.filter(a => a.status === 6).length;
+  const cancelados   = appointments.filter(a => a.status === 1 || a.status === 2).length;
+  const confirmados  = appointments.filter(a => a.status === 4 || a.status === 6).length;
+  const naoConf      = appointments.filter(a => a.status === 3).length;
 
   return (
     <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
@@ -197,9 +199,9 @@ export default function AgendaFilter({ chats, onSelectChat, onStartNewChat }) {
               {/* Resumo */}
               {agenda && (
                 <div style={{ display:"flex", gap:6, flexShrink:0 }}>
-                  {confirmados > 0 && <span style={{ fontSize:10, color:T.green, fontWeight:700 }}>✓{confirmados}</span>}
-                  {atendidos   > 0 && <span style={{ fontSize:10, color:"#9c7cd4", fontWeight:700 }}>●{atendidos}</span>}
-                  {cancelados  > 0 && <span style={{ fontSize:10, color:T.red,   fontWeight:700 }}>✗{cancelados}</span>}
+                  {confirmados > 0 && <span style={{ fontSize:10, color:T.green,   fontWeight:700 }}>✓{confirmados}</span>}
+                  {naoConf     > 0 && <span style={{ fontSize:10, color:T.yellow,  fontWeight:700 }}>?{naoConf}</span>}
+                  {cancelados  > 0 && <span style={{ fontSize:10, color:T.red,    fontWeight:700 }}>✗{cancelados}</span>}
                   <span style={{ fontSize:10, color:T.sub }}>{appointments.length}t</span>
                 </div>
               )}
@@ -225,7 +227,7 @@ export default function AgendaFilter({ chats, onSelectChat, onStartNewChat }) {
             )}
             {appointments.map((appt, i) => {
               const chat        = findChatByPhone(appt.patientPhone, chats);
-              const isCancelled = appt.status === 3;
+              const isCancelled = appt.status === 1 || appt.status === 2;
               return (
                 <AgendaItem
                   key={appt.id || i}

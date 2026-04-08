@@ -33,9 +33,11 @@ function norm(s) {
 // Mapa de status de agendamento
 const APPOINTMENT_STATUS = {
   0: "Agendado",
-  3: "Cancelado",
+  1: "Canc. clínica",
+  2: "Canc. paciente",
+  3: "Não confirmado",
   4: "Confirmado",
-  6: "Atendido",
+  6: "Conf. Doctoralia",
 };
 
 // Mapa de tipo de evento
