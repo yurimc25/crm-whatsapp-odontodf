@@ -629,12 +629,15 @@ export function useWAHA(operator) {
       const novoLPTs    = (ultimoFoiOp || autoResolve) ? null : (semResp[0]?.ts || null);
 
       setChats(prev => {
+        const existing = prev.find(c => c.id === chatId);
+        // Mantém unread se paciente ainda aguarda resposta (não zeramos ao só "ler")
+        const keepUnread = !ultimoFoiOp && !autoResolve && (existing?.unread || 0) > 0;
         const updated = prev.map(c => c.id !== chatId ? c : {
           ...c,
           lastMsg:       lastAny?.text || c.lastMsg,
           lastTime:      lastAny?.time || c.lastTime,
           lastPatientTs: novoLPTs,
-          unread:        0,
+          unread:        keepUnread ? (existing?.unread || 0) : 0,
         });
         persistChats(updated);
         return updated;
@@ -730,14 +733,14 @@ export function useWAHA(operator) {
     return () => clearInterval(iv);
   }, [sessionOk]);
 
-  // ── Polling leve da lista de chats (5s) ───────────────────────
+  // ── Polling lista de chats (5s) — atualiza previews e detecta novas msgs ──
   useEffect(() => {
     if (!sessionOk || USE_MOCK) return;
     const iv = setInterval(async () => {
       try {
         const raw = await getChats();
         if (!Array.isArray(raw)) return;
-        // Filtra só chats com atividade recente (última hora) para reduzir trabalho
+        // Apenas chats ativos na última hora
         const cutoff = Math.floor((Date.now() - 60 * 60 * 1000) / 1000);
         const recent = raw.filter(c => {
           const ts = c.lastMessage?.timestamp || c.lastMessage?.t || 0;
@@ -745,16 +748,23 @@ export function useWAHA(operator) {
         });
         if (!recent.length) return;
         const normalized = recent.map(c => normalizeChat(c));
+
+        // Chats cujo lastTs avançou mas lastMsg ainda está vazio (mídia sem body)
+        // → precisa buscar a mensagem real via loadLastMessages
+        const precisamMsg = [];
+
         setChats(prev => {
-          const prevMap = Object.fromEntries(prev.map(c => [c.id, c]));
           let changed = false;
           const updated = prev.map(c => {
             const n = normalized.find(x => x.id === c.id);
             if (!n) return c;
-            // Só atualiza se a mensagem mudou
-            if (n.lastMsg === c.lastMsg && n.lastTs === c.lastTs) return c;
+            // Nada mudou
+            if (n.lastTs === c.lastTs && (n.lastMsg || c.lastMsg)) return c;
             changed = true;
-            // Unread: usa o valor do WAHA se for maior (evita reduzir contagem local)
+            // Se WAHA devolveu msg vazia mas lastTs mudou → enfileira busca individual
+            if (!n.lastMsg && n.lastTs && n.lastTs !== c.lastTs) {
+              precisamMsg.push(c.id);
+            }
             const newUnread = Math.max(c.unread || 0, n.unread || 0);
             return {
               ...c,
@@ -764,15 +774,20 @@ export function useWAHA(operator) {
               unread:   newUnread,
             };
           });
-          // Adiciona chats novos que não estão na lista
+          // Chats novos
           const ids = new Set(prev.map(c => c.id));
           for (const n of normalized) {
-            if (!ids.has(n.id)) { updated.push(n); changed = true; }
+            if (!ids.has(n.id)) { updated.push(n); changed = true; precisamMsg.push(n.id); }
           }
           if (!changed) return prev;
           persistChats(updated);
           return updated;
         });
+
+        // Busca individual para chats com lastTs novo mas msg vazia
+        if (precisamMsg.length > 0) {
+          loadLastMessages(precisamMsg.slice(0, 10));
+        }
       } catch {}
     }, 5000);
     return () => clearInterval(iv);
