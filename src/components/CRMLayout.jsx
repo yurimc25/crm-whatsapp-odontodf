@@ -34,7 +34,7 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
   const [filter, setFilter]         = useState("all");
   const [search, setSearch]         = useState("");
 
-  const { displayName, loading: contactsLoading } = useContactsCtx();
+  const { displayName } = useContactsCtx();
 
   const {
     chats, messages, loadMessages, loadOlderMessages, send,
@@ -121,12 +121,6 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
           }} />
           <span style={{ color:T.sub, fontSize:11 }}>{WS_LABEL[wsStatus] || wsStatus}</span>
         </div>
-
-        {contactsLoading && (
-          <span style={{ color:T.sub, fontSize:11, fontStyle:"italic" }}>
-            sincronizando contatos...
-          </span>
-        )}
 
         <div style={{ flex:1 }} />
 

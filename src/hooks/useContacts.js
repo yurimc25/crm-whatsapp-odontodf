@@ -9,10 +9,22 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { cache } from "../utils/cache";
 
-const LS_KEY      = "contacts_map";
-const LS_TTL      = 24 * 60 * 60 * 1000;  // 24h local
-const MONGO_SYNC_INTERVAL = 60 * 60 * 1000; // 1h entre syncs com MongoDB
-const MONGO_SYNC_KEY = "contacts_last_sync"; // key no localStorage p/ controle
+const LS_KEY           = "contacts_map";
+const LS_TTL           = 24 * 60 * 60 * 1000;  // 24h local
+const MONGO_SYNC_INTERVAL = 60 * 60 * 1000;    // 1h entre syncs com MongoDB
+const MONGO_SYNC_KEY   = "contacts_last_sync";
+const BULK_FETCH_KEY   = "contacts_bulk_fetched_at";
+const BULK_TTL         = 6 * 60 * 60 * 1000;   // re-busca bulk a cada 6h
+
+function shouldFetchBulk() {
+  try {
+    const last = parseInt(localStorage.getItem(BULK_FETCH_KEY) || "0");
+    return Date.now() - last > BULK_TTL;
+  } catch { return true; }
+}
+function markBulkFetched() {
+  try { localStorage.setItem(BULK_FETCH_KEY, String(Date.now())); } catch {}
+}
 
 export function wahaIdToPhone(wahaId) {
   return (wahaId || "").replace(/@.*$/, "").replace(/\D/g, "");
@@ -137,9 +149,8 @@ export function useContacts() {
         setLoading(false);
       }
 
-      // Se ainda não tem contatos suficientes, carrega Google bulk em background
-      const current = readLocalMap();
-      if (Object.keys(current).length < 10) {
+      // Busca bulk do Google a cada 6h para manter o mapa atualizado
+      if (shouldFetchBulk()) {
         fetchGoogleBulk();
       }
     }
@@ -176,6 +187,7 @@ export function useContacts() {
       if (!contacts) return;
       mergeMap(contacts, "google-bulk");
       pendingSync.current = true;
+      markBulkFetched();
     } catch (e) {
       console.warn("[contacts] Google bulk falhou:", e.message);
     }

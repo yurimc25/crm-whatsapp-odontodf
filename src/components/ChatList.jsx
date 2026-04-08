@@ -1,4 +1,4 @@
-import { useMemo, useState, useRef, useEffect, useCallback } from "react";
+import { useMemo, useState, useRef, useEffect } from "react";
 import { useContactsCtx } from "../App";
 import { formatPhone, wahaIdToPhone } from "../hooks/useContacts";
 
@@ -32,66 +32,9 @@ function formatTimeSince(ts) {
 
 export default function ChatList({
   chats, activeId, search, onSearch, onSelect,
-  onForward, onMarkRead, onMarkUnread, loading, operator
+  onForward, onMarkRead, onMarkUnread, loading
 }) {
   const [ctxMenu, setCtxMenu] = useState(null);
-  const { lookupPhone, contactMap } = useContactsCtx();
-
-  // ── Sync progress ─────────────────────────────────────────────
-  const [syncTotal,   setSyncTotal]   = useState(0);
-  const [syncDone,    setSyncDone]    = useState(0);
-  const [syncActive,  setSyncActive]  = useState(false);
-  const syncingRef = useRef(false);
-  const syncedRef  = useRef(new Set()); // IDs já processados nesta sessão
-
-  // Dispara lookup paralelo para todos os contatos sem nome
-  // Roda quando a lista muda e quando o contactMap é atualizado
-  useEffect(() => {
-    if (!chats.length || syncingRef.current) return;
-
-    // Filtra chats que ainda não têm nome no mapa
-    const semNome = chats.filter(c => {
-      if (syncedRef.current.has(c.id)) return false;
-      const phone = wahaIdToPhone(c.id);
-      if (!phone || phone.length < 7) return false;
-      // Verifica se alguma variante já está no mapa
-      return !c.name || c.name === formatPhone(phone) || c.name === phone;
-    });
-
-    if (semNome.length === 0) return;
-
-    syncingRef.current = true;
-    setSyncTotal(semNome.length);
-    setSyncDone(0);
-    setSyncActive(true);
-
-    // Lookup em lotes de 5 paralelos para não sobrecarregar
-    const BATCH = 5;
-    let done = 0;
-
-    async function runBatch(items) {
-      await Promise.allSettled(
-        items.map(async (chat) => {
-          syncedRef.current.add(chat.id);
-          await lookupPhone(chat.id);
-          done++;
-          setSyncDone(done);
-        })
-      );
-    }
-
-    async function runAll() {
-      for (let i = 0; i < semNome.length; i += BATCH) {
-        await runBatch(semNome.slice(i, i + BATCH));
-        // Pequena pausa entre lotes para não travar o browser
-        await new Promise(r => setTimeout(r, 200));
-      }
-      setSyncActive(false);
-      syncingRef.current = false;
-    }
-
-    runAll();
-  }, [chats.length]); // só re-roda quando a lista muda de tamanho
 
   const sorted = useMemo(() => {
     return [...chats].sort((a, b) => {
@@ -146,8 +89,6 @@ export default function ChatList({
     setCtxMenu({ chat, x: e.clientX, y: e.clientY });
   }
 
-  const syncPct = syncTotal > 0 ? Math.round((syncDone / syncTotal) * 100) : 0;
-
   return (
     <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden",
       background:T.bg, fontFamily:"'DM Sans', sans-serif" }}>
@@ -164,30 +105,6 @@ export default function ChatList({
               fontSize:13, outline:"none", boxSizing:"border-box" }} />
         </div>
       </div>
-
-      {/* Barra de sincronização */}
-      {syncActive && (
-        <div style={{ padding:"4px 12px 6px", borderBottom:`1px solid ${T.border}`,
-          background:"#141414" }}>
-          <div style={{ display:"flex", justifyContent:"space-between",
-            alignItems:"center", marginBottom:4 }}>
-            <span style={{ color:T.sub, fontSize:10 }}>
-              Sincronizando contatos…
-            </span>
-            <span style={{ color:T.accent, fontSize:10, fontWeight:600 }}>
-              {syncDone}/{syncTotal}
-            </span>
-          </div>
-          <div style={{ height:3, background:"#2a2a2a", borderRadius:2, overflow:"hidden" }}>
-            <div style={{
-              height:"100%", borderRadius:2,
-              width:`${syncPct}%`,
-              background:`linear-gradient(90deg, ${T.accent}, ${T.green})`,
-              transition:"width .3s ease",
-            }} />
-          </div>
-        </div>
-      )}
 
       {/* Lista */}
       <div style={{ flex:1, overflowY:"auto" }}>

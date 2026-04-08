@@ -90,6 +90,47 @@ export default function PatientPanel({ chat, operator }) {
   const [evols, setEvols]         = useState(null);
   const [buscando, setBuscando]   = useState(false);
 
+  // ── Busca de outro paciente ────────────────────────────────────
+  const [showBusca,      setShowBusca]      = useState(false);
+  const [buscaQuery,     setBuscaQuery]     = useState("");
+  const [buscaResults,   setBuscaResults]   = useState([]);
+  const [buscandoOutro,  setBuscandoOutro]  = useState(false);
+  const [buscaError,     setBuscaError]     = useState(null);
+  // Snapshot para "voltar" ao paciente original
+  const [snapshot, setSnapshot] = useState(null);
+
+  async function buscarOutroPaciente() {
+    const q = buscaQuery.trim();
+    if (!q) return;
+    setBuscandoOutro(true); setBuscaError(null); setBuscaResults([]);
+    try {
+      const digits = q.replace(/\D/g, "");
+      const result = digits.length >= 7
+        ? await searchByPhone(digits)
+        : await searchByName(q);
+      if (result?.patients?.length > 0) {
+        setBuscaResults(result.patients);
+      } else {
+        setBuscaError("Nenhum paciente encontrado");
+      }
+    } catch { setBuscaError("Erro ao buscar paciente"); }
+    finally { setBuscandoOutro(false); }
+  }
+
+  function selecionarOutroPaciente(p) {
+    if (!snapshot) setSnapshot({ pacientes, paciente });
+    setPacientes([p]);
+    carregarDados(p);
+    setShowBusca(false); setBuscaQuery(""); setBuscaResults([]); setBuscaError(null);
+  }
+
+  function voltarOriginal() {
+    if (!snapshot) return;
+    setPacientes(snapshot.pacientes);
+    if (snapshot.paciente) carregarDados(snapshot.paciente);
+    setSnapshot(null);
+  }
+
   // Carrega uploads e evoluções de um paciente específico
   async function recarregarUploads(pid) {
     const u = await getUploads(pid).catch(() => null);
@@ -156,7 +197,83 @@ export default function PatientPanel({ chat, operator }) {
 
   return (
     <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden",
-      fontFamily:"'DM Sans', sans-serif", background:T.bg }}>
+      fontFamily:"'DM Sans', sans-serif", background:T.bg, position:"relative" }}>
+
+      {/* Overlay de busca de outro paciente */}
+      {showBusca && (
+        <div style={{ position:"absolute", inset:0, zIndex:20, background:T.bg,
+          display:"flex", flexDirection:"column", overflow:"hidden" }}>
+          <div style={{ padding:"12px 14px", background:T.header,
+            borderBottom:`1px solid ${T.border}`,
+            display:"flex", alignItems:"center", gap:8 }}>
+            <button onClick={() => { setShowBusca(false); setBuscaQuery(""); setBuscaResults([]); setBuscaError(null); }}
+              style={{ background:"transparent", border:"none", cursor:"pointer",
+                color:T.sub, fontSize:18, padding:0, lineHeight:1, flexShrink:0 }}>←</button>
+            <span style={{ color:T.accent, fontWeight:700, fontSize:14, flex:1 }}>
+              Buscar outro paciente
+            </span>
+          </div>
+          <div style={{ padding:"12px 14px", flex:1, overflowY:"auto" }}>
+            <div style={{ display:"flex", gap:8, marginBottom:12 }}>
+              <input
+                value={buscaQuery}
+                onChange={e => { setBuscaQuery(e.target.value); setBuscaResults([]); setBuscaError(null); }}
+                onKeyDown={e => e.key === "Enter" && buscarOutroPaciente()}
+                placeholder="Nome ou número do paciente..."
+                autoFocus
+                style={{ flex:1, background:T.inputBg, border:`1px solid ${T.border}`,
+                  borderRadius:6, padding:"8px 10px", color:T.text,
+                  fontSize:13, outline:"none" }}
+                onFocus={e => e.target.style.borderColor = T.accent}
+                onBlur={e => e.target.style.borderColor = T.border}
+              />
+              <button onClick={buscarOutroPaciente} disabled={buscandoOutro || !buscaQuery.trim()}
+                style={{ background: buscandoOutro || !buscaQuery.trim() ? "#333" : T.accent,
+                  border:"none", borderRadius:6, padding:"8px 14px",
+                  color:"#fff", fontSize:13, fontWeight:600,
+                  cursor: buscandoOutro ? "not-allowed" : "pointer" }}>
+                {buscandoOutro ? "…" : "Buscar"}
+              </button>
+            </div>
+            {buscaError && (
+              <div style={{ background:"#2a1010", border:`1px solid #c0412c44`,
+                borderRadius:6, padding:"8px 12px", color:T.red, fontSize:12, marginBottom:10 }}>
+                ⚠ {buscaError}
+              </div>
+            )}
+            {buscaResults.length > 0 && (
+              <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                {buscaResults.map(p => (
+                  <button key={p.id} onClick={() => selecionarOutroPaciente(p)}
+                    style={{ display:"flex", flexDirection:"column", gap:2,
+                      background:"transparent", border:`1px solid ${T.border}`,
+                      borderRadius:6, padding:"10px 12px", cursor:"pointer",
+                      textAlign:"left", transition:"all .15s" }}
+                    onMouseEnter={e => { e.currentTarget.style.background = T.accentBg; e.currentTarget.style.borderColor = T.accent+"66"; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.borderColor = T.border; }}>
+                    <div style={{ color:T.text, fontSize:13, fontWeight:600 }}>
+                      {p.name || p.fullName || p.full_name || "—"}
+                    </div>
+                    {(p.birthdate || p.birthday) && (
+                      <div style={{ color:T.sub, fontSize:11 }}>Nasc. {p.birthdate || p.birthday}</div>
+                    )}
+                    {(p.cellphone_formated || p.cellphone) && (
+                      <div style={{ color:T.sub, fontSize:11, fontFamily:"'DM Mono', monospace" }}>
+                        {p.cellphone_formated || p.cellphone}
+                      </div>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+            {!buscandoOutro && !buscaError && buscaResults.length === 0 && (
+              <div style={{ color:T.sub, fontSize:12, textAlign:"center", paddingTop:20 }}>
+                Digite nome (mín. 2 caracteres) ou número (mín. 7 dígitos)
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Cabeçalho */}
       <div style={{ padding:"12px 14px 0", background:T.header,
@@ -179,11 +296,31 @@ export default function PatientPanel({ chat, operator }) {
           <div style={{ minWidth:0, flex:1 }}>
             <div style={{ color:T.text, fontSize:14, fontWeight:600,
               overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
-              {info.hasContact ? info.name : info.phone}
+              {snapshot ? (paciente?.name || paciente?.fullName || paciente?.full_name || "Outro paciente") : (info.hasContact ? info.name : info.phone)}
             </div>
             {info.hasContact
               ? <div style={{ color:T.sub, fontSize:11, fontFamily:"'DM Mono', monospace" }}>{info.phone}</div>
               : <div style={{ color:"#444", fontSize:10 }}>Sem contato cadastrado</div>}
+          </div>
+          <div style={{ display:"flex", gap:4, flexShrink:0 }}>
+            {snapshot && (
+              <button onClick={voltarOriginal} title="Voltar ao paciente original"
+                style={{ background:"transparent", border:`1px solid ${T.border}`,
+                  borderRadius:6, padding:"4px 8px", color:T.sub, fontSize:11,
+                  cursor:"pointer", whiteSpace:"nowrap" }}
+                onMouseEnter={e => e.currentTarget.style.color = T.text}
+                onMouseLeave={e => e.currentTarget.style.color = T.sub}>
+                ← Voltar
+              </button>
+            )}
+            <button onClick={() => setShowBusca(true)} title="Buscar outro paciente"
+              style={{ background:"transparent", border:`1px solid ${T.border}`,
+                borderRadius:6, padding:"4px 8px", color:T.sub, fontSize:13,
+                cursor:"pointer", display:"flex", alignItems:"center" }}
+              onMouseEnter={e => e.currentTarget.style.color = T.accent}
+              onMouseLeave={e => e.currentTarget.style.color = T.sub}>
+              🔍
+            </button>
           </div>
         </div>
         <div style={{ display:"flex" }}>
