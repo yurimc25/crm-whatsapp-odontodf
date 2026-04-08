@@ -57,37 +57,53 @@ function mediaQueue(fn) {
   });
 }
 
-// Cache de mídias em localStorage para evitar requisições duplicadas
+// Cache de mídias — dois níveis:
+// 1. _mediaBlobCache: Map em memória (sobrevive remounts, zero latência)
+// 2. localStorage: flag de sucesso/falha permanente (sobrevive F5)
 const MEDIA_CACHE_PREFIX = "crm_media_";
-const MEDIA_CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // 7 dias
-function getMediaCacheKey(msgId) {
-  return MEDIA_CACHE_PREFIX + msgId;
-}
+const MEDIA_CACHE_TTL    = 7 * 24 * 60 * 60 * 1000; // 7 dias
+const MEDIA_FAIL_TTL     = 24 * 60 * 60 * 1000;      // 24h para não re-tentar 404
+
+// Nível 1: blob URLs vivos (process-scoped, não precisam de fetch)
+const _mediaBlobCache = new Map(); // msgId → blobUrl
+
+function getMediaBlobInMemory(msgId)       { return _mediaBlobCache.get(msgId) || null; }
+function setMediaBlobInMemory(msgId, url)  { _mediaBlobCache.set(msgId, url); }
+
+// Nível 2: flags no localStorage
 function isMediaCached(msgId) {
   try {
-    const key = getMediaCacheKey(msgId);
-    const cached = localStorage.getItem(key);
-    if (!cached) return false;
-    const { expires } = JSON.parse(cached);
-    if (Date.now() > expires) {
-      localStorage.removeItem(key);
-      return false;
-    }
+    const raw = localStorage.getItem(MEDIA_CACHE_PREFIX + msgId);
+    if (!raw) return false;
+    const { expires } = JSON.parse(raw);
+    if (Date.now() > expires) { localStorage.removeItem(MEDIA_CACHE_PREFIX + msgId); return false; }
     return true;
-  } catch {
-    return false;
-  }
+  } catch { return false; }
 }
 function markMediaCached(msgId) {
   try {
-    const key = getMediaCacheKey(msgId);
-    localStorage.setItem(key, JSON.stringify({
+    localStorage.setItem(MEDIA_CACHE_PREFIX + msgId, JSON.stringify({
       expires: Date.now() + MEDIA_CACHE_TTL,
-      timestamp: new Date().toISOString(),
     }));
-  } catch (e) {
-    console.warn("[media-cache] failed to save:", e.message);
-  }
+  } catch {}
+}
+
+// Falha permanente: 404 → não re-tenta por 24h
+function isMediaFailed(msgId) {
+  try {
+    const raw = localStorage.getItem(MEDIA_CACHE_PREFIX + msgId + "_fail");
+    if (!raw) return false;
+    const { expires } = JSON.parse(raw);
+    if (Date.now() > expires) { localStorage.removeItem(MEDIA_CACHE_PREFIX + msgId + "_fail"); return false; }
+    return true;
+  } catch { return false; }
+}
+function markMediaFailed(msgId) {
+  try {
+    localStorage.setItem(MEDIA_CACHE_PREFIX + msgId + "_fail", JSON.stringify({
+      expires: Date.now() + MEDIA_FAIL_TTL,
+    }));
+  } catch {}
 }
 
 // Renderiza formatação WhatsApp: *negrito* _itálico_ ~riscado~
