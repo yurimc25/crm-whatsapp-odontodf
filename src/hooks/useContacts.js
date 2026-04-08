@@ -115,11 +115,30 @@ export function useContacts() {
       }
       if (!changed) return prev;
       writeLocalMap(updated);
-      if (source === "local") pendingSync.current = true;
+      if (source === "local") {
+        pendingSync.current = true;
+        // Tenta sincronizar imediatamente com o MongoDB para refletir a mudança
+        (async () => {
+          try {
+            await fetch("/api/db?action=contacts_cache", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "X-Internal-Key": internalKey },
+              body: JSON.stringify({ contacts: updated }),
+            });
+            pendingSync.current = false;
+            markMongoSync();
+            console.log("[contacts] immediate sync to MongoDB completed");
+          } catch (e) {
+            console.warn("[contacts] immediate sync failed:", e?.message || e);
+            // deixe pendingSync true para tentativa periódica
+            pendingSync.current = true;
+          }
+        })();
+      }
       console.log(`[contacts] merged ${Object.keys(incoming).length} entries from ${source}`);
       return updated;
     });
-  }, []);
+  }, [internalKey]);
 
   // ── 1. Inicialização: localStorage → MongoDB ──────────────────
   useEffect(() => {
