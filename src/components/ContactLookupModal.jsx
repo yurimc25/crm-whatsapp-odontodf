@@ -42,31 +42,56 @@ export function ContactLookupModal({ phoneNumber, chatId, onClose, onSelectConta
         return;
       }
 
-      // ── Google Contacts ──────────────────────────────────────────
+      // ── Google Contacts — busca pelos últimos 4 dígitos (ou nome) ──
+      // Para números, sempre usa q= com últimos 4 dígitos e filtra localmente
       let googleResults = [];
       try {
-        const url = isFullPhone
-          ? `/api/contacts?action=search&phone=${encodeURIComponent(digits)}&_t=${Date.now()}`
-          : `/api/contacts?action=search&q=${encodeURIComponent(query.trim())}&_t=${Date.now()}`;
+        const last4 = digits.slice(-4);
+        const googleQuery = (isDigits && digits.length >= 4)
+          ? last4                // últimos 4 dígitos → retorna lista e filtra localmente
+          : query.trim();        // nome → busca textual direta
+        const url = `/api/contacts?action=search&q=${encodeURIComponent(googleQuery)}&_t=${Date.now()}`;
 
         const r = await fetch(url, { headers: { "X-Internal-Key": ikey }, cache: "no-store" });
         if (r.ok) {
           const data = await r.json();
+          let candidates = [];
           if (data.found && data.name) {
-            googleResults = [{ phone: digits || "", name: data.name, source: "google" }];
+            candidates = [{ phone: digits || "", name: data.name }];
           } else if (data.found && Array.isArray(data.contacts)) {
-            googleResults = data.contacts.slice(0, 10).map(c => ({ ...c, source: "google" }));
+            candidates = data.contacts;
+          }
+
+          // Para busca numérica: filtra localmente os candidatos cujo número termina com os dígitos digitados
+          if (isDigits && digits.length >= 4) {
+            const suffix = digits.replace(/\D/g, "");
+            googleResults = candidates
+              .filter(c => {
+                const cp = (c.phone || "").replace(/\D/g, "");
+                return cp.endsWith(suffix) || cp.slice(-suffix.length) === suffix;
+              })
+              .slice(0, 10)
+              .map(c => ({ ...c, source: "google" }));
+            // Se não achou com filtro, mostra todos mesmo assim
+            if (googleResults.length === 0) {
+              googleResults = candidates.slice(0, 10).map(c => ({ ...c, source: "google" }));
+            }
+          } else {
+            googleResults = candidates.slice(0, 10).map(c => ({ ...c, source: "google" }));
           }
         }
       } catch {}
 
-      // ── Codental (só para queries numéricas) ────────────────────
-      // Busca pelo sufixo digitado — retorna pacientes cujo celular termina com esses dígitos
+      // ── Codental — sempre pelo número inteiro (ou suas variantes BR) ──
       let codentalResults = [];
       if (isDigits && digits.length >= 4) {
+        // Usa o número completo do chat (phoneNumber prop) para busca exata no Codental
+        // e os dígitos digitados como fallback
+        const phoneDigits = (phoneNumber || "").replace(/\D/g, "");
+        const searchPhone = phoneDigits.length >= 8 ? phoneDigits : digits;
         try {
           const r = await fetch(
-            `/api/codental?action=search&phone=${digits}`,
+            `/api/codental?action=search&phone=${searchPhone}`,
             { headers: { "X-Internal-Key": ikey } }
           );
           if (r.ok) {

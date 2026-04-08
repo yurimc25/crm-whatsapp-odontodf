@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import PatientCardDetected from "./modules/PatientCardDetected";
 import { QuickMessages } from "./modules/QuickMessages";
 import { useContactsCtx } from "../App";
-import { normalizeMessage, sendImage, sendFile, sendVoice, fileToBase64, sendReaction } from "../services/waha";
+import { normalizeMessage, sendImage, sendFile, sendVoice, fileToBase64, sendReaction, sendLocation } from "../services/waha";
 import { ContactLookupModal } from "./ContactLookupModal";
 
 // Emojis frequentes para o picker rápido
@@ -321,11 +321,30 @@ export default function ChatWindow({
       if (editingId) {
         await onEditMsg?.(editingId, text.trim());
         setEditingId(null);
-      } else {
-        const prefix = replyTo ? `> ${replyTo.text?.slice(0, 60)}\n` : "";
-        await onSend(prefix + text.trim());
-        setReplyTo(null);
+        setText("");
+        return;
       }
+
+      // Comando /endereço <nome ou endereço>
+      // Geocodifica via Nominatim (OpenStreetMap) e envia localização
+      const locMatch = text.trim().match(/^\/endere[çc]o\s+(.+)$/i);
+      if (locMatch) {
+        const query = locMatch[1].trim();
+        const geoR  = await fetch(
+          `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1`,
+          { headers: { "Accept-Language": "pt-BR" } }
+        );
+        const geoData = await geoR.json();
+        if (!geoData?.length) { alert("Endereço não encontrado."); return; }
+        const { lat, lon, display_name } = geoData[0];
+        await sendLocation(chat.id, parseFloat(lat), parseFloat(lon), display_name);
+        setText("");
+        return;
+      }
+
+      const prefix = replyTo ? `> ${replyTo.text?.slice(0, 60)}\n` : "";
+      await onSend(prefix + text.trim());
+      setReplyTo(null);
       setText("");
     }
     catch (e) { alert("Erro: " + e.message); }
@@ -662,7 +681,7 @@ export default function ChatWindow({
                 }
                 if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
               }}
-              placeholder="/ para mensagens rápidas · Enter para enviar · Shift+Enter nova linha"
+              placeholder="/ msgs rápidas · /endereço <local> · Enter envia · Shift+Enter nova linha"
               rows={2} style={{ width:"100%", background:T.inputBg,
                 border:`1px solid ${editingId ? "#7c7ce8" : T.border}`, borderRadius:8,
                 padding:"10px 12px", color:T.text, fontSize:13,
@@ -762,6 +781,29 @@ export default function ChatWindow({
   );
 }
 
+function LocationBubble({ location }) {
+  const { latitude, longitude, name, address, thumbnail } = location;
+  const mapsUrl = `https://www.google.com/maps?q=${latitude},${longitude}`;
+  return (
+    <a href={mapsUrl} target="_blank" rel="noopener noreferrer"
+      style={{ display:"block", textDecoration:"none", borderRadius:8, overflow:"hidden",
+        border:"1px solid #3a4a3a", background:"#1a251a" }}>
+      {thumbnail
+        ? <img src={thumbnail} alt="mapa" style={{ width:"100%", maxHeight:120, objectFit:"cover", display:"block" }} />
+        : <div style={{ width:"100%", height:80, background:"#1e2e1e", display:"flex",
+            alignItems:"center", justifyContent:"center", fontSize:28 }}>📍</div>
+      }
+      <div style={{ padding:"6px 10px" }}>
+        {name && <div style={{ color:"#ececec", fontSize:12, fontWeight:600, marginBottom:2 }}>{name}</div>}
+        {address && <div style={{ color:"#8e8e8e", fontSize:11 }}>{address}</div>}
+        <div style={{ color:"#4caf87", fontSize:10, marginTop:4 }}>
+          📍 {latitude}, {longitude} · Abrir no Maps
+        </div>
+      </div>
+    </a>
+  );
+}
+
 function MessageBubble({ msg, currentOperator, onContextMenu }) {
   if (msg.hasPatientCard) return <PatientCardDetected msg={msg} />;
   const isPatient  = msg.from === "patient";
@@ -803,6 +845,9 @@ function MessageBubble({ msg, currentOperator, onContextMenu }) {
               ⚠️ AVISO DO DENTISTA
             </div>
           )}
+
+          {/* Localização */}
+          {msg.location && <LocationBubble location={msg.location} />}
 
           {/* Mídia */}
           {msg.media && (

@@ -325,6 +325,22 @@ export function normalizeMessage(wahaMsg) {
     };
   }
 
+  // ── Localização ─────────────────────────────────────────────────
+  const locRaw = wahaMsg.location || wahaMsg._data?.message?.locationMessage || null;
+  const location = locRaw ? {
+    latitude:  parseFloat(locRaw.latitude  ?? locRaw.degreesLatitude  ?? 0),
+    longitude: parseFloat(locRaw.longitude ?? locRaw.degreesLongitude ?? 0),
+    name:    locRaw.name    || null,
+    address: locRaw.address || null,
+    thumbnail: locRaw.thumbnail || (locRaw.jpegThumbnail
+      ? (typeof locRaw.jpegThumbnail === "string"
+          ? `data:image/jpeg;base64,${locRaw.jpegThumbnail}`
+          : locRaw.jpegThumbnail?.data
+            ? `data:image/jpeg;base64,${btoa(String.fromCharCode(...new Uint8Array(locRaw.jpegThumbnail.data)))}`
+            : null)
+      : null),
+  } : null;
+
   return {
     id:       wahaMsg.id || `tmp-${tsMs}`,  // ID direto do WAHA já é único
     from:     wahaMsg.fromMe ? "operator" : "patient",
@@ -334,8 +350,9 @@ export function normalizeMessage(wahaMsg) {
     chatId,
     type,
     media,
+    location,
     operator: wahaMsg.fromMe ? (wahaMsg.senderName || wahaMsg._data?.pushName || "Você") : null,
-    hasPatientCard: !hasMedia && detectPatientCard(body),
+    hasPatientCard: !hasMedia && !location && detectPatientCard(body),
   };
 }
 
