@@ -7,6 +7,7 @@
 // 5. Base local (cache) sempre consultada primeiro — MongoDB como fallback entre sessões
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { useContactsCtx } from "../App";
 import {
   getChats, getMessages, sendText, getSessionStatus,
   normalizeChat, normalizeMessage, createWAHASocket, getProfilePicture,
@@ -96,6 +97,7 @@ export function useWAHA(operator) {
 
   const activeChatRef = useRef(null);
   const socketRef     = useRef(null);
+  const { lookupPhone } = useContactsCtx();
 
   const perms = { verTodos: operator?.role === "gerente" || operator?.role === "admin" };
 
@@ -243,6 +245,18 @@ export function useWAHA(operator) {
       });
 
       const chatIds = normalized.map(c => c.id);
+
+      // Dispara background lookup para cada chat usando a mesma lógica da lupa
+      // Não bloqueia a renderização; ignora falhas individuais
+      try {
+        if (typeof lookupPhone === "function") {
+          setTimeout(() => {
+            for (const id of chatIds) {
+              try { lookupPhone(id).catch(() => {}); } catch (e) {}
+            }
+          }, 500);
+        }
+      } catch (e) {}
 
     } catch (e) {
       console.error("[waha] loadChats:", e.message);
