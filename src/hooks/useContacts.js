@@ -282,7 +282,9 @@ export function useContacts() {
     } catch {}
 
     // ── 4. Google individual — tenta variantes BR até achar ─────
-    const googleVariants = [...new Set([phone, ...phoneVariants(phone)])];
+    // Inclui sufixo curto (8 dígitos) pois a API do Google aceita busca parcial por sufixo
+    const suffix8 = phone.replace(/\D/g, "").slice(-8);
+    const googleVariants = [...new Set([phone, ...phoneVariants(phone), suffix8])];
     for (const variant of googleVariants) {
       try {
         const r = await fetch(

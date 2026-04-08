@@ -987,37 +987,48 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
   }
 
 
-  async function fetchMedia() {
-    if (fullUrl || !urlToFetch || downloading) return;
-    console.debug(`[media] fetch start msgId=${msgId} url=${urlToFetch}`);
+  // Resolve binário + atualiza cache em memória e localStorage
+  async function _doFetch(onCancelled) {
+    // 1. Memória (blob ainda vivo — zero request)
+    const mem = getMediaBlobInMemory(msgId);
+    if (mem) { setFullUrl(mem); blobUrlRef.current = mem; return; }
+    // 2. Falha permanente registrada — não re-tenta
+    if (isMediaFailed(msgId)) { return; }
+
     setDownload(true);
     setError(false);
     try {
-      // Enfileira em fila de mídia (máx 3 simultâneas, 300ms entre each)
       await mediaQueue(async () => {
+        if (onCancelled?.()) return;
         let result = await resolveMediaBinary(urlToFetch);
+        if (onCancelled?.()) return;
         if (!result.ok && result.status === 404 && fallbackDownloadPath && !proxiedUrl) {
-          console.debug(`[media] trying fallback endpoint ${fallbackDownloadPath}`);
           result = await resolveMediaBinary(fallbackDownloadPath).catch(() => ({ ok: false, status: 0 }));
+          if (onCancelled?.()) return;
         }
         if (!result.ok) {
-          if (result.status === 404) { setDownload(false); return; }
-          setError(true); setDownload(false); return;
+          if (result.status === 404) { markMediaFailed(msgId); }
+          else setError(true);
+          setDownload(false); return;
         }
         if (!result.buf || result.buf.byteLength === 0) { setError(true); setDownload(false); return; }
         const blob = new Blob([result.buf], { type: result.ct });
         const url  = URL.createObjectURL(blob);
         blobUrlRef.current = url;
-        console.debug(`[media] objectURL created for msgId=${msgId}`);
-        setFullUrl(url);
-        // Marca como processada
+        setMediaBlobInMemory(msgId, url);
         markMediaCached(msgId);
+        if (!onCancelled?.()) setFullUrl(url);
       });
     } catch (e) {
-      console.error("[media] fetch error:", e?.message || e);
-      setError(true);
+      console.error(`[media] fetch error ${msgId}:`, e?.message || e);
+      if (!onCancelled?.()) setError(true);
     }
-    setDownload(false);
+    if (!onCancelled?.()) setDownload(false);
+  }
+
+  async function fetchMedia() {
+    if (fullUrl || !urlToFetch || downloading) return;
+    await _doFetch();
   }
 
   // Auto-carrega imagem e áudio (com fila e cache)
@@ -1025,47 +1036,15 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
     if (!isImage && !isAudio) return;
     if (!urlToFetch || fullUrl) return;
     let cancelled = false;
-    
+
     async function autoLoad() {
-      // Verifica se já foi carregado anterior (evita requisição duplicada)
-      if (isMediaCached(msgId)) {
-        console.debug(`[media] autoLoad skipped (cached) msgId=${msgId}`);
-        return;
-      }
-      
-      console.debug(`[media] autoLoad start msgId=${msgId} url=${urlToFetch}`);
-      setDownload(true);
-      setError(false);
-      
-      try {
-        // Enfileira carregamento com limite de 3 simultâneas e 300ms entre each
-        await mediaQueue(async () => {
-          let result = await resolveMediaBinary(urlToFetch);
-          if (cancelled) return;
-          if (!result.ok && result.status === 404 && fallbackDownloadPath && !proxiedUrl) {
-            console.debug(`[media] autoLoad trying fallback endpoint`);
-            result = await resolveMediaBinary(fallbackDownloadPath).catch(() => ({ ok: false, status: 0 }));
-            if (cancelled) return;
-          }
-          if (cancelled) return;
-          if (!result.ok) {
-            if (result.status === 404) { setDownload(false); return; }
-            setError(true); setDownload(false); return;
-          }
-          if (!result.buf || result.buf.byteLength === 0) { setError(true); setDownload(false); return; }
-          const blob = new Blob([result.buf], { type: result.ct });
-          const url  = URL.createObjectURL(blob);
-          blobUrlRef.current = url;
-          console.debug(`[media] autoLoad objectURL created for msgId=${msgId}`);
-          setFullUrl(url);
-          // Marca como processada para não refazer requisição
-          markMediaCached(msgId);
-        });
-      } catch (e) {
-        console.error(`[media] autoLoad error for ${msgId}:`, e?.message || e);
-        if (!cancelled) setError(true);
-      }
-      if (!cancelled) setDownload(false);
+      // Nível 1: blob em memória — exibe imediatamente sem request
+      const mem = getMediaBlobInMemory(msgId);
+      if (mem) { setFullUrl(mem); blobUrlRef.current = mem; return; }
+      // Nível 2: falha permanente — não re-tenta
+      if (isMediaFailed(msgId)) return;
+      // Nível 3: já baixou antes (flag localStorage) mas blob foi revogado → re-baixa silenciosamente
+      await _doFetch(() => cancelled);
     }
     
     autoLoad();
