@@ -271,30 +271,36 @@ export function useContacts() {
       mergeMap(incoming, "local");
     }
 
-    // ── 3. Codental — busca pelos últimos 8 dígitos (uma requisição) ──
-    // O Codental aceita sufixo numérico e retorna lista de pacientes
+    // ── 3. Codental — busca com número completo, filtra por >= 8 dígitos ──
+    // A API faz busca textual (contains), então filtramos localmente
     try {
-      const suffix8 = digits.slice(-8);
-      const r = await fetch(
-        `/api/codental?action=search&phone=${suffix8}`,
-        { headers: { "X-Internal-Key": codKey } }
-      );
-      if (r.ok) {
-        const data = await r.json();
-        const patients = data.patients || [];
-        // Filtra localmente pelo número completo
-        const match = patients.find(p => {
-          const pPhone = (p.cellphone_formated || p.cellphone || "").replace(/\D/g, "");
-          return phoneMatches(pPhone);
-        });
-        if (match) {
-          const name = match.fullName || match.full_name || match.name;
-          const pPhone = match.cellphone_formated || match.cellphone || phone;
-          if (name) {
-            saveContact(name, pPhone);
-            console.log(`[contacts] Codental ${phone} → ${name}`);
-            return name;
-          }
+      // Tenta com as variantes mais prováveis do número completo
+      const codVariants = [...new Set([phone, ...phoneVariants(phone)])];
+      let allPatients = [];
+      for (const variant of codVariants) {
+        if (allPatients.length > 0) break;
+        try {
+          const r = await fetch(
+            `/api/codental?action=search&phone=${variant}`,
+            { headers: { "X-Internal-Key": codKey } }
+          );
+          if (!r.ok) continue;
+          const data = await r.json();
+          allPatients = data.patients || [];
+        } catch {}
+      }
+      // Filtra: só aceita paciente cujo número compartilha >= 8 dígitos com o original
+      const match = allPatients.find(p => {
+        const pPhone = (p.cellphone_formated || p.cellphone || "").replace(/\D/g, "");
+        return phoneMatches(pPhone);
+      });
+      if (match) {
+        const name = match.fullName || match.full_name || match.name;
+        const pPhone = match.cellphone_formated || match.cellphone || phone;
+        if (name) {
+          saveContact(name, pPhone);
+          console.log(`[contacts] Codental ${phone} → ${name}`);
+          return name;
         }
       }
     } catch {}
