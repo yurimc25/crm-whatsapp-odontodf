@@ -97,7 +97,7 @@ export function useWAHA(operator) {
 
   const activeChatRef = useRef(null);
   const socketRef     = useRef(null);
-  const { lookupPhone, searchByName } = useContactsCtx();
+  const { lookupPhone, searchByName, addLocalContact, resolveName } = useContactsCtx();
 
   const perms = { verTodos: operator?.role === "gerente" || operator?.role === "admin" };
 
@@ -246,26 +246,103 @@ export function useWAHA(operator) {
 
       const chatIds = normalized.map(c => c.id);
 
-      // Dispara background lookup para cada chat usando a mesma lógica da lupa
-      // Não bloqueia a renderização; ignora falhas individuais
-      try {
-        if (typeof lookupPhone === "function") {
-          setTimeout(() => {
-            (async () => {
-              for (const n of normalized) {
-                const id = n.id;
-                try {
-                  const found = await lookupPhone(id).catch(() => null);
-                  if (!found) {
-                    // Se não encontrou por telefone, tenta por nome/pushname
-                    const nameToTry = n.pushname || n.name || null;
-                    if (nameToTry && typeof searchByName === "function") {
-                      try { await searchByName(nameToTry).catch(() => {}); } catch (e) {}
+      // ── Auto-sincroniza contatos: phone → name → bulk Google, depois MongoDB ──
+      async function autoSyncContacts(chatsToSync) {
+        console.log(`[waha] starting auto-sync for ${chatsToSync.length} chats`);
+        const internalKey = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
+        const syncedContacts = {};
+        
+        // Batches de 3 para não travar a renderização
+        for (let i = 0; i < chatsToSync.length; i += 3) {
+          const batch = chatsToSync.slice(i, Math.min(i + 3, chatsToSync.length));
+          
+          await Promise.allSettled(batch.map(async (chat) => {
+            const chatId = chat.id;
+            // Verifica se já tem contato mapeado
+            const alreadyHas = resolveName(chatId, null);
+            if (alreadyHas) {
+              console.debug(`[auto-sync] ${chatId} já tem contato: ${alreadyHas}`);
+              return;
+            }
+            
+            // 1. Tenta por telefone
+            let found = null;
+            try { found = await lookupPhone(chatId).catch(() => null); } catch (e) {}
+            if (found) {
+              console.log(`[auto-sync] ${chatId} → ${found} (via phone)`);
+              return;
+            }
+            
+            // 2. Tenta por nome (pushname)
+            const nameToTry = chat.pushname || chat.name || null;
+            if (nameToTry) {
+              try { 
+                const result = await searchByName(nameToTry).catch(() => false);
+                if (result) {
+                  console.log(`[auto-sync] ${chatId} → (via name "${nameToTry}")`);
+                  return;
+                }
+              } catch (e) {}
+            }
+            
+            // 3. Fallback: bulk Google search e procura o número nele
+            try {
+              const r = await fetch("/api/contacts", {
+                headers: { "X-Internal-Key": internalKey }
+              });
+              if (r.ok) {
+                const { contacts: googleMap } = await r.json();
+                if (googleMap && typeof googleMap === "object") {
+                  // Extrai telefone do chat
+                  const phone = chatId.replace(/@.*$/, "").replace(/\D/g, "");
+                  // Procura o número no mapa do Google
+                  for (const [key, name] of Object.entries(googleMap)) {
+                    if (key.includes(phone.slice(-8))) {
+                      // Encontrou um match parcial
+                      if (addLocalContact && typeof addLocalContact === "function") {
+                        addLocalContact({ phone, name });
+                        syncedContacts[phone] = name;
+                        console.log(`[auto-sync] ${chatId} → ${name} (via bulk Google)`);
+                      }
+                      return;
                     }
                   }
-                } catch (e) {}
+                }
               }
-            })();
+            } catch (e) {
+              console.warn(`[auto-sync] bulk Google failed:`, e?.message);
+            }
+            
+            console.debug(`[auto-sync] ${chatId} not found (phone/name/bulk all failed)`);
+          }));
+          
+          // Pausa entre batches
+          if (i + 3 < chatsToSync.length) await new Promise(r => setTimeout(r, 200));
+        }
+        
+        // Força sync com MongoDB ao final
+        if (Object.keys(syncedContacts).length > 0) {
+          console.log(`[auto-sync] completed: ${Object.keys(syncedContacts).length} contacts synced`);
+          try {
+            // Tenta ler o mapa local atualizado e sincronizar com MongoDB
+            await fetch("/api/db?action=contacts_cache", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "X-Internal-Key": internalKey },
+              body: JSON.stringify({ contacts: syncedContacts }),
+            }).catch(() => {});
+          } catch (e) {
+            console.warn("[auto-sync] MongoDB sync failed:", e?.message);
+          }
+        }
+      }
+
+      // Dispara auto-sync em background (não bloqueia renderização)
+      try {
+        if (typeof lookupPhone === "function" && typeof searchByName === "function") {
+          setTimeout(() => {
+            autoSyncContacts(normalized).catch((e) => {
+              console.error("[auto-sync] error:", e?.message || e);
+            });
           }, 500);
         }
       } catch (e) {}
