@@ -7,13 +7,28 @@ import { ContactLookupModal } from "./ContactLookupModal";
 
 // Fila global para downloads de mídia — evita sobrecarregar o WAHA com
 // muitas requests simultâneas quando o chat tem muitas imagens/áudios.
+// Processa 3 por vez com intervalo de 300ms entre cada requisição.
 const MEDIA_CONCURRENCY = 3;
+const MEDIA_QUEUE_DELAY = 300; // ms entre each media load in queue
 let _mediaActive = 0;
+let _mediaLastExecTime = 0;
 const _mediaQueue = [];
 function _runMediaQueue() {
   while (_mediaActive < MEDIA_CONCURRENCY && _mediaQueue.length > 0) {
     _mediaActive++;
-    _mediaQueue.shift()();
+    const now = Date.now();
+    const timeSinceLastExec = now - _mediaLastExecTime;
+    const delayNeeded = Math.max(0, MEDIA_QUEUE_DELAY - timeSinceLastExec);
+    
+    if (delayNeeded > 0) {
+      setTimeout(() => {
+        _mediaLastExecTime = Date.now();
+        _mediaQueue.shift()();
+      }, delayNeeded);
+    } else {
+      _mediaLastExecTime = now;
+      _mediaQueue.shift()();
+    }
   }
 }
 function mediaQueue(fn) {
@@ -25,6 +40,39 @@ function mediaQueue(fn) {
     });
     _runMediaQueue();
   });
+}
+
+// Cache de mídias em localStorage para evitar requisições duplicadas
+const MEDIA_CACHE_PREFIX = "crm_media_";
+const MEDIA_CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // 7 dias
+function getMediaCacheKey(msgId) {
+  return MEDIA_CACHE_PREFIX + msgId;
+}
+function isMediaCached(msgId) {
+  try {
+    const key = getMediaCacheKey(msgId);
+    const cached = localStorage.getItem(key);
+    if (!cached) return false;
+    const { expires } = JSON.parse(cached);
+    if (Date.now() > expires) {
+      localStorage.removeItem(key);
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+function markMediaCached(msgId) {
+  try {
+    const key = getMediaCacheKey(msgId);
+    localStorage.setItem(key, JSON.stringify({
+      expires: Date.now() + MEDIA_CACHE_TTL,
+      timestamp: new Date().toISOString(),
+    }));
+  } catch (e) {
+    console.warn("[media-cache] failed to save:", e.message);
+  }
 }
 
 // Renderiza formatação WhatsApp: *negrito* _itálico_ ~riscado~
@@ -591,46 +639,13 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
     setDownload(true);
     setError(false);
     try {
-      let result = await resolveMediaBinary(urlToFetch);
-      if (!result.ok && result.status === 404 && fallbackDownloadPath && !proxiedUrl) {
-        console.debug(`[media] trying fallback endpoint ${fallbackDownloadPath}`);
-        result = await resolveMediaBinary(fallbackDownloadPath).catch(() => ({ ok: false, status: 0 }));
-      }
-      if (!result.ok) {
-        if (result.status === 404) { setDownload(false); return; }
-        setError(true); setDownload(false); return;
-      }
-      if (!result.buf || result.buf.byteLength === 0) { setError(true); setDownload(false); return; }
-      const blob = new Blob([result.buf], { type: result.ct });
-      const url  = URL.createObjectURL(blob);
-      blobUrlRef.current = url;
-      console.debug(`[media] objectURL created for msgId=${msgId}`);
-      setFullUrl(url);
-    } catch (e) {
-      console.error("[media] fetch error:", e?.message || e);
-      setError(true);
-    }
-    setDownload(false);
-  }
-
-  // Auto-carrega imagem e áudio
-  useEffect(() => {
-    if (!isImage && !isAudio) return;
-    if (!urlToFetch || fullUrl) return;
-    let cancelled = false;
-    async function autoLoad() {
-      console.debug(`[media] autoLoad start msgId=${msgId} url=${urlToFetch}`);
-      setDownload(true);
-      setError(false);
-      try {
+      // Enfileira em fila de mídia (máx 3 simultâneas, 300ms entre each)
+      await mediaQueue(async () => {
         let result = await resolveMediaBinary(urlToFetch);
-        if (cancelled) return;
         if (!result.ok && result.status === 404 && fallbackDownloadPath && !proxiedUrl) {
-          console.debug(`[media] autoLoad trying fallback endpoint`);
+          console.debug(`[media] trying fallback endpoint ${fallbackDownloadPath}`);
           result = await resolveMediaBinary(fallbackDownloadPath).catch(() => ({ ok: false, status: 0 }));
-          if (cancelled) return;
         }
-        if (cancelled) return;
         if (!result.ok) {
           if (result.status === 404) { setDownload(false); return; }
           setError(true); setDownload(false); return;
@@ -639,14 +654,66 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
         const blob = new Blob([result.buf], { type: result.ct });
         const url  = URL.createObjectURL(blob);
         blobUrlRef.current = url;
-        console.debug(`[media] autoLoad objectURL created for msgId=${msgId}`);
+        console.debug(`[media] objectURL created for msgId=${msgId}`);
         setFullUrl(url);
+        // Marca como processada
+        markMediaCached(msgId);
+      });
+    } catch (e) {
+      console.error("[media] fetch error:", e?.message || e);
+      setError(true);
+    }
+    setDownload(false);
+  }
+
+  // Auto-carrega imagem e áudio (com fila e cache)
+  useEffect(() => {
+    if (!isImage && !isAudio) return;
+    if (!urlToFetch || fullUrl) return;
+    let cancelled = false;
+    
+    async function autoLoad() {
+      // Verifica se já foi carregado anterior (evita requisição duplicada)
+      if (isMediaCached(msgId)) {
+        console.debug(`[media] autoLoad skipped (cached) msgId=${msgId}`);
+        return;
+      }
+      
+      console.debug(`[media] autoLoad start msgId=${msgId} url=${urlToFetch}`);
+      setDownload(true);
+      setError(false);
+      
+      try {
+        // Enfileira carregamento com limite de 3 simultâneas e 300ms entre each
+        await mediaQueue(async () => {
+          let result = await resolveMediaBinary(urlToFetch);
+          if (cancelled) return;
+          if (!result.ok && result.status === 404 && fallbackDownloadPath && !proxiedUrl) {
+            console.debug(`[media] autoLoad trying fallback endpoint`);
+            result = await resolveMediaBinary(fallbackDownloadPath).catch(() => ({ ok: false, status: 0 }));
+            if (cancelled) return;
+          }
+          if (cancelled) return;
+          if (!result.ok) {
+            if (result.status === 404) { setDownload(false); return; }
+            setError(true); setDownload(false); return;
+          }
+          if (!result.buf || result.buf.byteLength === 0) { setError(true); setDownload(false); return; }
+          const blob = new Blob([result.buf], { type: result.ct });
+          const url  = URL.createObjectURL(blob);
+          blobUrlRef.current = url;
+          console.debug(`[media] autoLoad objectURL created for msgId=${msgId}`);
+          setFullUrl(url);
+          // Marca como processada para não refazer requisição
+          markMediaCached(msgId);
+        });
       } catch (e) {
         console.error(`[media] autoLoad error for ${msgId}:`, e?.message || e);
         if (!cancelled) setError(true);
       }
       if (!cancelled) setDownload(false);
     }
+    
     autoLoad();
     return () => { cancelled = true; };
   }, [urlToFetch, isImage, isAudio]);
