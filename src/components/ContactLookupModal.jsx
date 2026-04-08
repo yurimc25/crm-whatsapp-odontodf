@@ -105,7 +105,8 @@ export function ContactLookupModal({ phoneNumber, chatId, onClose, onSelectConta
   function selectContact(idx) {
     if (idx < 0 || idx >= results.length) return;
     const contact = results[idx];
-    onSelectContact(contact.name || contact.fullName || contact.title || "Contato");
+    // Passa o objeto completo para o handler pai (nome + telefone/variants quando disponíveis)
+    onSelectContact(contact);
   }
 
   return (

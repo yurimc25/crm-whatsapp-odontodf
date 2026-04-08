@@ -404,8 +404,21 @@ export default function ChatWindow({
           phoneNumber={info.phone}
           chatId={chat.id}
           onClose={() => setShowContactLookup(false)}
-          onSelectContact={(name) => {
-            addLocalContact({ phone: info.phone, name });
+          onSelectContact={(contact) => {
+            // contact can be a string (legacy) or an object { name, phone, variants }
+            let name = null;
+            let phone = null;
+            if (!contact) return;
+            if (typeof contact === "string") {
+              name = contact;
+              phone = info.phone;
+            } else {
+              name = contact.name || contact.fullName || contact.title || null;
+              phone = contact.phone || info.phone || null;
+            }
+            if (!name) return;
+            const digits = String(phone || "").replace(/\D/g, "");
+            addLocalContact({ phone: digits || info.phone, name });
             setShowContactLookup(false);
             setConfirmMsg(`✓ Contato atualizado: ${name}`);
             setTimeout(() => setConfirmMsg(null), 3000);
