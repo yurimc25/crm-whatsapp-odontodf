@@ -30,6 +30,49 @@ function norm(s) {
     .replace(/[^a-z0-9]/g, "");
 }
 
+// Mapa de status de agendamento
+const APPOINTMENT_STATUS = {
+  0: "Agendado",
+  3: "Cancelado",
+  4: "Confirmado",
+  6: "Atendido",
+};
+
+// Mapa de tipo de evento
+const EVENT_TYPE = {
+  1: "Bloqueio",
+  2: "Consulta",
+};
+
+// Faz POST /api/calendarevents para um intervalo de datas
+// schedules: [] = todos os dentistas
+async function fetchCalendarEvents(dateFrom, dateTo, schedules = []) {
+  const r = await fetch(`${BASE_URL}/api/calendarevents`, {
+    method:  "POST",
+    headers: docHeaders(),
+    body:    JSON.stringify({
+      from:      dateFrom,
+      to:        `${dateTo}T23:59:59`,
+      schedules: schedules,
+    }),
+  });
+
+  if (r.status === 401 || r.status === 403) {
+    const err = new Error("TOKEN_EXPIRED");
+    err.status = r.status;
+    throw err;
+  }
+
+  if (!r.ok) {
+    const text = await r.text().catch(() => "");
+    const err = new Error(`Doctoralia retornou ${r.status}: ${text.slice(0, 200)}`);
+    err.status = r.status;
+    throw err;
+  }
+
+  return r.json();
+}
+
 // Busca todos os convênios da clínica no Doctoralia
 async function fetchInsurances() {
   if (_insuranceCache) return _insuranceCache;
@@ -111,7 +154,7 @@ async function resolveInsuranceId(convenioText) {
     "odontolife":                  5635,
     "odontoseg":                   6946,
     "odontogroup":                10119,
-    "odontolifealt":               4625, // "Odontolife" (variante)
+    "odontolifealt":               4625,
     "odontoprev":                  1550,
     "outroreembolso":              6236,
     "reembolso":                   6236,
@@ -120,7 +163,7 @@ async function resolveInsuranceId(convenioText) {
     "pernambucanasden":           20803,
     "planassiste":                 1534,
     "planassistempf":              5410,
-    "planassistempo":              5412, // MPM
+    "planassistempo":              5412,
     "planassistempt":              5413,
     "portoseguro":                 1495,
     "portosegurodental":           8096,
@@ -198,6 +241,139 @@ export default async function handler(req, res) {
   if (action === "insurances") {
     const list = await fetchInsurances();
     return res.json({ insurances: list });
+  }
+
+  // ── Dentistas que trabalham em uma data ──────────────────────────
+  // GET /api/doctoralia?action=doctors_by_date&date=2026-04-08
+  // Retorna: [{ scheduleId, doctorId, name, color, workPeriods }]
+  if (action === "doctors_by_date") {
+    const date = req.query.date; // YYYY-MM-DD
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ error: "Parâmetro 'date' obrigatório no formato YYYY-MM-DD" });
+    }
+
+    try {
+      const data = await fetchCalendarEvents(date, date);
+
+      // workperiods: [{ scheduleId, start, end, isPrivate }]
+      // Filtra apenas os períodos que começam no date informado
+      const workperiods = (data.workperiods || []).filter(wp => wp.start.startsWith(date));
+
+      // scheduleIds únicos que trabalham nesse dia
+      const activeScheduleIds = [...new Set(workperiods.map(wp => wp.scheduleId))];
+
+      const schedules = data.schedules || {};
+
+      const doctors = activeScheduleIds.map(scheduleId => {
+        const sched = schedules[scheduleId] || {};
+        // Períodos de trabalho do dentista nesse dia
+        const periods = workperiods
+          .filter(wp => wp.scheduleId === scheduleId)
+          .map(wp => ({
+            start: wp.start.slice(11, 16), // "08:00"
+            end:   wp.end.slice(11, 16),   // "12:00"
+          }));
+
+        return {
+          scheduleId,
+          doctorId:   sched.doctorId || null,
+          name:       sched.name     || sched.displayName || `Agenda ${scheduleId}`,
+          color:      (data.colorSchemas?.[sched.colorSchemaId]?.baseColor) || null,
+          workPeriods: periods,
+        };
+      });
+
+      doctors.sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+
+      console.log(`[doctoralia/doctors_by_date] date=${date} → ${doctors.length} dentistas`);
+      return res.json({ date, doctors });
+    } catch (e) {
+      if (e.message === "TOKEN_EXPIRED") {
+        return res.status(401).json({
+          error: "Token Doctoralia expirado",
+          message: "Renove o token Bearer e atualize DOCTORALIA_TOKEN no Vercel.",
+          tokenExpired: true,
+        });
+      }
+      console.error("[doctoralia/doctors_by_date]", e.message);
+      return res.status(e.status || 500).json({ error: e.message });
+    }
+  }
+
+  // ── Agenda de um dentista em uma data ────────────────────────────
+  // GET /api/doctoralia?action=agenda&date=2026-04-08&scheduleId=301217
+  // Retorna: { doctor, date, appointments: [{ id, start, end, patientName, patientPhone, service, insurance, status, statusLabel, comments }] }
+  if (action === "agenda") {
+    const date       = req.query.date;       // YYYY-MM-DD
+    const scheduleId = req.query.scheduleId; // número
+
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ error: "Parâmetro 'date' obrigatório no formato YYYY-MM-DD" });
+    }
+    if (!scheduleId) {
+      return res.status(400).json({ error: "Parâmetro 'scheduleId' obrigatório" });
+    }
+
+    const schedIdNum = parseInt(scheduleId, 10);
+
+    try {
+      const data = await fetchCalendarEvents(date, date);
+
+      const schedules = data.schedules || {};
+      const sched     = schedules[schedIdNum] || {};
+
+      // Filtra agendamentos do dentista nesse dia (exclui bloqueios eventType=1)
+      const appointments = (data.appointments || [])
+        .filter(a =>
+          a.scheduleId === schedIdNum &&
+          a.start.startsWith(date) &&
+          a.isBlock === false
+        )
+        .map(a => {
+          // O título vem como "Nome Completo CPF" — separa o nome do CPF
+          const titleParts   = (a.title || "").trim().split(/\s+/);
+          const cpfIndex     = titleParts.findIndex(p => /^\d{3}\./.test(p) || /^\d{9,11}$/.test(p.replace(/\D/,"")));
+          const patientName  = cpfIndex > 0
+            ? titleParts.slice(0, cpfIndex).join(" ")
+            : (a.title || "").trim();
+
+          return {
+            id:           a.id,
+            start:        a.start.slice(11, 16), // "09:45"
+            end:          a.end.slice(11, 16),
+            patientName,
+            patientPhone: a.patientPhone || null,
+            patientId:    a.patientId    || null,
+            service:      a.serviceName  || null,
+            insurance:    a.insuranceName || null,
+            status:       a.status,
+            statusLabel:  APPOINTMENT_STATUS[a.status] ?? `Status ${a.status}`,
+            eventType:    a.eventType,
+            comments:     a.comments     || null,
+          };
+        });
+
+      // Ordena por horário
+      appointments.sort((a, b) => a.start.localeCompare(b.start));
+
+      console.log(`[doctoralia/agenda] date=${date} scheduleId=${schedIdNum} → ${appointments.length} consultas`);
+      return res.json({
+        date,
+        scheduleId: schedIdNum,
+        doctor:     sched.name || sched.displayName || `Agenda ${schedIdNum}`,
+        appointments,
+      });
+    } catch (e) {
+      if (e.message === "TOKEN_EXPIRED") {
+        return res.status(401).json({
+          error: "Token Doctoralia expirado",
+          message: "Renove o token Bearer e atualize DOCTORALIA_TOKEN no Vercel.",
+          tokenExpired: true,
+        });
+      }
+      console.error("[doctoralia/agenda]", e.message);
+      return res.status(e.status || 500).json({ error: e.message });
+    }
   }
 
   // ── Criar paciente ───────────────────────────────────────────────

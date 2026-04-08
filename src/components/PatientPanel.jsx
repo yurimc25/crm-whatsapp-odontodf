@@ -741,9 +741,33 @@ function UploadsGrid({ uploads, paciente, maxItems = 9, onUploaded }) {
     }
   }
 
-  function onDrop(e) {
+  async function onDrop(e) {
     e.preventDefault();
     setDragging(false);
+    // Arrastar mensagem de mídia/doc do ChatWindow
+    const crmData = e.dataTransfer.getData("application/crm-file");
+    if (crmData) {
+      try {
+        const { name, mimetype, url } = JSON.parse(crmData);
+        if (!url) { setUploadMsg({ ok: false, text: "URL inválida para envio" }); return; }
+        setUploading(true);
+        setUploadMsg(null);
+        const r = await fetch(url, {
+          headers: { "X-Internal-Key": iKey },
+          cache: "no-store",
+        });
+        if (!r.ok) { setUploadMsg({ ok: false, text: `Erro ao baixar mídia: ${r.status}` }); setUploading(false); return; }
+        const blob = await r.blob();
+        const file = new File([blob], name || "arquivo", { type: mimetype || blob.type });
+        enviarArquivo(file);
+        return;
+      } catch (e2) {
+        setUploadMsg({ ok: false, text: `✗ ${e2.message}` });
+        setUploading(false);
+        return;
+      }
+    }
+    // Arrastar arquivo do sistema de arquivos
     const file = e.dataTransfer.files?.[0];
     if (file) enviarArquivo(file);
   }

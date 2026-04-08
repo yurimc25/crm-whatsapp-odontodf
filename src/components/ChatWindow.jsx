@@ -2,8 +2,23 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import PatientCardDetected from "./modules/PatientCardDetected";
 import { QuickMessages } from "./modules/QuickMessages";
 import { useContactsCtx } from "../App";
-import { normalizeMessage } from "../services/waha";
+import { normalizeMessage, sendImage, sendFile, sendVoice, fileToBase64, sendReaction } from "../services/waha";
 import { ContactLookupModal } from "./ContactLookupModal";
+
+// Emojis frequentes para o picker rápido
+const EMOJI_LIST = [
+  "😊","😂","🥰","😍","🤩","😎","🙏","👍","❤️","🎉",
+  "✅","⚡","🔥","💯","🤔","😅","😭","😢","🙌","💪",
+  "👋","✨","🌟","💙","💚","💛","🧡","❤️‍🔥","🫂","😁",
+  "😆","🤣","😇","😴","🤒","🦷","💊","📋","📅","⏰",
+];
+
+// Detecta URLs em texto
+function extractUrls(text) {
+  if (!text) return [];
+  const re = /https?:\/\/[^\s"'<>]+/g;
+  return [...text.matchAll(re)].map(m => m[0]);
+}
 
 // Fila global para downloads de mídia — evita sobrecarregar o WAHA com
 // muitas requests simultâneas quando o chat tem muitas imagens/áudios.
@@ -147,6 +162,7 @@ function dayLabel(ts) {
 
 export default function ChatWindow({
   chat, messages, operator, onSend, onForward, onResolve,
+  onDeleteMsg, onEditMsg,
   canForwardToAdmin, onLoadOlder
 }) {
   const [text, setText]               = useState("");
@@ -159,6 +175,20 @@ export default function ChatWindow({
   const [quickQuery, setQuickQuery]   = useState("");
   const [showContactLookup, setShowContactLookup] = useState(false);
   const [confirmMsg, setConfirmMsg]   = useState(null);
+  // Reply / edit
+  const [replyTo, setReplyTo]         = useState(null); // { id, text, from }
+  const [editingId, setEditingId]     = useState(null);
+  // Message context menu
+  const [msgCtxMenu, setMsgCtxMenu]   = useState(null); // { msg, x, y }
+  // Emoji picker
+  const [showEmoji, setShowEmoji]     = useState(false);
+  // Voice recording
+  const [recording, setRecording]     = useState(false);
+  const [recSeconds, setRecSeconds]   = useState(0);
+  const mediaRecRef   = useRef(null);
+  const recChunksRef  = useRef([]);
+  const recTimerRef   = useRef(null);
+  const fileInputRef  = useRef(null);
   // Auto-refresh a cada 5s
   const [lastRefresh, setLastRefresh] = useState(Date.now());
 
@@ -212,18 +242,76 @@ export default function ChatWindow({
     return () => el.removeEventListener("scroll", handleScroll);
   }, [handleScroll]);
 
-  // Fecha dropdown ao clicar fora
+  // Fecha dropdowns ao clicar fora
   useEffect(() => {
-    if (!showForward) return;
-    const close = () => setShowForward(false);
+    if (!showForward && !showEmoji && !msgCtxMenu) return;
+    const close = () => { setShowForward(false); setShowEmoji(false); setMsgCtxMenu(null); };
     window.addEventListener("click", close);
     return () => window.removeEventListener("click", close);
-  }, [showForward]);
+  }, [showForward, showEmoji, msgCtxMenu]);
+
+  // Voice recording helpers
+  async function startRecording() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mr = new MediaRecorder(stream);
+      recChunksRef.current = [];
+      mr.ondataavailable = e => recChunksRef.current.push(e.data);
+      mr.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        const blob = new Blob(recChunksRef.current, { type: "audio/webm" });
+        const b64 = await fileToBase64(blob);
+        setSending(true);
+        try { await sendVoice(chat.id, b64); }
+        catch (e) { alert("Erro ao enviar áudio: " + e.message); }
+        finally { setSending(false); }
+      };
+      mr.start();
+      mediaRecRef.current = mr;
+      setRecording(true);
+      setRecSeconds(0);
+      recTimerRef.current = setInterval(() => setRecSeconds(s => s + 1), 1000);
+    } catch (e) { alert("Microfone não disponível: " + e.message); }
+  }
+
+  function stopRecording() {
+    clearInterval(recTimerRef.current);
+    mediaRecRef.current?.stop();
+    setRecording(false);
+    setRecSeconds(0);
+  }
+
+  async function handleFileAttach(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+    const b64 = await fileToBase64(file);
+    setSending(true);
+    try {
+      if (file.type.startsWith("image/")) {
+        await sendImage(chat.id, b64, text.trim() || "");
+      } else {
+        await sendFile(chat.id, b64, file.name, file.type, text.trim() || "");
+      }
+      setText("");
+    } catch (err) { alert("Erro ao enviar arquivo: " + err.message); }
+    finally { setSending(false); }
+  }
 
   async function handleSend() {
     if (!text.trim() || sending) return;
     setSending(true);
-    try { await onSend(text.trim()); setText(""); }
+    try {
+      if (editingId) {
+        await onEditMsg?.(editingId, text.trim());
+        setEditingId(null);
+      } else {
+        const prefix = replyTo ? `> ${replyTo.text?.slice(0, 60)}\n` : "";
+        await onSend(prefix + text.trim());
+        setReplyTo(null);
+      }
+      setText("");
+    }
     catch (e) { alert("Erro: " + e.message); }
     finally { setSending(false); }
   }
@@ -251,7 +339,13 @@ export default function ChatWindow({
   return (
     <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden",
       background:T.bg, fontFamily:"'DM Sans', sans-serif" }}>
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes alertPulse {
+          0%, 100% { box-shadow: 0 0 8px rgba(201,168,76,.4); border-color: #c9a84c; }
+          50%       { box-shadow: 0 0 20px rgba(201,168,76,.9); border-color: #ffe082; }
+        }
+      `}</style>
 
       {/* Header */}
       <div style={{ padding:"10px 16px", borderBottom:`1px solid ${T.border}`,
@@ -382,15 +476,70 @@ export default function ChatWindow({
               </div>
             );
           }
-          return <MessageBubble key={item.id || i} msg={item} currentOperator={operator} />;
+          return (
+            <MessageBubble
+              key={item.id || i}
+              msg={item}
+              currentOperator={operator}
+              onContextMenu={(e, msg) => {
+                e.preventDefault();
+                setMsgCtxMenu({ msg, x: e.clientX, y: e.clientY });
+              }}
+            />
+          );
         })}
         <div ref={bottomRef} />
       </div>
 
+      {/* Mensagem de contexto do menu */}
+      {msgCtxMenu && (
+        <MsgContextMenu
+          msg={msgCtxMenu.msg}
+          x={msgCtxMenu.x} y={msgCtxMenu.y}
+          isOwn={msgCtxMenu.msg.from === "operator" && msgCtxMenu.msg.operator === operator?.name}
+          onClose={() => setMsgCtxMenu(null)}
+          onReply={msg => { setReplyTo({ id: msg.id, text: msg.text || "[mídia]", from: msg.from }); setMsgCtxMenu(null); }}
+          onEdit={msg => { setEditingId(msg.id); setText(msg.text || ""); setMsgCtxMenu(null); }}
+          onDelete={msg => { onDeleteMsg?.(msg.id); setMsgCtxMenu(null); }}
+          onReact={async (msg, emoji) => { try { await sendReaction(chat.id, msg.id, emoji); } catch {} setMsgCtxMenu(null); }}
+          onForward={msg => { onForward?.("recepcao"); setMsgCtxMenu(null); }}
+        />
+      )}
+
       {/* Input com menu de mensagens rápidas */}
       <div style={{ padding:"10px 14px", borderTop:`1px solid ${T.border}`,
-        background:T.header, display:"flex", gap:8, alignItems:"flex-end",
-        flexShrink:0, position:"relative" }}>
+        background:T.header, display:"flex", flexDirection:"column",
+        gap:6, flexShrink:0, position:"relative" }}>
+
+        {/* Barra de reply */}
+        {replyTo && (
+          <div style={{ display:"flex", alignItems:"center", gap:8,
+            background:"#252525", borderRadius:6, padding:"6px 10px",
+            borderLeft:`3px solid ${T.accent}` }}>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ color:T.accent, fontSize:10, fontWeight:700 }}>Respondendo</div>
+              <div style={{ color:T.sub, fontSize:11, overflow:"hidden",
+                textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                {replyTo.text}
+              </div>
+            </div>
+            <button onClick={() => setReplyTo(null)}
+              style={{ background:"none", border:"none", color:T.sub,
+                cursor:"pointer", fontSize:14, padding:"0 4px" }}>✕</button>
+          </div>
+        )}
+
+        {/* Barra de edição */}
+        {editingId && (
+          <div style={{ display:"flex", alignItems:"center", gap:8,
+            background:"#252535", borderRadius:6, padding:"6px 10px",
+            borderLeft:`3px solid #7c7ce8` }}>
+            <div style={{ flex:1, color:"#9090d8", fontSize:10, fontWeight:700 }}>Editando mensagem</div>
+            <button onClick={() => { setEditingId(null); setText(""); }}
+              style={{ background:"none", border:"none", color:T.sub,
+                cursor:"pointer", fontSize:14, padding:"0 4px" }}>✕</button>
+          </div>
+        )}
 
         {/* Menu de mensagens rápidas */}
         {showQuick && (
@@ -404,46 +553,115 @@ export default function ChatWindow({
             onClose={() => { setShowQuick(false); setQuickQuery(""); }} />
         )}
 
-        <div style={{ flex:1, position:"relative" }}>
-          <div style={{ position:"absolute", top:-18, left:2,
-            fontSize:10, color:T.accent, fontWeight:600 }}>
-            {operator.name}:
+        {/* Emoji picker */}
+        {showEmoji && (
+          <div onClick={e => e.stopPropagation()} style={{
+            position:"absolute", bottom:"calc(100% + 8px)", left:14, zIndex:200,
+            background:"#252525", border:`1px solid ${T.border}`, borderRadius:10,
+            padding:10, display:"flex", flexWrap:"wrap", gap:4, maxWidth:280,
+            boxShadow:"0 8px 24px rgba(0,0,0,.6)"
+          }}>
+            {EMOJI_LIST.map(em => (
+              <button key={em} onClick={() => { setText(t => t + em); setShowEmoji(false); }}
+                style={{ background:"none", border:"none", cursor:"pointer",
+                  fontSize:20, padding:"2px 4px", borderRadius:4,
+                  transition:"background .1s" }}
+                onMouseEnter={e => e.currentTarget.style.background="#333"}
+                onMouseLeave={e => e.currentTarget.style.background="none"}>
+                {em}
+              </button>
+            ))}
           </div>
-          <textarea value={text}
-            onChange={e => {
-              const v = e.target.value;
-              setText(v);
-              // Abre menu se começa com /
-              if (v.startsWith("/")) {
-                setShowQuick(true);
-                setQuickQuery(v.slice(1));
-              } else {
-                setShowQuick(false);
-                setQuickQuery("");
-              }
-            }}
-            onKeyDown={e => {
-              if (showQuick && (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "Enter")) return;
-              if (e.key === "Escape" && showQuick) { setShowQuick(false); setQuickQuery(""); return; }
-              if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
-            }}
-            placeholder="/ para mensagens rápidas · Enter para enviar · Shift+Enter nova linha"
-            rows={2} style={{ width:"100%", background:T.inputBg,
-              border:`1px solid ${T.border}`, borderRadius:8,
-              padding:"10px 12px", color:T.text, fontSize:13,
-              outline:"none", resize:"none", boxSizing:"border-box",
-              transition:"border-color .15s" }}
-            onFocus={e => e.target.style.borderColor=T.accent}
-            onBlur={e => e.target.style.borderColor=T.border} />
+        )}
+
+        <div style={{ display:"flex", gap:8, alignItems:"flex-end" }}>
+          {/* Botões de ação à esquerda */}
+          <div style={{ display:"flex", gap:4, alignItems:"center", flexShrink:0 }}>
+            <button onClick={e => { e.stopPropagation(); setShowEmoji(v => !v); }}
+              title="Emoji"
+              style={{ background:"transparent", border:"none", cursor:"pointer",
+                color:T.sub, padding:"6px", fontSize:18, borderRadius:6,
+                transition:"color .15s" }}
+              onMouseEnter={e => e.currentTarget.style.color=T.accent}
+              onMouseLeave={e => e.currentTarget.style.color=T.sub}>
+              😊
+            </button>
+            <button onClick={() => fileInputRef.current?.click()}
+              title="Anexar arquivo"
+              style={{ background:"transparent", border:"none", cursor:"pointer",
+                color:T.sub, padding:"6px", fontSize:18, borderRadius:6,
+                transition:"color .15s" }}
+              onMouseEnter={e => e.currentTarget.style.color=T.accent}
+              onMouseLeave={e => e.currentTarget.style.color=T.sub}>
+              📎
+            </button>
+            <input ref={fileInputRef} type="file" accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx" hidden onChange={handleFileAttach} />
+          </div>
+
+          <div style={{ flex:1, position:"relative" }}>
+            <div style={{ position:"absolute", top:-18, left:2,
+              fontSize:10, color: editingId ? "#9090d8" : T.accent, fontWeight:600 }}>
+              {editingId ? "✏️ editando" : operator.name + ":"}
+            </div>
+            <textarea value={text}
+              onChange={e => {
+                const v = e.target.value;
+                setText(v);
+                if (v.startsWith("/")) { setShowQuick(true); setQuickQuery(v.slice(1)); }
+                else { setShowQuick(false); setQuickQuery(""); }
+              }}
+              onKeyDown={e => {
+                if (showQuick && (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "Enter")) return;
+                if (e.key === "Escape") {
+                  if (showQuick) { setShowQuick(false); setQuickQuery(""); return; }
+                  if (replyTo) { setReplyTo(null); return; }
+                  if (editingId) { setEditingId(null); setText(""); return; }
+                }
+                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
+              }}
+              placeholder="/ para mensagens rápidas · Enter para enviar · Shift+Enter nova linha"
+              rows={2} style={{ width:"100%", background:T.inputBg,
+                border:`1px solid ${editingId ? "#7c7ce8" : T.border}`, borderRadius:8,
+                padding:"10px 12px", color:T.text, fontSize:13,
+                outline:"none", resize:"none", boxSizing:"border-box",
+                transition:"border-color .15s" }}
+              onFocus={e => e.target.style.borderColor = editingId ? "#9090d8" : T.accent}
+              onBlur={e => e.target.style.borderColor = editingId ? "#7c7ce8" : T.border} />
+          </div>
+
+          {/* Botão gravar voz ou enviar texto */}
+          {recording ? (
+            <button onClick={stopRecording}
+              style={{ background:"#e57373", border:"none", borderRadius:8,
+                width:42, height:42, color:"#fff", fontSize:16, cursor:"pointer",
+                flexShrink:0, display:"flex", flexDirection:"column",
+                alignItems:"center", justifyContent:"center", lineHeight:1 }}>
+              ⏹
+              <span style={{ fontSize:8 }}>{recSeconds}s</span>
+            </button>
+          ) : text.trim() ? (
+            <button onClick={handleSend} disabled={sending} style={{
+              background: sending ? "#333" : T.accent,
+              border:"none", borderRadius:8, width:42, height:42, color:"#fff",
+              fontSize:18, cursor:sending?"not-allowed":"pointer", flexShrink:0,
+              display:"flex", alignItems:"center", justifyContent:"center",
+              transition:"background .15s" }}>
+              {sending ? "…" : "↑"}
+            </button>
+          ) : (
+            <button onClick={startRecording} disabled={sending}
+              title="Gravar áudio"
+              style={{ background:"transparent", border:`1px solid ${T.border}`,
+                borderRadius:8, width:42, height:42, color:T.sub,
+                fontSize:18, cursor:"pointer", flexShrink:0,
+                display:"flex", alignItems:"center", justifyContent:"center",
+                transition:"all .15s" }}
+              onMouseEnter={e => { e.currentTarget.style.background=T.hover; e.currentTarget.style.color=T.text; }}
+              onMouseLeave={e => { e.currentTarget.style.background="transparent"; e.currentTarget.style.color=T.sub; }}>
+              🎙
+            </button>
+          )}
         </div>
-        <button onClick={handleSend} disabled={sending || !text.trim()} style={{
-          background:(sending||!text.trim()) ? "#333" : T.accent,
-          border:"none", borderRadius:8, width:42, height:42, color:"#fff",
-          fontSize:18, cursor:sending?"not-allowed":"pointer", flexShrink:0,
-          display:"flex", alignItems:"center", justifyContent:"center",
-          transition:"background .15s" }}>
-          {sending ? "…" : "↑"}
-        </button>
       </div>
 
       {/* Modal de busca de contatos */}
@@ -501,15 +719,22 @@ export default function ChatWindow({
   );
 }
 
-function MessageBubble({ msg, currentOperator }) {
+function MessageBubble({ msg, currentOperator, onContextMenu }) {
   if (msg.hasPatientCard) return <PatientCardDetected msg={msg} />;
-  const isPatient = msg.from === "patient";
-  const isBot     = msg.operator?.includes("🤖");
-  const isMe      = msg.operator === currentOperator?.name;
-  const dateStr   = formatMsgDate(msg.ts);
+  const isPatient  = msg.from === "patient";
+  const isBot      = msg.operator?.includes("🤖");
+  const isMe       = msg.operator === currentOperator?.name;
+  const dateStr    = formatMsgDate(msg.ts);
+  // Dentist alert: message from operator starting with !
+  const isDentistAlert = !isPatient && msg.text?.trimStart().startsWith("!");
+  const alertText  = isDentistAlert ? msg.text.replace(/^!+\s*/, "") : msg.text;
+  // Link preview
+  const urls = msg.text ? extractUrls(msg.text) : [];
 
   return (
-    <div style={{ display:"flex", justifyContent:isPatient?"flex-start":"flex-end", marginBottom:2 }}>
+    <div
+      onContextMenu={e => onContextMenu?.(e, msg)}
+      style={{ display:"flex", justifyContent:isPatient?"flex-start":"flex-end", marginBottom:2 }}>
       <div style={{ maxWidth:"75%" }}>
         {!isPatient && (
           <div style={{ fontSize:10, fontWeight:700, marginBottom:2, textAlign:"right",
@@ -518,12 +743,23 @@ function MessageBubble({ msg, currentOperator }) {
           </div>
         )}
         <div style={{
-          background: isBot ? T.bubbleBot : isMe ? T.bubbleMe : T.bubblePat,
-          border:`1px solid ${isBot ? T.borderBot : isMe ? T.borderMe : "#383838"}`,
+          background: isDentistAlert ? "#2a2200" : isBot ? T.bubbleBot : isMe ? T.bubbleMe : T.bubblePat,
+          border: isDentistAlert ? "2px solid #c9a84c" : `1px solid ${isBot ? T.borderBot : isMe ? T.borderMe : "#383838"}`,
           borderRadius: isPatient ? "2px 12px 12px 12px" : "12px 2px 12px 12px",
           padding: msg.media ? "4px" : "8px 12px",
           overflow:"hidden",
-          boxShadow:"0 1px 3px rgba(0,0,0,.3)" }}>
+          boxShadow: isDentistAlert
+            ? "0 0 12px rgba(201,168,76,.5)"
+            : "0 1px 3px rgba(0,0,0,.3)",
+          animation: isDentistAlert ? "alertPulse 1.4s ease-in-out infinite" : undefined,
+        }}>
+
+          {isDentistAlert && (
+            <div style={{ fontSize:10, fontWeight:800, color:"#c9a84c",
+              marginBottom:4, letterSpacing:.5 }}>
+              ⚠️ AVISO DO DENTISTA
+            </div>
+          )}
 
           {/* Mídia */}
           {msg.media && (
@@ -535,15 +771,25 @@ function MessageBubble({ msg, currentOperator }) {
             />
           )}
 
-          {/* Texto da legenda ou mensagem normal */}
-          {msg.text && (
-            <div style={{ color:T.text, fontSize:13, lineHeight:1.55, whiteSpace:"pre-wrap",
+          {/* Texto */}
+          {(isDentistAlert ? alertText : msg.text) && (
+            <div style={{ color: isDentistAlert ? "#ffe082" : T.text,
+              fontSize:13, lineHeight:1.55, whiteSpace:"pre-wrap",
+              fontWeight: isDentistAlert ? 600 : 400,
               padding: msg.media ? "6px 8px 2px" : 0 }}>
-              {renderText(msg.text)}
+              {renderText(isDentistAlert ? alertText : msg.text)}
             </div>
           )}
-          <div style={{ color:T.sub, fontSize:10, marginTop:4, textAlign:"right",
+
+          {/* Link preview (primeira URL) */}
+          {urls.length > 0 && !msg.media && (
+            <LinkPreview url={urls[0]} />
+          )}
+
+          <div style={{ color: isDentistAlert ? "#c9a84c99" : T.sub,
+            fontSize:10, marginTop:4, textAlign:"right",
             padding: msg.media ? "0 8px 4px" : 0 }}>
+            {msg.edited && <span style={{ marginRight:4, opacity:.7 }}>editado</span>}
             {dateStr || msg.time}
           </div>
         </div>
@@ -552,12 +798,103 @@ function MessageBubble({ msg, currentOperator }) {
   );
 }
 
+// ── Link Preview ──────────────────────────────────────────────────
+function LinkPreview({ url }) {
+  const [meta, setMeta] = useState(null);
+  const [tried, setTried] = useState(false);
+  useEffect(() => {
+    if (tried) return;
+    setTried(true);
+    // Simple: show the domain and URL without fetching to avoid CORS issues
+    try {
+      const u = new URL(url);
+      setMeta({ domain: u.hostname, url });
+    } catch {}
+  }, [url, tried]);
+  if (!meta) return null;
+  return (
+    <a href={meta.url} target="_blank" rel="noreferrer"
+      onClick={e => e.stopPropagation()}
+      style={{ display:"block", marginTop:6, padding:"6px 8px",
+        background:"#1a1a1a", borderRadius:6, borderLeft:`3px solid ${T.accent}`,
+        textDecoration:"none", overflow:"hidden" }}>
+      <div style={{ color:T.sub, fontSize:10 }}>{meta.domain}</div>
+      <div style={{ color:T.accent, fontSize:11, overflow:"hidden",
+        textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{meta.url}</div>
+    </a>
+  );
+}
+
+// ── Message Context Menu ──────────────────────────────────────────
+const REACTION_EMOJIS = ["👍","❤️","😂","😮","😢","🙏"];
+function MsgContextMenu({ msg, x, y, isOwn, onClose, onReply, onEdit, onDelete, onReact, onForward }) {
+  const menuRef = useRef(null);
+  useEffect(() => {
+    if (!menuRef.current) return;
+    const el = menuRef.current;
+    const rect = el.getBoundingClientRect();
+    if (rect.right  > window.innerWidth)  el.style.left = `${x - rect.width}px`;
+    if (rect.bottom > window.innerHeight) el.style.top  = `${y - rect.height}px`;
+  }, [x, y]);
+
+  useEffect(() => {
+    const onKey = e => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const menuItem = (label, action, color) => (
+    <div key={label}
+      onClick={e => { e.stopPropagation(); action(); }}
+      style={{ padding:"9px 16px", cursor:"pointer", color: color || "#ececec",
+        fontSize:13, transition:"background .1s", userSelect:"none" }}
+      onMouseEnter={e => e.currentTarget.style.background="#2a2a2a"}
+      onMouseLeave={e => e.currentTarget.style.background="transparent"}>
+      {label}
+    </div>
+  );
+
+  return (
+    <div ref={menuRef} onClick={e => e.stopPropagation()} style={{
+      position:"fixed", left:x, top:y, zIndex:9999,
+      background:"#252525", border:`1px solid #333`,
+      borderRadius:10, minWidth:200, overflow:"hidden",
+      boxShadow:"0 8px 32px rgba(0,0,0,.7)"
+    }}>
+      {/* Reações rápidas */}
+      <div style={{ display:"flex", gap:2, padding:"8px 10px 6px",
+        borderBottom:"1px solid #333" }}>
+        {REACTION_EMOJIS.map(em => (
+          <button key={em} onClick={() => onReact(msg, em)}
+            style={{ background:"none", border:"none", cursor:"pointer",
+              fontSize:18, padding:"2px 4px", borderRadius:4 }}
+            onMouseEnter={e => e.currentTarget.style.background="#333"}
+            onMouseLeave={e => e.currentTarget.style.background="none"}>
+            {em}
+          </button>
+        ))}
+      </div>
+      {menuItem("↩ Responder", () => onReply(msg))}
+      {isOwn && menuItem("✏️ Editar", () => onEdit(msg))}
+      {menuItem("↗ Encaminhar", () => onForward(msg))}
+      <div style={{ height:1, background:"#333", margin:"4px 0" }} />
+      {isOwn && menuItem("🗑 Apagar para mim", () => onDelete(msg), "#e57373")}
+      {isOwn && menuItem("🗑 Apagar para todos", () => onDelete(msg), "#e57373")}
+    </div>
+  );
+}
+
 // ── Renderizador de mídia ──────────────────────────────────────────
 function MediaContent({ media, msgId, chatId, chatSession }) {
-  const [lightbox,    setLightbox]  = useState(false);
-  const [fullUrl,     setFullUrl]   = useState(null);
-  const [downloading, setDownload]  = useState(false);
-  const [error,       setError]     = useState(false);
+  const [lightbox,     setLightbox]    = useState(false);
+  const [fullUrl,      setFullUrl]     = useState(null);
+  const [downloading,  setDownload]    = useState(false);
+  const [error,        setError]       = useState(false);
+  // Audio transcription state (used only when isAudio — declared here to respect hooks rules)
+  const [transcript,   setTranscript]  = useState(null);
+  const [transcribing, setTranscribing] = useState(false);
+  // PDF lightbox (used only when document is PDF)
+  const [pdfLightbox,  setPdfLightbox] = useState(false);
   const iKey    = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
   const SESSION = chatSession || import.meta.env.VITE_WAHA_SESSION || "default";
 
@@ -615,6 +952,9 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
   // Helper: resolve binary from a WAHA endpoint.
   // O endpoint ?downloadMedia=true retorna JSON com media.url — precisa re-buscar o binário.
   async function resolveMediaBinary(url) {
+    return mediaQueue(async () => _resolveMediaBinary(url));
+  }
+  async function _resolveMediaBinary(url) {
     const r = await fetch(url, { headers: { "X-Internal-Key": iKey }, cache: "no-store" });
     if (!r.ok) return { ok: false, status: r.status };
     const ct = r.headers.get("content-type") || "";
@@ -632,6 +972,7 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
     const buf = await r.arrayBuffer();
     return { ok: true, buf, ct: ct || mimeHint };
   }
+
 
   async function fetchMedia() {
     if (fullUrl || !urlToFetch || downloading) return;
@@ -829,12 +1170,51 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
 
   // ── Áudio ───────────────────────────────────────────────────
   if (isAudio) {
+    async function handleTranscribe() {
+      if (!fullUrl || transcribing) return;
+      setTranscribing(true);
+      try {
+        const blob = await fetch(fullUrl).then(r => r.blob());
+        const form = new FormData();
+        form.append("file", blob, "audio.ogg");
+        const r = await fetch("/api/transcribe", {
+          method: "POST",
+          headers: { "X-Internal-Key": iKey },
+          body: form,
+        });
+        if (r.ok) {
+          const data = await r.json();
+          setTranscript(data.text || "(sem transcrição)");
+        } else {
+          setTranscript("Erro ao transcrever");
+        }
+      } catch (e) {
+        setTranscript("Erro: " + e.message);
+      }
+      setTranscribing(false);
+    }
+
     return (
       <div style={{ padding:"8px 6px", minWidth:220 }}>
         {fullUrl ? (
-          <audio controls style={{ width:"100%", minWidth:220 }}>
-            <source src={fullUrl} type={mimeHint} />
-          </audio>
+          <>
+            <audio controls style={{ width:"100%", minWidth:220 }}>
+              <source src={fullUrl} type={mimeHint} />
+            </audio>
+            {!transcript && (
+              <button onClick={handleTranscribe} disabled={transcribing}
+                style={{ fontSize:10, color:T.sub, background:"none",
+                  border:"none", cursor:"pointer", padding:"2px 0", display:"block" }}>
+                {transcribing ? "⏳ transcrevendo..." : "📝 transcrever"}
+              </button>
+            )}
+            {transcript && (
+              <div style={{ color:T.sub, fontSize:11, marginTop:4, fontStyle:"italic",
+                borderLeft:`2px solid ${T.accent}`, paddingLeft:6 }}>
+                {transcript}
+              </div>
+            )}
+          </>
         ) : error ? (
           <div style={{ display:"flex", alignItems:"center", gap:8, padding:"4px 8px" }}>
             <span style={{ color:"#e57373", fontSize:12 }}>⚠️ Erro ao carregar áudio</span>
@@ -855,30 +1235,85 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
 
   // ── Documento ───────────────────────────────────────────────
   const filename = media.filename || "arquivo";
+  const isPdf = mimeHint.includes("pdf") || filename.toLowerCase().endsWith(".pdf");
+
+  function handleDocDownload() {
+    if (fullUrl) {
+      const a = document.createElement("a");
+      a.href = fullUrl; a.download = filename; a.click();
+    } else { fetchMedia(); }
+  }
+
   return (
-    <div style={{ padding:"8px 12px", display:"flex", alignItems:"center", gap:10 }}>
-      <span style={{ fontSize:24 }}>📎</span>
-      <div style={{ flex:1, minWidth:0 }}>
-        <div style={{ color:T.text, fontSize:12, fontWeight:600,
-          overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
-          {filename}
+    <>
+      <div
+        draggable
+        onDragStart={e => {
+          // Permite arrastar para o PatientPanel (prontuário)
+          e.dataTransfer.setData("application/crm-file", JSON.stringify({
+            name: filename, mimetype: mimeHint,
+            url: fullUrl || urlToFetch || "",
+          }));
+        }}
+        style={{ padding:"8px 12px", display:"flex", alignItems:"center", gap:10, cursor:"grab" }}>
+        <span style={{ fontSize:24 }}>{isPdf ? "📄" : "📎"}</span>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ color:T.text, fontSize:12, fontWeight:600,
+            overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+            {filename}
+          </div>
+          <div style={{ color:T.sub, fontSize:10 }}>{mimeHint}</div>
         </div>
-        <div style={{ color:T.sub, fontSize:10 }}>{mimeHint}</div>
+        <div style={{ display:"flex", gap:4 }}>
+          {isPdf && (
+            <button onClick={() => { if (!fullUrl) fetchMedia(); setPdfLightbox(true); }}
+              style={{ color:"#9090d8", fontSize:11, background:"none",
+                border:"1px solid #9090d8", borderRadius:4, padding:"2px 8px", cursor:"pointer" }}
+              title="Visualizar PDF">
+              👁
+            </button>
+          )}
+          {error ? (
+            <button onClick={() => { setError(false); fetchMedia(); }}
+              style={{ color:"#e57373", fontSize:11, background:"none",
+                border:"1px solid #e57373", borderRadius:4, padding:"2px 8px", cursor:"pointer" }}>
+              ⚠️
+            </button>
+          ) : (
+            <button onClick={handleDocDownload} disabled={downloading}
+              style={{ color:T.accent, fontSize:18, background:"none", border:"none",
+                cursor:"pointer", padding:0 }} title="Baixar">
+              {downloading ? "⏳" : "⬇"}
+            </button>
+          )}
+        </div>
       </div>
-      {error ? (
-        <button onClick={() => { setError(false); fetchMedia(); }}
-          style={{ color:"#e57373", fontSize:11, background:"none",
-            border:"1px solid #e57373", borderRadius:4, padding:"2px 8px", cursor:"pointer" }}>
-          ⚠️ Retry
-        </button>
-      ) : (
-        <button onClick={fetchMedia} disabled={downloading}
-          style={{ color:T.accent, fontSize:20, background:"none", border:"none",
-            cursor:"pointer", padding:0 }} title="Baixar">
-          {downloading ? "⏳" : "⬇"}
-        </button>
+      {pdfLightbox && fullUrl && (
+        <div onClick={() => setPdfLightbox(false)} style={{
+          position:"fixed", inset:0, background:"rgba(0,0,0,.95)", zIndex:9999,
+          display:"flex", flexDirection:"column"
+        }}>
+          <div onClick={e => e.stopPropagation()} style={{
+            display:"flex", justifyContent:"space-between", alignItems:"center",
+            padding:"10px 16px", background:"rgba(0,0,0,.6)", flexShrink:0
+          }}>
+            <span style={{ color:"#ccc", fontSize:12 }}>{filename}</span>
+            <div style={{ display:"flex", gap:6 }}>
+              <button onClick={handleDocDownload} style={btnStyle}>⬇ Baixar</button>
+              <button onClick={() => setPdfLightbox(false)}
+                style={{ ...btnStyle, background:"#c0412c44" }}>✕</button>
+            </div>
+          </div>
+          <iframe src={fullUrl} title={filename}
+            style={{ flex:1, border:"none", background:"#fff" }} />
+        </div>
       )}
-    </div>
+      {pdfLightbox && !fullUrl && downloading && (
+        <div style={{ padding:"8px 12px", color:T.sub, fontSize:11 }}>
+          Baixando PDF para visualização...
+        </div>
+      )}
+    </>
   );
 }
 

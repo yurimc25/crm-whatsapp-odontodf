@@ -7,6 +7,7 @@ import { ROLE_PERMISSIONS } from "../data/mock";
 import { useContactsCtx } from "../App";
 import { wahaIdToPhone, formatPhone } from "../hooks/useContacts";
 import { NotificationBell } from "./NotificationBell";
+import NewChatModal from "./NewChatModal";
 
 // Tema escuro estilo Claude
 const T = {
@@ -30,15 +31,16 @@ const T = {
 };
 
 export default function CRMLayout({ operator, onLogout, notificationBell }) {
-  const [activeChat, setActiveChat] = useState(null);
-  const [filter, setFilter]         = useState("all");
-  const [search, setSearch]         = useState("");
+  const [activeChat, setActiveChat]     = useState(null);
+  const [filter, setFilter]             = useState("all");
+  const [search, setSearch]             = useState("");
+  const [showNewChat, setShowNewChat]   = useState(false);
 
   const { displayName } = useContactsCtx();
 
   const {
-    chats, messages, loadMessages, loadOlderMessages, send,
-    forwardChat, resolveChat, markRead, markUnread,
+    chats, messages, loadMessages, loadOlderMessages, send, deleteMsg, editMsg,
+    forwardChat, resolveChat, markRead, markUnread, searchMessages,
     loading, error, wsStatus,
   } = useWAHA(operator);
 
@@ -171,6 +173,29 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
             Sair
           </button>
           <NotificationBell operator={operator} />
+          {/* Backup Drive — só para gerente/admin */}
+          {(operator.role === "gerente" || operator.role === "admin") && (
+            <button
+              title="Backup para Google Drive"
+              onClick={async () => {
+                try {
+                  const r = await fetch("/api/backup?action=drive", {
+                    method: "POST",
+                    headers: { "X-Internal-Key": import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10" },
+                  });
+                  const d = await r.json();
+                  if (d.ok) alert(`✓ Backup enviado: ${d.filename}\n${d.url || ""}`);
+                  else alert("Erro no backup: " + (d.error || "desconhecido"));
+                } catch (e) { alert("Erro: " + e.message); }
+              }}
+              style={{ background:"transparent", border:`1px solid ${T.border}`,
+                borderRadius:6, padding:"4px 8px", color:T.sub,
+                fontSize:13, cursor:"pointer", transition:"all .15s" }}
+              onMouseEnter={e => { e.currentTarget.style.background=T.hover; e.currentTarget.style.color=T.text; }}
+              onMouseLeave={e => { e.currentTarget.style.background="transparent"; e.currentTarget.style.color=T.sub; }}>
+              ☁️
+            </button>
+          )}
         </div>
       </div>
 
@@ -199,6 +224,20 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
           display:"flex", flexDirection:"column", overflow:"hidden",
           background: T.sidebar,
         }}>
+          {/* Botão Nova Conversa */}
+          <div style={{ padding:"8px 12px 0", flexShrink:0 }}>
+            <button onClick={() => setShowNewChat(true)} style={{
+              width:"100%", background: T.accentBg, border:`1px solid ${T.accent}44`,
+              borderRadius:8, padding:"7px 12px", color:T.accent,
+              fontSize:12, fontWeight:600, cursor:"pointer",
+              display:"flex", alignItems:"center", justifyContent:"center", gap:6,
+              transition:"all .15s"
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background=T.accent; e.currentTarget.style.color="#fff"; }}
+            onMouseLeave={e => { e.currentTarget.style.background=T.accentBg; e.currentTarget.style.color=T.accent; }}>
+              ✏️ Nova conversa
+            </button>
+          </div>
           <ChatList
             chats={enrichedChats}
             activeId={activeChat?.id}
@@ -210,8 +249,40 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
             onMarkUnread={markUnread}
             loading={loading}
             operator={operator}
+            searchMessages={searchMessages}
+            onStartNewChat={phone => {
+              const digits = phone.replace(/\D/g, "");
+              const chatId = digits.startsWith("55") ? `${digits}@c.us` : `55${digits}@c.us`;
+              const existing = chats.find(c => c.id === chatId || c.id.startsWith(digits));
+              if (existing) { handleSelectChat(existing); }
+              else { setShowNewChat(true); }
+            }}
           />
         </div>
+
+        {showNewChat && (
+          <NewChatModal
+            operator={operator}
+            onClose={() => setShowNewChat(false)}
+            onStartChat={chatId => {
+              setShowNewChat(false);
+              const existing = chats.find(c => c.id === chatId);
+              if (existing) {
+                handleSelectChat(existing);
+              } else {
+                // Chat novo não carregado ainda — cria temporário e seleciona
+                const tmp = {
+                  id: chatId, name: chatId, pushname: null,
+                  phone: chatId.replace(/@.*$/, ""),
+                  isValidPhone: true, lastMsg: "", lastTime: "", lastTs: null,
+                  unread: 0, status: "open", assignedTo: null, tags: [],
+                  avatar: "??", avatarColor: "#555", photoUrl: null,
+                };
+                handleSelectChat(tmp);
+              }
+            }}
+          />
+        )}
 
         {/* Janela de chat */}
         <div style={{
@@ -226,6 +297,8 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
               onSend={text => send(activeChat.id, text, operator.name)}
               onForward={toRole => forwardChat(activeChat.id, toRole)}
               onResolve={() => resolveChat(activeChat.id)}
+              onDeleteMsg={(msgId) => deleteMsg(activeChat.id, msgId)}
+              onEditMsg={(msgId, text) => editMsg(activeChat.id, msgId, text)}
               canForwardToAdmin={perms.verAdmin}
               onLoadOlder={loadOlderMessages}
             />

@@ -7,7 +7,7 @@ const WAHA_KEY = process.env.VITE_WAHA_API_KEY || "";
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Internal-Key");
   if (req.method === "OPTIONS") return res.status(200).end();
 
@@ -48,12 +48,12 @@ export default async function handler(req, res) {
       "Cache-Control": "no-cache",
       "Pragma": "no-cache",
     };
-    if (req.method !== "GET") forwardHeaders["Content-Type"] = "application/json";
+    if (!["GET", "DELETE"].includes(req.method)) forwardHeaders["Content-Type"] = "application/json";
 
     const wahaRes = await fetch(url, {
       method: req.method,
       headers: forwardHeaders,
-      ...(req.method !== "GET" && req.body ? { body: JSON.stringify(req.body) } : {}),
+      ...(req.method !== "GET" && req.method !== "DELETE" && req.body ? { body: JSON.stringify(req.body) } : {}),
     });
 
         // 304 = sem mudança — retorna null para o frontend manter estado anterior

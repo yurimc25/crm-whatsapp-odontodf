@@ -410,6 +410,167 @@ function stringToColor(str) {
   return colors[Math.abs(hash) % colors.length];
 }
 
+// ── Mensagens: editar / apagar / reagir ──────────────────────────
+
+export async function deleteMessage(chatId, msgId, forEveryone = false) {
+  const id  = encodeURIComponent(chatId);
+  const mid = encodeURIComponent(msgId);
+  const r = await fetch(`${WAHA_URL}/api/${SESSION}/chats/${id}/messages/${mid}`, {
+    method: "DELETE",
+    headers: headers(),
+    body: JSON.stringify({ deleteMedia: true }),
+  });
+  if (!r.ok) throw new Error(`WAHA deleteMessage: ${r.status}`);
+  return r.json().catch(() => ({}));
+}
+
+export async function editMessage(chatId, msgId, newText) {
+  const id  = encodeURIComponent(chatId);
+  const mid = encodeURIComponent(msgId);
+  const r = await fetch(`${WAHA_URL}/api/${SESSION}/chats/${id}/messages/${mid}`, {
+    method: "PUT",
+    headers: headers(),
+    body: JSON.stringify({ text: newText }),
+  });
+  if (!r.ok) throw new Error(`WAHA editMessage: ${r.status}`);
+  return r.json().catch(() => ({}));
+}
+
+export async function sendReaction(chatId, msgId, reaction) {
+  const r = await fetch(`${WAHA_URL}/api/reaction`, {
+    method: "PUT",
+    headers: headers(),
+    body: JSON.stringify({
+      session: SESSION,
+      reaction: { messageId: msgId, reaction },
+    }),
+  });
+  if (!r.ok) throw new Error(`WAHA sendReaction: ${r.status}`);
+  return r.json().catch(() => ({}));
+}
+
+// ── Envio de mídia ────────────────────────────────────────────────
+
+// Converte File/Blob para base64 data URI
+export function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = e => resolve(e.target.result); // "data:image/jpeg;base64,..."
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+export async function sendImage(chatId, base64DataUri, caption = "") {
+  const r = await fetch(`${WAHA_URL}/api/sendImage`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({
+      session: SESSION, chatId,
+      file: { data: base64DataUri },
+      caption,
+    }),
+  });
+  if (!r.ok) throw new Error(`WAHA sendImage: ${r.status}`);
+  return r.json();
+}
+
+export async function sendFile(chatId, base64DataUri, filename, mimetype, caption = "") {
+  const r = await fetch(`${WAHA_URL}/api/sendFile`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({
+      session: SESSION, chatId,
+      file: { data: base64DataUri, filename, mimetype },
+      caption,
+    }),
+  });
+  if (!r.ok) throw new Error(`WAHA sendFile: ${r.status}`);
+  return r.json();
+}
+
+export async function sendVoice(chatId, base64DataUri) {
+  const r = await fetch(`${WAHA_URL}/api/sendVoice`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({
+      session: SESSION, chatId,
+      file: { data: base64DataUri, mimetype: "audio/ogg; codecs=opus" },
+    }),
+  });
+  if (!r.ok) throw new Error(`WAHA sendVoice: ${r.status}`);
+  return r.json();
+}
+
+export async function sendSticker(chatId, base64DataUri) {
+  const r = await fetch(`${WAHA_URL}/api/sendSticker`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({
+      session: SESSION, chatId,
+      file: { data: base64DataUri },
+    }),
+  });
+  if (!r.ok) throw new Error(`WAHA sendSticker: ${r.status}`);
+  return r.json();
+}
+
+export async function sendLocation(chatId, lat, lng, title = "") {
+  const r = await fetch(`${WAHA_URL}/api/sendLocation`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({ session: SESSION, chatId, latitude: lat, longitude: lng, title }),
+  });
+  if (!r.ok) throw new Error(`WAHA sendLocation: ${r.status}`);
+  return r.json();
+}
+
+export async function sendContactVcard(chatId, contactName, vcard) {
+  const r = await fetch(`${WAHA_URL}/api/sendContactVcard`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({ session: SESSION, chatId, name: contactName, vcard }),
+  });
+  if (!r.ok) throw new Error(`WAHA sendContactVcard: ${r.status}`);
+  return r.json();
+}
+
+// ── Contatos / LID ────────────────────────────────────────────────
+
+export async function checkPhoneExists(phone) {
+  const digits = phone.replace(/\D/g, "");
+  const r = await fetch(
+    `${WAHA_URL}/api/contacts/check-exists?phone=${digits}&session=${SESSION}`,
+    { headers: headers() }
+  );
+  if (!r.ok) return { numberExists: false, chatId: null };
+  return r.json().catch(() => ({ numberExists: false }));
+}
+
+export async function getAllLIDs() {
+  const r = await fetch(`${WAHA_URL}/api/${SESSION}/contacts?limit=1000`, { headers: headers() });
+  if (!r.ok) throw new Error(`WAHA getAllLIDs: ${r.status}`);
+  return r.json();
+}
+
+export async function getContactByLID(lid) {
+  const id = encodeURIComponent(lid);
+  const r = await fetch(`${WAHA_URL}/api/${SESSION}/contacts/${id}`, { headers: headers() });
+  if (!r.ok) return null;
+  return r.json().catch(() => null);
+}
+
+// ── Chamadas ──────────────────────────────────────────────────────
+
+export async function rejectCall(callId) {
+  const r = await fetch(`${WAHA_URL}/api/${SESSION}/calls/${callId}/reject`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({ reason: "reject" }),
+  });
+  return r.ok;
+}
+
 // ── WebSocket ─────────────────────────────────────────────────────
 
 export function createWAHASocket({ onMessage, onStatus, onError }) {

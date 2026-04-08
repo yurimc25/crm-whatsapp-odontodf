@@ -5,7 +5,7 @@ const CACHE = 'crm-v1';
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
 
-// ── Push Notification ────────────────────────────────────────────
+// ── Push Notification (servidor → SW) ────────────────────────────
 self.addEventListener('push', e => {
   if (!e.data) return;
   let data;
@@ -29,6 +29,31 @@ self.addEventListener('push', e => {
   e.waitUntil(self.registration.showNotification(title, options));
 });
 
+// ── Notificação local — página envia mensagem ao SW ──────────────
+// Quando a aba está em segundo plano mas ainda aberta, o app envia
+// { type: 'SHOW_NOTIFICATION', title, body, chatId } e o SW mostra.
+self.addEventListener('message', e => {
+  const data = e.data || {};
+
+  if (data.type === 'SHOW_NOTIFICATION') {
+    const title = data.title || 'CRM Odonto';
+    const options = {
+      body:     data.body || '',
+      icon:     '/tooth.png',
+      badge:    '/tooth.png',
+      tag:      data.chatId || 'msg',
+      renotify: true,
+      data:     { chatId: data.chatId, url: '/' },
+      actions:  [
+        { action: 'open',  title: 'Abrir' },
+        { action: 'close', title: 'Fechar' },
+      ],
+      vibrate:  [200, 100, 200],
+    };
+    self.registration.showNotification(title, options);
+  }
+});
+
 // ── Clique na notificação ────────────────────────────────────────
 self.addEventListener('notificationclick', e => {
   e.notification.close();
@@ -39,14 +64,12 @@ self.addEventListener('notificationclick', e => {
 
   e.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clients => {
-      // Se já tem janela aberta, foca e navega
       const existing = clients.find(c => c.url.includes(location.origin));
       if (existing) {
         existing.focus();
         if (chatId) existing.postMessage({ type: 'OPEN_CHAT', chatId });
         return;
       }
-      // Senão abre nova aba
       return self.clients.openWindow(url);
     })
   );

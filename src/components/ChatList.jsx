@@ -1,6 +1,7 @@
 import { useMemo, useState, useRef, useEffect } from "react";
 import { useContactsCtx } from "../App";
-import { formatPhone, wahaIdToPhone } from "../hooks/useContacts";
+import { formatPhone, wahaIdToPhone, phoneVariants } from "../hooks/useContacts";
+import AgendaFilter from "./AgendaFilter";
 
 const T = {
   bg:       "#171717",
@@ -32,9 +33,17 @@ function formatTimeSince(ts) {
 
 export default function ChatList({
   chats, activeId, search, onSearch, onSelect,
-  onForward, onMarkRead, onMarkUnread, loading
+  onForward, onMarkRead, onMarkUnread, loading, onStartNewChat, searchMessages
 }) {
-  const [ctxMenu, setCtxMenu] = useState(null);
+  const [ctxMenu, setCtxMenu]       = useState(null);
+  const [agendaOpen, setAgendaOpen] = useState(false);
+  const { contactMap } = useContactsCtx();
+
+  // Resultados de busca em conteúdo de mensagens
+  const msgSearchResults = useMemo(() => {
+    if (!search || search.length < 3 || !searchMessages) return [];
+    return searchMessages(search);
+  }, [search, searchMessages]);
 
   const sorted = useMemo(() => {
     return [...chats].sort((a, b) => {
@@ -71,6 +80,30 @@ export default function ChatList({
     );
   }, [sorted, search]);
 
+  // Contatos do mapa que não têm conversa aberta (resultado de busca extra)
+  const contactOnlyResults = useMemo(() => {
+    if (!search || search.length < 2) return [];
+    const s = search.toLowerCase();
+    const digits = search.replace(/\D/g, "");
+    const chatPhones = new Set(chats.map(c => wahaIdToPhone(c.id)));
+    const seen = new Set();
+    const out = [];
+    for (const [phone, name] of Object.entries(contactMap)) {
+      if (seen.has(name + phone)) continue;
+      if (chatPhones.has(phone)) continue;
+      if (name.toLowerCase().includes(s) || (digits && phone.includes(digits))) {
+        seen.add(name + phone);
+        out.push({ phone, name });
+        if (out.length >= 5) break;
+      }
+    }
+    return out;
+  }, [search, contactMap, chats]);
+
+  // Se é número puro digitado e não tem resultado, mostra botão de iniciar
+  const inputDigits = search.replace(/\D/g, "");
+  const showStartButton = inputDigits.length >= 8 && filtered.length === 0 && contactOnlyResults.length === 0;
+
   useEffect(() => {
     if (!ctxMenu) return;
     const close = () => setCtxMenu(null);
@@ -94,26 +127,55 @@ export default function ChatList({
       background:T.bg, fontFamily:"'DM Sans', sans-serif" }}>
 
       {/* Busca */}
-      <div style={{ padding:"10px 12px", borderBottom:`1px solid ${T.border}` }}>
-        <div style={{ position:"relative" }}>
-          <span style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)",
-            color:T.sub, fontSize:13, pointerEvents:"none" }}>🔍</span>
-          <input value={search} onChange={e => onSearch(e.target.value)}
-            placeholder="Buscar paciente ou número..."
-            style={{ width:"100%", background:T.inputBg, border:`1px solid ${T.border}`,
-              borderRadius:8, padding:"8px 12px 8px 32px", color:T.text,
-              fontSize:13, outline:"none", boxSizing:"border-box" }} />
+      <div style={{ padding:"10px 12px", borderBottom:`1px solid ${T.border}`, flexShrink:0 }}>
+        <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+          <div style={{ flex:1, position:"relative" }}>
+            <span style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)",
+              color:T.sub, fontSize:13, pointerEvents:"none" }}>🔍</span>
+            <input value={search} onChange={e => onSearch(e.target.value)}
+              placeholder="Buscar paciente ou número..."
+              style={{ width:"100%", background:T.inputBg, border:`1px solid ${T.border}`,
+                borderRadius:8, padding:"8px 12px 8px 32px", color:T.text,
+                fontSize:13, outline:"none", boxSizing:"border-box" }} />
+          </div>
+          {/* Botão filtro por agenda */}
+          <button
+            onClick={() => setAgendaOpen(v => !v)}
+            title={agendaOpen ? "Fechar agenda" : "Filtrar por agenda Doctoralia"}
+            style={{
+              flexShrink:0, width:34, height:34,
+              background: agendaOpen ? T.accent : T.inputBg,
+              border:`1px solid ${agendaOpen ? T.accent : T.border}`,
+              borderRadius:8, cursor:"pointer", color: agendaOpen ? "#fff" : T.sub,
+              fontSize:15, display:"flex", alignItems:"center", justifyContent:"center",
+              transition:"all .15s",
+            }}
+            onMouseEnter={e => { if (!agendaOpen) { e.currentTarget.style.background=T.hover; e.currentTarget.style.color=T.text; }}}
+            onMouseLeave={e => { if (!agendaOpen) { e.currentTarget.style.background=T.inputBg; e.currentTarget.style.color=T.sub; }}}>
+            📅
+          </button>
         </div>
       </div>
 
+      {/* Painel de agenda (Doctoralia) */}
+      {agendaOpen && (
+        <div style={{ flex:1, overflow:"hidden", display:"flex", flexDirection:"column" }}>
+          <AgendaFilter
+            chats={chats}
+            onSelectChat={onSelect}
+            onStartNewChat={onStartNewChat}
+          />
+        </div>
+      )}
+
       {/* Lista */}
-      <div style={{ flex:1, overflowY:"auto" }}>
+      {!agendaOpen && <div style={{ flex:1, overflowY:"auto" }}>
         {loading && (
           <div style={{ padding:24, textAlign:"center", color:T.sub, fontSize:13 }}>
             Carregando conversas...
           </div>
         )}
-        {!loading && filtered.length === 0 && (
+        {!loading && filtered.length === 0 && contactOnlyResults.length === 0 && !showStartButton && (
           <div style={{ padding:24, textAlign:"center", color:T.sub, fontSize:13 }}>
             Nenhuma conversa encontrada
           </div>
@@ -127,7 +189,86 @@ export default function ChatList({
             onOpenMenu={(e) => openMenu(e, chat)}
           />
         ))}
-      </div>
+
+        {/* Contatos sem conversa */}
+        {contactOnlyResults.length > 0 && (
+          <>
+            <div style={{ padding:"6px 14px 2px", color:T.sub, fontSize:10, fontWeight:600 }}>
+              CONTATOS (sem conversa)
+            </div>
+            {contactOnlyResults.map((c, i) => (
+              <div key={i}
+                onClick={() => onStartNewChat?.(c.phone)}
+                style={{ padding:"10px 14px", cursor:"pointer", borderBottom:`1px solid ${T.border}`,
+                  display:"flex", gap:10, alignItems:"center",
+                  transition:"background .1s" }}
+                onMouseEnter={e => e.currentTarget.style.background=T.hover}
+                onMouseLeave={e => e.currentTarget.style.background="transparent"}>
+                <div style={{ width:38, height:38, borderRadius:"50%", flexShrink:0,
+                  background:"#33331a", color:"#c9a84c",
+                  display:"flex", alignItems:"center", justifyContent:"center",
+                  fontSize:13, fontWeight:700, border:"2px solid #444422" }}>
+                  {c.name.slice(0,2).toUpperCase()}
+                </div>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ color:T.text, fontSize:13, fontWeight:500 }}>{c.name}</div>
+                  <div style={{ color:T.sub, fontSize:10, fontFamily:"'DM Mono',monospace" }}>
+                    {formatPhone(c.phone)}
+                  </div>
+                </div>
+                <span style={{ color:T.accent, fontSize:11 }}>iniciar →</span>
+              </div>
+            ))}
+          </>
+        )}
+
+        {/* Resultados de busca em conteúdo de mensagens */}
+        {msgSearchResults.length > 0 && (
+          <>
+            <div style={{ padding:"6px 14px 2px", color:T.sub, fontSize:10, fontWeight:600 }}>
+              MENSAGENS COM "{search}"
+            </div>
+            {msgSearchResults.map((r, i) => (
+              <div key={i}
+                onClick={() => {
+                  const chat = chats.find(c => c.id === r.chatId);
+                  if (chat) onSelect(chat);
+                }}
+                style={{ padding:"10px 14px", cursor:"pointer", borderBottom:`1px solid ${T.border}`,
+                  transition:"background .1s" }}
+                onMouseEnter={e => e.currentTarget.style.background=T.hover}
+                onMouseLeave={e => e.currentTarget.style.background="transparent"}>
+                <div style={{ color:T.text, fontSize:12, fontWeight:500, marginBottom:2 }}>
+                  {r.chatName}
+                </div>
+                {r.hits.slice(-1).map((h, j) => (
+                  <div key={j} style={{ color:T.sub, fontSize:11, overflow:"hidden",
+                    textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                    {h.text?.slice(0, 70)}
+                  </div>
+                ))}
+              </div>
+            ))}
+          </>
+        )}
+
+        {/* Botão iniciar conversa com número digitado */}
+        {showStartButton && (
+          <div style={{ padding:"16px 14px", textAlign:"center" }}>
+            <div style={{ color:T.sub, fontSize:12, marginBottom:10 }}>
+              Nenhum resultado para "{search}"
+            </div>
+            <button onClick={() => onStartNewChat?.(inputDigits)}
+              style={{ background:"transparent", border:`1px solid ${T.accent}`,
+                borderRadius:8, padding:"8px 16px", color:T.accent,
+                fontSize:12, fontWeight:600, cursor:"pointer", transition:"all .15s" }}
+              onMouseEnter={e => { e.currentTarget.style.background=T.accent; e.currentTarget.style.color="#fff"; }}
+              onMouseLeave={e => { e.currentTarget.style.background="transparent"; e.currentTarget.style.color=T.accent; }}>
+              Iniciar conversa com {formatPhone(inputDigits)}
+            </button>
+          </div>
+        )}
+      </div>}
 
       {/* Menu de contexto */}
       {ctxMenu && (

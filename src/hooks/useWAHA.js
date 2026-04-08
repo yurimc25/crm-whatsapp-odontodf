@@ -11,6 +11,7 @@ import { useContactsCtx } from "../App";
 import {
   getChats, getMessages, sendText, getSessionStatus,
   normalizeChat, normalizeMessage, createWAHASocket, getProfilePicture,
+  deleteMessage as wahaDeleteMessage, editMessage as wahaEditMessage,
 } from "../services/waha";
 import { MOCK_CHATS, MOCK_MESSAGES } from "../data/mock";
 import { cache } from "../utils/cache";
@@ -38,6 +39,17 @@ function removeTmp(current, incoming) {
 }
 
 const USE_MOCK    = import.meta.env.VITE_USE_MOCK === "true";
+const CONTACTS_SCAN_KEY = "waha_contacts_scan_at";
+const CONTACTS_SCAN_INTERVAL = 12 * 60 * 60 * 1000; // 2x/dia
+function shouldScanContacts() {
+  try {
+    const last = parseInt(localStorage.getItem(CONTACTS_SCAN_KEY) || "0");
+    return Date.now() - last > CONTACTS_SCAN_INTERVAL;
+  } catch { return true; }
+}
+function markContactsScan() {
+  try { localStorage.setItem(CONTACTS_SCAN_KEY, String(Date.now())); } catch {}
+}
 const CHATS_KEY   = "waha_chats";
 const MSGS_PREFIX = "waha_msgs_";
 const CHATS_TTL   = 7  * 24 * 60 * 60 * 1000; // 7 dias
@@ -336,14 +348,19 @@ export function useWAHA(operator) {
         }
       }
 
-      // Dispara auto-sync em background (não bloqueia renderização)
+      // Dispara auto-sync em background apenas 2x/dia
       try {
         if (typeof lookupPhone === "function" && typeof searchByName === "function") {
-          setTimeout(() => {
-            autoSyncContacts(normalized).catch((e) => {
-              console.error("[auto-sync] error:", e?.message || e);
-            });
-          }, 500);
+          if (shouldScanContacts()) {
+            markContactsScan();
+            setTimeout(() => {
+              autoSyncContacts(normalized).catch((e) => {
+                console.error("[auto-sync] error:", e?.message || e);
+              });
+            }, 500);
+          } else {
+            console.log("[auto-sync] skip — última varredura < 12h atrás");
+          }
         }
       } catch (e) {}
 
@@ -473,6 +490,19 @@ export function useWAHA(operator) {
         const msgChatId = msg.chatId;
         if (!msgChatId) return;
 
+        // Notificação local quando página em segundo plano
+        if (msg.from === "patient" && document.hidden) {
+          try {
+            const chatName = msg.chatId?.replace(/@.*$/, "") || "Paciente";
+            navigator.serviceWorker?.controller?.postMessage({
+              type: "SHOW_NOTIFICATION",
+              title: chatName,
+              body: msg.text?.slice(0, 100) || "Nova mensagem",
+              chatId: msgChatId,
+            });
+          } catch {}
+        }
+
         // Atualiza ChatWindow só se estiver aberto
         setMessages(prev => {
           const existing = prev[msgChatId] || [];
@@ -519,6 +549,13 @@ export function useWAHA(operator) {
   // ── 4. loadMessages — abre ChatWindow: últimas 60 msgs ────────
   const loadMessages = useCallback(async (chatId) => {
     activeChatRef.current = chatId;
+    // Sincroniza contato se ausente (sem varredura global — só 1 requisição)
+    try {
+      const existing = resolveName(chatId, null);
+      if (!existing && typeof lookupPhone === "function") {
+        lookupPhone(chatId).catch(() => {});
+      }
+    } catch {}
     // Zera unread
     setChats(prev => {
       const updated = prev.map(c => c.id === chatId ? { ...c, unread: 0 } : c);
@@ -697,6 +734,27 @@ export function useWAHA(operator) {
     }
   }, []);
 
+  // ── Apagar/editar mensagem ────────────────────────────────────
+  const deleteMsg = useCallback(async (chatId, msgId) => {
+    try { await wahaDeleteMessage(chatId, msgId); } catch {}
+    setMessages(prev => {
+      const updated = (prev[chatId] || []).filter(m => m.id !== msgId);
+      cache.set(MSGS_PREFIX + chatId, updated, MSGS_TTL);
+      return { ...prev, [chatId]: updated };
+    });
+  }, []);
+
+  const editMsg = useCallback(async (chatId, msgId, newText) => {
+    try { await wahaEditMessage(chatId, msgId, newText); } catch {}
+    setMessages(prev => {
+      const updated = (prev[chatId] || []).map(m =>
+        m.id === msgId ? { ...m, text: newText, edited: true } : m
+      );
+      cache.set(MSGS_PREFIX + chatId, updated, MSGS_TTL);
+      return { ...prev, [chatId]: updated };
+    });
+  }, []);
+
   // ── 7. Ações ──────────────────────────────────────────────────
   const forwardChat = useCallback((chatId, toRole) => {
     setChats(prev => {
@@ -751,16 +809,50 @@ export function useWAHA(operator) {
     });
   }, []);
 
+  // ── Pesquisa em conteúdo de mensagens (cache local) ─────────────
+  const searchMessages = useCallback((query) => {
+    if (!query || query.length < 3) return [];
+    const q = query.toLowerCase();
+    const results = [];
+    for (const [chatId, msgs] of Object.entries(messages)) {
+      const hits = (msgs || []).filter(m => m.text?.toLowerCase().includes(q));
+      if (hits.length > 0) {
+        const chat = chats.find(c => c.id === chatId);
+        results.push({ chatId, chatName: chat?.name || chatId, hits: hits.slice(-3) });
+      }
+    }
+    // Também busca no cache localStorage para chats não carregados
+    try {
+      for (const [k, v] of Object.entries(localStorage)) {
+        if (!k.startsWith(MSGS_PREFIX)) continue;
+        const chatId = k.slice(MSGS_PREFIX.length);
+        if (results.find(r => r.chatId === chatId)) continue;
+        const data = JSON.parse(v);
+        const msgs = data?.value || data || [];
+        if (!Array.isArray(msgs)) continue;
+        const hits = msgs.filter(m => m.text?.toLowerCase().includes(q));
+        if (hits.length > 0) {
+          const chat = chats.find(c => c.id === chatId);
+          results.push({ chatId, chatName: chat?.name || chatId, hits: hits.slice(-3) });
+        }
+      }
+    } catch {}
+    return results.slice(0, 20);
+  }, [messages, chats]);
+
   return {
     chats, setChats,
     messages,
     loadMessages,
     loadOlderMessages,
     send,
+    deleteMsg,
+    editMsg,
     forwardChat,
     resolveChat,
     markRead,
     markUnread,
+    searchMessages,
     loading,
     error,
     wsStatus,
