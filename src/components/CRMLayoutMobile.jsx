@@ -26,6 +26,7 @@ export default function CRMLayoutMobile({ operator, onLogout, notificationBell }
   const [filter, setFilter]         = useState("all");
   const [search, setSearch]         = useState("");
   const [showNewChat, setShowNewChat] = useState(false);
+  const [newChatPhone, setNewChatPhone] = useState(null);
 
   const { displayName } = useContactsCtx();
   const {
@@ -270,9 +271,9 @@ export default function CRMLayoutMobile({ operator, onLogout, notificationBell }
               onStartNewChat={phone => {
                 const digits = phone.replace(/\D/g, "");
                 const chatId = digits.startsWith("55") ? `${digits}@c.us` : `55${digits}@c.us`;
-                const existing = chats.find(c => c.id === chatId || c.id.startsWith(digits));
+                const existing = chats.find(c => c.id === chatId || c.id.replace(/\D/g,"").slice(-8) === digits.slice(-8));
                 if (existing) handleSelectChat(existing);
-                else setShowNewChat(true);
+                else { setNewChatPhone(digits); setShowNewChat(true); }
               }}
             />
           </>
@@ -306,7 +307,8 @@ export default function CRMLayoutMobile({ operator, onLogout, notificationBell }
       {showNewChat && (
         <NewChatModal
           operator={operator}
-          onClose={() => setShowNewChat(false)}
+          initialPhone={newChatPhone}
+          onClose={() => { setShowNewChat(false); setNewChatPhone(null); }}
           onStartChat={chatId => {
             setShowNewChat(false);
             const existing = chats.find(c => c.id === chatId);

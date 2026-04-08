@@ -12,8 +12,8 @@ const T = {
   hover: "#2d2d2d", inputBg: "#1e1e1e",
 };
 
-export default function NewChatModal({ operator, onClose, onStartChat }) {
-  const [query, setQuery]       = useState("");
+export default function NewChatModal({ operator, onClose, onStartChat, initialPhone }) {
+  const [query, setQuery]       = useState(initialPhone ? formatPhone(initialPhone.replace(/\D/g,"")) : "");
   const [results, setResults]   = useState([]);
   const [checking, setChecking] = useState(false);
   const [checkResult, setCheckResult] = useState(null); // { exists, chatId, phone }
@@ -27,6 +27,13 @@ export default function NewChatModal({ operator, onClose, onStartChat }) {
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
   }, [onClose]);
+
+  // Auto-verifica quando abre com número pré-preenchido (ex: clique na agenda)
+  useEffect(() => {
+    if (initialPhone) {
+      handleCheckAndStart(initialPhone);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Busca local no mapa de contatos
   const searchLocal = useCallback((q) => {
