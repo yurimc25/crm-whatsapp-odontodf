@@ -36,16 +36,18 @@ export function ContactLookupModal({ phoneNumber, chatId, onClose, onSelectConta
       
       // Detecta se é número ou nome
       const digits = query.replace(/\D/g, "");
-      const isPhone = digits.length >= 4;
+      const isFullPhone   = digits.length >= 8;
+      const isShortDigits = digits.length >= 4 && digits.length < 8;
 
-      if (isPhone) {
-        // Busca por número
+      if (isFullPhone) {
+        // Número completo — busca por phone
         url = `/api/contacts?action=search&phone=${encodeURIComponent(digits)}&_t=${Date.now()}`;
-      } else if (query.trim().length >= 2) {
-        // Busca por nome
+      } else if (isShortDigits || query.trim().length >= 2) {
+        // Sufixo curto (4-7 dígitos) ou nome — busca por texto (q)
+        // O Google Contacts também indexa números, então "6274" acha "(61) 9924-6274"
         url = `/api/contacts?action=search&q=${encodeURIComponent(query.trim())}&_t=${Date.now()}`;
       } else {
-        setError("Digite um número com 8+ dígitos ou um nome com 2+ caracteres");
+        setError("Digite um número (mínimo 4 dígitos) ou um nome (mínimo 2 caracteres)");
         setLoading(false);
         return;
       }
@@ -62,20 +64,23 @@ export function ContactLookupModal({ phoneNumber, chatId, onClose, onSelectConta
       }
 
       const data = await r.json();
-      
-      if (isPhone) {
-        // Resultado de busca por número
+
+      if (isFullPhone) {
+        // Busca por número completo — resposta: { found, name, variants }
         if (data.found && data.name) {
           setResults([{ phone: digits, name: data.name, variants: data.variants }]);
         } else {
           setError("Contato não encontrado no Google");
         }
       } else {
-        // Resultado de busca por nome
-        if (data.found && data.contacts && Array.isArray(data.contacts)) {
-          setResults(data.contacts.slice(0, 10)); // Máximo 10 resultados
+        // Busca por texto (nome ou sufixo) — resposta: { found, contacts[] }
+        // Também pode vir no formato { found, name } se for match direto por número
+        if (data.found && data.name) {
+          setResults([{ phone: digits, name: data.name, variants: data.variants }]);
+        } else if (data.found && Array.isArray(data.contacts) && data.contacts.length > 0) {
+          setResults(data.contacts.slice(0, 10));
         } else {
-          setError("Nenhum contato encontrado com esse nome");
+          setError("Nenhum contato encontrado");
         }
       }
     } catch (e) {
