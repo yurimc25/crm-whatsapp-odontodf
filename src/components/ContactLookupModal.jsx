@@ -32,56 +32,67 @@ export function ContactLookupModal({ phoneNumber, chatId, onClose, onSelectConta
     setSelectedIdx(0);
 
     try {
-      let url;
-      
-      // Detecta se é número ou nome
-      const digits = query.replace(/\D/g, "");
-      const isFullPhone   = digits.length >= 8;
-      const isShortDigits = digits.length >= 4 && digits.length < 8;
+      const digits    = query.replace(/\D/g, "");
+      const isDigits  = digits.length === query.trim().length && digits.length > 0;
+      const isFullPhone = digits.length >= 8;
 
-      if (isFullPhone) {
-        // Número completo — busca por phone
-        url = `/api/contacts?action=search&phone=${encodeURIComponent(digits)}&_t=${Date.now()}`;
-      } else if (isShortDigits || query.trim().length >= 2) {
-        // Sufixo curto (4-7 dígitos) ou nome — busca por texto (q)
-        // O Google Contacts também indexa números, então "6274" acha "(61) 9924-6274"
-        url = `/api/contacts?action=search&q=${encodeURIComponent(query.trim())}&_t=${Date.now()}`;
-      } else {
+      if (!isFullPhone && !isDigits && query.trim().length < 2) {
         setError("Digite um número (mínimo 4 dígitos) ou um nome (mínimo 2 caracteres)");
         setLoading(false);
         return;
       }
 
-      const r = await fetch(url, {
-        headers: { "X-Internal-Key": ikey },
-        cache: "no-store",
-      });
+      // ── Google Contacts ──────────────────────────────────────────
+      let googleResults = [];
+      try {
+        const url = isFullPhone
+          ? `/api/contacts?action=search&phone=${encodeURIComponent(digits)}&_t=${Date.now()}`
+          : `/api/contacts?action=search&q=${encodeURIComponent(query.trim())}&_t=${Date.now()}`;
 
-      if (!r.ok) {
-        const data = await r.json().catch(() => ({}));
-        setError(data.error || `Erro ${r.status} ao buscar contatos`);
-        return;
+        const r = await fetch(url, { headers: { "X-Internal-Key": ikey }, cache: "no-store" });
+        if (r.ok) {
+          const data = await r.json();
+          if (data.found && data.name) {
+            googleResults = [{ phone: digits || "", name: data.name, source: "google" }];
+          } else if (data.found && Array.isArray(data.contacts)) {
+            googleResults = data.contacts.slice(0, 10).map(c => ({ ...c, source: "google" }));
+          }
+        }
+      } catch {}
+
+      // ── Codental (só para queries numéricas) ────────────────────
+      // Busca pelo sufixo digitado — retorna pacientes cujo celular termina com esses dígitos
+      let codentalResults = [];
+      if (isDigits && digits.length >= 4) {
+        try {
+          const r = await fetch(
+            `/api/codental?action=search&phone=${digits}`,
+            { headers: { "X-Internal-Key": ikey } }
+          );
+          if (r.ok) {
+            const data = await r.json();
+            codentalResults = (data.patients || []).slice(0, 10).map(p => ({
+              name:   p.fullName || p.full_name || p.name || "",
+              phone:  (p.cellphone_formated || p.cellphone || "").replace(/\D/g, ""),
+              source: "codental",
+            })).filter(c => c.name);
+          }
+        } catch {}
       }
 
-      const data = await r.json();
+      // ── Mescla resultados removendo duplicatas por número ────────
+      const seen = new Set();
+      const merged = [...googleResults, ...codentalResults].filter(c => {
+        const key = (c.phone || "").replace(/\D/g, "").slice(-8) + "|" + (c.name || "").toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
 
-      if (isFullPhone) {
-        // Busca por número completo — resposta: { found, name, variants }
-        if (data.found && data.name) {
-          setResults([{ phone: digits, name: data.name, variants: data.variants }]);
-        } else {
-          setError("Contato não encontrado no Google");
-        }
+      if (merged.length > 0) {
+        setResults(merged);
       } else {
-        // Busca por texto (nome ou sufixo) — resposta: { found, contacts[] }
-        // Também pode vir no formato { found, name } se for match direto por número
-        if (data.found && data.name) {
-          setResults([{ phone: digits, name: data.name, variants: data.variants }]);
-        } else if (data.found && Array.isArray(data.contacts) && data.contacts.length > 0) {
-          setResults(data.contacts.slice(0, 10));
-        } else {
-          setError("Nenhum contato encontrado");
-        }
+        setError("Nenhum contato encontrado");
       }
     } catch (e) {
       setError(e.message);
@@ -249,12 +260,26 @@ export function ContactLookupModal({ phoneNumber, chatId, onClose, onSelectConta
                     textAlign: "left",
                     transition: "all .15s",
                   }}>
-                  <div style={{
-                    color: idx === selectedIdx ? T.accent : T.text,
-                    fontSize: 13,
-                    fontWeight: 600,
-                  }}>
-                    {contact.name || contact.fullName || contact.title || "Sem nome"}
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{
+                      color: idx === selectedIdx ? T.accent : T.text,
+                      fontSize: 13,
+                      fontWeight: 600,
+                      flex: 1,
+                    }}>
+                      {contact.name || contact.fullName || contact.title || "Sem nome"}
+                    </span>
+                    {contact.source && (
+                      <span style={{
+                        fontSize: 9, fontWeight: 700, padding: "1px 5px",
+                        borderRadius: 4, flexShrink: 0,
+                        background: contact.source === "codental" ? "#1a2e40" : "#1a2e22",
+                        color:      contact.source === "codental" ? "#4a9fd4" : T.green,
+                        border:     `1px solid ${contact.source === "codental" ? "#4a9fd444" : T.green + "44"}`,
+                      }}>
+                        {contact.source === "codental" ? "Codental" : "Google"}
+                      </span>
+                    )}
                   </div>
                   {contact.phone && (
                     <div style={{
