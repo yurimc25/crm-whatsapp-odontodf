@@ -565,9 +565,12 @@ export function useWAHA(operator) {
         }).catch(() => {});
       }
     } catch {}
-    // Zera unread
+    // Zera unread apenas ao abrir (se já respondido o unread será zerado ao enviar)
     setChats(prev => {
-      const updated = prev.map(c => c.id === chatId ? { ...c, unread: 0 } : c);
+      const chat = prev.find(c => c.id === chatId);
+      // Mantém unread se paciente está aguardando resposta
+      const keepUnread = chat?.lastPatientTs && chat?.unread > 0;
+      const updated = prev.map(c => c.id === chatId ? { ...c, unread: keepUnread ? c.unread : 0 } : c);
       persistChats(updated);
       return updated;
     });

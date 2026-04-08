@@ -36,7 +36,7 @@ export function ContactLookupModal({ phoneNumber, chatId, onClose, onSelectConta
       
       // Detecta se é número ou nome
       const digits = query.replace(/\D/g, "");
-      const isPhone = digits.length >= 8;
+      const isPhone = digits.length >= 4;
 
       if (isPhone) {
         // Busca por número

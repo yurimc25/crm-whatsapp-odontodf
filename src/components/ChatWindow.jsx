@@ -512,9 +512,24 @@ export default function ChatWindow({
         <MsgContextMenu
           msg={msgCtxMenu.msg}
           x={msgCtxMenu.x} y={msgCtxMenu.y}
-          isOwn={msgCtxMenu.msg.from === "operator" && msgCtxMenu.msg.operator === operator?.name}
+          isOwn={msgCtxMenu.msg.from === "operator"}
           onClose={() => setMsgCtxMenu(null)}
-          onReply={msg => { setReplyTo({ id: msg.id, text: msg.text || "[mídia]", from: msg.from }); setMsgCtxMenu(null); }}
+          onReply={msg => {
+            const mediaLabel = msg.media
+              ? (msg.media.type?.includes("image") || msg.media.type?.includes("sticker") ? "📷 Imagem"
+                : msg.media.type?.includes("video") ? "🎥 Vídeo"
+                : msg.media.type?.includes("audio") || msg.media.type?.includes("voice") ? "🎵 Áudio"
+                : "📎 Arquivo")
+              : null;
+            setReplyTo({
+              id: msg.id,
+              text: msg.text || mediaLabel || "[mídia]",
+              from: msg.from,
+              thumbUrl: msg.media?.thumbUrl || null,
+              mediaLabel,
+            });
+            setMsgCtxMenu(null);
+          }}
           onEdit={msg => { setEditingId(msg.id); setText(msg.text || ""); setMsgCtxMenu(null); }}
           onDelete={msg => { onDeleteMsg?.(msg.id); setMsgCtxMenu(null); }}
           onReact={async (msg, emoji) => { try { await sendReaction(chat.id, msg.id, emoji); } catch {} setMsgCtxMenu(null); }}
@@ -532,8 +547,20 @@ export default function ChatWindow({
           <div style={{ display:"flex", alignItems:"center", gap:8,
             background:"#252525", borderRadius:6, padding:"6px 10px",
             borderLeft:`3px solid ${T.accent}` }}>
+            {/* Thumbnail da mídia respondida */}
+            {replyTo.thumbUrl && (
+              <img src={replyTo.thumbUrl} alt=""
+                style={{ width:36, height:36, borderRadius:4, objectFit:"cover", flexShrink:0 }} />
+            )}
+            {!replyTo.thumbUrl && replyTo.mediaLabel && (
+              <span style={{ fontSize:22, flexShrink:0 }}>
+                {replyTo.mediaLabel.split(" ")[0]}
+              </span>
+            )}
             <div style={{ flex:1, minWidth:0 }}>
-              <div style={{ color:T.accent, fontSize:10, fontWeight:700 }}>Respondendo</div>
+              <div style={{ color:T.accent, fontSize:10, fontWeight:700 }}>
+                Respondendo {replyTo.from === "patient" ? "paciente" : ""}
+              </div>
               <div style={{ color:T.sub, fontSize:11, overflow:"hidden",
                 textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
                 {replyTo.text}
@@ -954,16 +981,10 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
   };
   console.debug(`[media] init msgId=${msgId} proxiedUrl=${proxiedUrl ? 'yes' : 'no'} downloadPath=${!!downloadPath} fallbackPath=${!!fallbackDownloadPath} urlToFetch=${!!urlToFetch}`, debugInfo);
 
-  // Revoga objectURL ao desmontar
+  // NÃO revoga objectURL ao desmontar — o blob permanece vivo no _mediaBlobCache
+  // para que voltar à conversa não precise baixar novamente.
+  // A revogação acontece automaticamente quando a aba é fechada.
   const blobUrlRef = useRef(null);
-  useEffect(() => {
-    return () => {
-      if (blobUrlRef.current) {
-        console.debug(`[media] revoke objectURL for msgId=${msgId}`, blobUrlRef.current);
-        URL.revokeObjectURL(blobUrlRef.current);
-      }
-    };
-  }, []);
 
   // Helper: resolve binary from a WAHA endpoint (SEM fila — callers já gerenciam a fila).
   // O endpoint ?downloadMedia=true retorna JSON com media.url — precisa re-buscar o binário.
@@ -1104,8 +1125,10 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
         {lightbox && (
           <ImageLightbox
             src={fullUrl || thumbSrc}
+            fullUrl={fullUrl}
             downloadUrl={media.url || downloadPath}
             iKey={iKey}
+            msgId={msgId}
             onClose={() => setLightbox(false)} />
         )}
       </>
@@ -1310,10 +1333,12 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
 }
 
 // ── Lightbox de imagem com zoom ───────────────────────────────────
-function ImageLightbox({ src, downloadUrl, iKey, onClose }) {
+function ImageLightbox({ src, fullUrl, downloadUrl, iKey, msgId, onClose }) {
   const [zoom, setZoom] = useState(1);
   const [pos, setPos]   = useState({ x:0, y:0 });
   const [drag, setDrag] = useState(null);
+  const [ocrResult, setOcrResult] = useState(null);
+  const [ocrLoading, setOcrLoading] = useState(false);
 
   useEffect(() => {
     const k = (e) => { if (e.key === "Escape") onClose(); };
@@ -1322,28 +1347,69 @@ function ImageLightbox({ src, downloadUrl, iKey, onClose }) {
   }, [onClose]);
 
   async function handleDownload() {
-    if (!downloadUrl) return;
-    console.debug(`[lightbox] download start -> ${downloadUrl}`);
-    try {
-      const r = await fetch(downloadUrl, { headers: { "X-Internal-Key": iKey || "" } });
-      console.debug(`[lightbox] download response status=${r.status}`);
-      if (!r.ok) {
-        const txt = await r.text().catch(() => "");
-        console.error(`[lightbox] download failed ${r.status}:`, txt.slice(0, 300));
-        return;
-      }
-      const blob = await r.blob();
-      console.debug(`[lightbox] downloaded blob size=${blob.size} type=${blob.type}`);
-      const url  = URL.createObjectURL(blob);
-      const a    = document.createElement("a");
-      a.href = url; a.download = "imagem"; a.click();
-      setTimeout(() => {
-        console.debug(`[lightbox] revoke downloaded objectURL`);
-        URL.revokeObjectURL(url);
-      }, 5000);
-    } catch (e) {
-      console.error(`[lightbox] download error:`, e?.message || e);
+    // Se temos o blob já carregado, usa diretamente (sem request ao WAHA)
+    if (fullUrl) {
+      const a = document.createElement("a");
+      a.href = fullUrl; a.download = `imagem_${msgId || Date.now()}.jpg`; a.click();
+      return;
     }
+    if (!downloadUrl) return;
+    try {
+      // Descobre a URL binária real (pode retornar JSON com media.url)
+      const r = await fetch(downloadUrl, { headers: { "X-Internal-Key": iKey || "" } });
+      if (!r.ok) return;
+      const ct = r.headers.get("content-type") || "";
+      let blob;
+      if (ct.includes("application/json")) {
+        const json = await r.json().catch(() => null);
+        const mediaUrl = json?.media?.url;
+        if (!mediaUrl) return;
+        const r2 = await fetch(`/api/waha?path=${encodeURIComponent(mediaUrl)}`, { headers: { "X-Internal-Key": iKey || "" } });
+        if (!r2.ok) return;
+        blob = await r2.blob();
+      } else {
+        blob = await r.blob();
+      }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `imagem_${msgId || Date.now()}.jpg`; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (e) {
+      console.error("[lightbox] download error:", e?.message || e);
+    }
+  }
+
+  async function handleOcr() {
+    if (!fullUrl && !downloadUrl) return;
+    setOcrLoading(true);
+    setOcrResult(null);
+    try {
+      // Converte para base64
+      let base64 = null;
+      let mime = "image/jpeg";
+      if (fullUrl && fullUrl.startsWith("blob:")) {
+        const r = await fetch(fullUrl);
+        const blob = await r.blob();
+        mime = blob.type || "image/jpeg";
+        const ab = await blob.arrayBuffer();
+        const bytes = new Uint8Array(ab);
+        let binary = "";
+        for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+        base64 = btoa(binary);
+      }
+      if (!base64) { setOcrLoading(false); return; }
+      const res = await fetch("/api/ocr", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Internal-Key": iKey || "" },
+        body: JSON.stringify({ base64, mime }),
+      });
+      if (!res.ok) { setOcrLoading(false); return; }
+      const data = await res.json();
+      setOcrResult(data.text || null);
+    } catch (e) {
+      console.error("[ocr] error:", e?.message || e);
+    }
+    setOcrLoading(false);
   }
 
   function onWheel(e) {
@@ -1378,11 +1444,29 @@ function ImageLightbox({ src, downloadUrl, iKey, onClose }) {
         <button onClick={() => setZoom(z => Math.min(5, z+0.5))} style={btnStyle}>🔍+</button>
         <button onClick={() => { setZoom(1); setPos({x:0,y:0}); }} style={btnStyle}>↺</button>
         <button onClick={() => setZoom(z => Math.max(1, z-0.5))} style={btnStyle}>🔍−</button>
-        {downloadUrl && (
+        <button onClick={handleOcr} disabled={ocrLoading || (!fullUrl)} style={btnStyle} title="Analisar dados do paciente">
+          {ocrLoading ? "⏳" : "🔎 Analisar"}
+        </button>
+        {(fullUrl || downloadUrl) && (
           <button onClick={handleDownload} style={btnStyle} title="Baixar">⬇</button>
         )}
         <button onClick={onClose} style={{ ...btnStyle, background:"#c0412c44" }}>✕</button>
       </div>
+      {/* Resultado OCR */}
+      {ocrResult && (
+        <div onClick={e => e.stopPropagation()} style={{
+          position:"fixed", bottom:50, left:"50%", transform:"translateX(-50%)",
+          background:"#252525", border:"1px solid #d4956a44", borderRadius:10,
+          padding:"12px 16px", maxWidth:480, width:"90vw",
+          color:"#ececec", fontSize:12, lineHeight:1.6,
+          boxShadow:"0 8px 32px rgba(0,0,0,.6)", zIndex:10000,
+        }}>
+          <div style={{ color:"#d4956a", fontWeight:700, fontSize:11, marginBottom:6, textTransform:"uppercase" }}>
+            🔎 Dados detectados na imagem
+          </div>
+          <pre style={{ margin:0, whiteSpace:"pre-wrap", fontFamily:"inherit" }}>{ocrResult}</pre>
+        </div>
+      )}
       <div style={{ position:"fixed", bottom:16, left:"50%", transform:"translateX(-50%)",
         color:"rgba(255,255,255,.4)", fontSize:11 }}>
         Scroll para zoom · Arraste para mover · Esc para fechar

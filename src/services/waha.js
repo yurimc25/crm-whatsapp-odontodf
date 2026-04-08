@@ -138,7 +138,15 @@ export function normalizeChat(wahaChat) {
     || wahaChat.msgs?.[0]
     || null;
 
-  const lastBody = lm?.body || lm?.text || lm?.content || lm?._data?.body || "";
+  const lmType   = (lm?.type || lm?._data?.type || "").toLowerCase();
+  const hasMedia = lm?.hasMedia || lm?._data?.hasMedia || false;
+  const mediaLabel = hasMedia
+    ? (lmType.includes("image") || lmType.includes("sticker") ? "📷 Imagem"
+      : lmType.includes("video") ? "🎥 Vídeo"
+      : lmType.includes("audio") || lmType.includes("ptt") || lmType.includes("voice") ? "🎵 Áudio"
+      : "📎 Arquivo")
+    : "";
+  const lastBody = lm?.body || lm?.text || lm?.content || lm?._data?.body || mediaLabel;
   const lastTs   = lm?.timestamp || lm?.t || lm?._data?.t || null;
   const cleanId  = wahaChat.id.replace(/@.*$/, "");
   const phone    = extractPhone(wahaChat.id);

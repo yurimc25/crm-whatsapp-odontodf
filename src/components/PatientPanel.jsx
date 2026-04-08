@@ -703,6 +703,7 @@ function EvolucoeTab({ paciente, evols, uploads, buscando, onReload }) {
 function UploadsGrid({ uploads, paciente, maxItems = 9, onUploaded }) {
   const [lightbox, setLightbox]     = useState(null);
   const [dragging, setDragging]     = useState(false);
+  const dragCounter = useRef(0);
   const [uploading, setUploading]   = useState(false);
   const [uploadMsg, setUploadMsg]   = useState(null);
   const iKey = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
@@ -743,6 +744,7 @@ function UploadsGrid({ uploads, paciente, maxItems = 9, onUploaded }) {
 
   async function onDrop(e) {
     e.preventDefault();
+    dragCounter.current = 0;
     setDragging(false);
     // Arrastar mensagem de mídia/doc do ChatWindow
     const crmData = e.dataTransfer.getData("application/crm-file");
@@ -772,8 +774,9 @@ function UploadsGrid({ uploads, paciente, maxItems = 9, onUploaded }) {
     if (file) enviarArquivo(file);
   }
 
-  function onDragOver(e) { e.preventDefault(); setDragging(true); }
-  function onDragLeave(e) { e.preventDefault(); setDragging(false); }
+  function onDragEnter(e) { e.preventDefault(); dragCounter.current++; setDragging(true); }
+  function onDragOver(e)  { e.preventDefault(); }
+  function onDragLeave(e) { e.preventDefault(); dragCounter.current--; if (dragCounter.current <= 0) { dragCounter.current = 0; setDragging(false); } }
 
   function onFileInput(e) {
     const file = e.target.files?.[0];
@@ -785,6 +788,7 @@ function UploadsGrid({ uploads, paciente, maxItems = 9, onUploaded }) {
     <>
       <div
         onDrop={onDrop}
+        onDragEnter={onDragEnter}
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
         style={{ position:"relative" }}>
