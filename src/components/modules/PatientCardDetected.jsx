@@ -204,13 +204,18 @@ function isTemplateVazio(text) {
   return comValor.length === 0;
 }
 
+// Divide o texto em blocos de pacientes quando há múltiplos prontuários
+function splitPatientBlocks(text) {
+  // Detecta se há mais de um bloco pelo marcador "Nome completo:" ou "Nome:"
+  const RE_BLOCK_START = /(?=(?:Nome completo|Nome)\s*:/i);
+  const parts = text.split(RE_BLOCK_START).map(s => s.trim()).filter(Boolean);
+  // Só divide se cada parte tiver ao menos um campo de formulário
+  const RE_FIELD = /(?:cpf|e-mail|email|telefone|nascimento|convênio|convenio)/i;
+  const valid = parts.filter(p => RE_FIELD.test(p));
+  return valid.length >= 2 ? valid : [text];
+}
+
 export default function PatientCardDetected({ msg }) {
-  const [showModal, setShowModal] = useState(false);
-  const [modalAction, setModalAction] = useState(null);
-  const [status, setStatus]  = useState("idle");
-  const [result, setResult]  = useState(null); // { patient_id, url }
-  const [error, setError]    = useState(null);
-  const data = parsePatientData(msg.text);
   const iKey = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
 
   // Não exibe card se template vazio
@@ -231,8 +236,58 @@ export default function PatientCardDetected({ msg }) {
     );
   }
 
+  const blocks = splitPatientBlocks(msg.text);
+
+  return (
+    <div style={{ display:"flex", justifyContent:"flex-start", marginBottom:2 }}>
+      <div style={{ maxWidth:"78%" }}>
+        {/* Bolha original */}
+        <div style={{ background:T.bubble, border:`1px solid ${T.border}`,
+          borderRadius:"2px 12px 0 0", padding:"8px 12px",
+          boxShadow:"0 1px 3px rgba(0,0,0,.3)" }}>
+          <div style={{ color:T.text, fontSize:13, lineHeight:1.55, whiteSpace:"pre-wrap" }}>
+            {msg.text}
+          </div>
+          <div style={{ color:T.sub, fontSize:10, marginTop:4, textAlign:"right" }}>
+            {msg.time}
+          </div>
+        </div>
+
+        {/* Um card por paciente detectado */}
+        {blocks.map((block, idx) => (
+          <PatientCard
+            key={idx}
+            block={block}
+            index={idx}
+            total={blocks.length}
+            iKey={iKey}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PatientCard({ block, index, total, iKey }) {
+  const [showModal, setShowModal] = useState(false);
+  const [modalAction, setModalAction] = useState(null);
+  const [status, setStatus] = useState("idle");
+  const [result, setResult] = useState(null);
+  const [error, setError]   = useState(null);
+
+  const data        = parsePatientData(block);
   const camposVazios = CAMPOS.filter(c => !data[c] || data[c].trim() === "");
-  const algumDado    = CAMPOS.some(c => data[c] && data[c].trim() !== "");
+
+  const isFirst   = index === 0;
+  const isLast    = index === total - 1;
+  const isOnly    = total === 1;
+  const borderRadius = isOnly
+    ? "0 0 12px 12px"
+    : isFirst
+      ? "0"
+      : isLast
+        ? "0 0 12px 12px"
+        : "0";
 
   function handleAction(action) {
     setError(null);
@@ -246,8 +301,7 @@ export default function PatientCardDetected({ msg }) {
 
   async function executar(action, formData) {
     if (action === "doctoralia") {
-      setStatus("loading");
-      setError(null);
+      setStatus("loading"); setError(null);
       try {
         const r = await fetch("/api/doctoralia?action=create", {
           method: "POST",
@@ -257,23 +311,15 @@ export default function PatientCardDetected({ msg }) {
         const json = await r.json();
         if (json.tokenExpired) {
           setError("Token Doctoralia expirado — atualize DOCTORALIA_TOKEN no Vercel.");
-          setStatus("error");
-          return;
+          setStatus("error"); return;
         }
         if (!r.ok) throw new Error(json.error || `Erro ${r.status}`);
-        setResult(json);
-        setStatus("success_doctoralia");
-      } catch (e) {
-        setError(e.message);
-        setStatus("error");
-      }
+        setResult(json); setStatus("success_doctoralia");
+      } catch (e) { setError(e.message); setStatus("error"); }
       return;
     }
-
-    // Codental
     if (action !== "codental") return;
-    setStatus("loading");
-    setError(null);
+    setStatus("loading"); setError(null);
     try {
       const r = await fetch("/api/codental?action=create", {
         method: "POST",
@@ -282,12 +328,8 @@ export default function PatientCardDetected({ msg }) {
       });
       const json = await r.json();
       if (!r.ok) throw new Error(json.error || `Erro ${r.status}`);
-      setResult(json);
-      setStatus("success_codental");
-    } catch (e) {
-      setError(e.message);
-      setStatus("error");
-    }
+      setResult(json); setStatus("success_codental");
+    } catch (e) { setError(e.message); setStatus("error"); }
   }
 
   const isSuccess = status === "success_codental" || status === "success_doctoralia";
@@ -296,122 +338,100 @@ export default function PatientCardDetected({ msg }) {
 
   return (
     <>
-      <div style={{ display:"flex", justifyContent:"flex-start", marginBottom:2 }}>
-        <div style={{ maxWidth:"78%" }}>
-          {/* Bolha original */}
-          <div style={{ background:T.bubble, border:`1px solid ${T.border}`,
-            borderRadius:"2px 12px 0 0", padding:"8px 12px",
-            boxShadow:"0 1px 3px rgba(0,0,0,.3)" }}>
-            <div style={{ color:T.text, fontSize:13, lineHeight:1.55, whiteSpace:"pre-wrap" }}>
-              {msg.text}
-            </div>
-            <div style={{ color:T.sub, fontSize:10, marginTop:4, textAlign:"right" }}>
-              {msg.time}
-            </div>
-          </div>
+      <div style={{ background:T.card, border:`1px solid ${T.cardBord}`,
+        borderRadius, padding:"10px 12px",
+        borderTop:`2px solid ${T.accent}`,
+        marginTop: index > 0 ? 2 : 0 }}>
 
-          {/* Card detectado */}
-          <div style={{ background:T.card, border:`1px solid ${T.cardBord}`,
-            borderRadius:"0 0 12px 12px", padding:"10px 12px",
-            borderTop:`2px solid ${T.accent}` }}>
+        {/* Título */}
+        <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:8 }}>
+          <span style={{ fontSize:13 }}>🦷</span>
+          <span style={{ fontSize:10, fontWeight:700, color:T.accent,
+            textTransform:"uppercase", letterSpacing:.5 }}>
+            {total > 1 ? `Paciente ${index + 1} de ${total}` : "Dados de Paciente Detectados"}
+          </span>
+          {camposVazios.length > 0 ? (
+            <span style={{ marginLeft:"auto", fontSize:9, fontWeight:700,
+              color:T.warn, background:T.warnBg, padding:"2px 6px", borderRadius:4 }}>
+              {camposVazios.length} ausente{camposVazios.length>1?"s":""}
+            </span>
+          ) : (
+            <span style={{ marginLeft:"auto", fontSize:9, fontWeight:700,
+              color:T.green, background:T.greenBg, padding:"2px 6px", borderRadius:4 }}>
+              Completo
+            </span>
+          )}
+        </div>
 
-            {/* Título */}
-            <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:8 }}>
-              <span style={{ fontSize:13 }}>🦷</span>
-              <span style={{ fontSize:10, fontWeight:700, color:T.accent,
-                textTransform:"uppercase", letterSpacing:.5 }}>
-                Dados de Paciente Detectados
-              </span>
-              {camposVazios.length > 0 ? (
-                <span style={{ marginLeft:"auto", fontSize:9, fontWeight:700,
-                  color:T.warn, background:T.warnBg,
-                  padding:"2px 6px", borderRadius:4 }}>
-                  {camposVazios.length} ausente{camposVazios.length>1?"s":""}
-                </span>
-              ) : (
-                <span style={{ marginLeft:"auto", fontSize:9, fontWeight:700,
-                  color:T.green, background:T.greenBg,
-                  padding:"2px 6px", borderRadius:4 }}>
-                  Completo
-                </span>
-              )}
-            </div>
-
-            {/* Grid de dados */}
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr",
-              gap:"5px 12px", marginBottom:10 }}>
-              {[["nome","Nome"],["cpf","CPF"],["convenio","Convênio"],["carteirinha","Carteirinha"],
-                ["nascimento","Nascimento"],["email","Email"],["telefone","Telefone"]
-              ].map(([k,l]) => (
-                <div key={k}>
-                  <div style={{ fontSize:9, fontWeight:700, color:T.sub,
-                    textTransform:"uppercase", letterSpacing:.5, marginBottom:1 }}>{l}</div>
-                  <div style={{ fontSize:12,
-                    color: data[k] ? T.text : "#555",
-                    fontFamily: k==="cpf"||k==="telefone" ? "'DM Mono',monospace" : "inherit" }}>
-                    {k==="cpf" && data[k]
-                      ? data[k].replace(/(\d{3})(\d{3})(\d{3})(\d{2})/,"$1.$2.$3-$4")
-                      : data[k] || "—"}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Botões */}
-            {isSuccess ? (
-              <div style={{ background:T.greenBg, border:`1px solid ${T.green}44`,
-                borderRadius:6, padding:"8px 12px", color:T.green,
-                fontSize:12, fontWeight:600, textAlign:"center" }}>
-                ✓ {status === "success_codental" ? "Paciente adicionado ao Codental!" : "Paciente adicionado ao Doctoralia!"}
-                {result?.url && (
-                  <a href={result.url} target="_blank" rel="noreferrer"
-                    style={{ display:"block", marginTop:4, color:T.accent,
-                      fontSize:11, textDecoration:"underline" }}>
-                    {status === "success_codental" ? "Ver prontuário →" : "Ver no Doctoralia →"}
-                  </a>
-                )}
+        {/* Grid de dados */}
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr",
+          gap:"5px 12px", marginBottom:10 }}>
+          {[["nome","Nome"],["cpf","CPF"],["convenio","Convênio"],["carteirinha","Carteirinha"],
+            ["nascimento","Nascimento"],["email","Email"],["telefone","Telefone"]
+          ].map(([k,l]) => (
+            <div key={k}>
+              <div style={{ fontSize:9, fontWeight:700, color:T.sub,
+                textTransform:"uppercase", letterSpacing:.5, marginBottom:1 }}>{l}</div>
+              <div style={{ fontSize:12,
+                color: data[k] ? T.text : "#555",
+                fontFamily: k==="cpf"||k==="telefone" ? "'DM Mono',monospace" : "inherit" }}>
+                {k==="cpf" && data[k]
+                  ? data[k].replace(/(\d{3})(\d{3})(\d{3})(\d{2})/,"$1.$2.$3-$4")
+                  : data[k] || "—"}
               </div>
-            ) : (
-              <>
-                {isError && (
-                  <div style={{ background:"#2a1010", border:"1px solid #c0412c44",
-                    borderRadius:6, padding:"6px 10px", color:"#e57373",
-                    fontSize:11, marginBottom:6 }}>
-                    ⚠ {error}
-                  </div>
-                )}
-                <div style={{ display:"flex", gap:6 }}>
-                  <button onClick={() => handleAction("codental")} disabled={isLoading}
-                    style={{ flex:1, background:T.accentBg, border:`1px solid ${T.accent}44`,
-                      borderRadius:6, padding:"7px 8px", color:T.accent,
-                      fontSize:11, fontWeight:600, cursor: isLoading ? "not-allowed" : "pointer",
-                      opacity: isLoading ? .6 : 1 }}>
-                    {isLoading ? "⏳ Adicionando..." : camposVazios.length > 0 ? "✏️ Completar + Codental" : "+ Prontuário Codental"}
-                  </button>
-                  <button onClick={() => handleAction("doctoralia")} disabled={isLoading}
-                    style={{ flex:1, background:"#1a1e3a", border:"1px solid #3a4a8a44",
-                      borderRadius:6, padding:"7px 8px", color:"#7a9af8",
-                      fontSize:11, fontWeight:600, cursor:"pointer",
-                      opacity: isLoading ? .6 : 1 }}>
-                    🗓 Doctoralia
-                  </button>
-                </div>
-              </>
+            </div>
+          ))}
+        </div>
+
+        {/* Botões */}
+        {isSuccess ? (
+          <div style={{ background:T.greenBg, border:`1px solid ${T.green}44`,
+            borderRadius:6, padding:"8px 12px", color:T.green,
+            fontSize:12, fontWeight:600, textAlign:"center" }}>
+            ✓ {status === "success_codental" ? "Paciente adicionado ao Codental!" : "Paciente adicionado ao Doctoralia!"}
+            {result?.url && (
+              <a href={result.url} target="_blank" rel="noreferrer"
+                style={{ display:"block", marginTop:4, color:T.accent,
+                  fontSize:11, textDecoration:"underline" }}>
+                {status === "success_codental" ? "Ver prontuário →" : "Ver no Doctoralia →"}
+              </a>
             )}
           </div>
-        </div>
+        ) : (
+          <>
+            {isError && (
+              <div style={{ background:"#2a1010", border:"1px solid #c0412c44",
+                borderRadius:6, padding:"6px 10px", color:"#e57373",
+                fontSize:11, marginBottom:6 }}>
+                ⚠ {error}
+              </div>
+            )}
+            <div style={{ display:"flex", gap:6 }}>
+              <button onClick={() => handleAction("codental")} disabled={isLoading}
+                style={{ flex:1, background:T.accentBg, border:`1px solid ${T.accent}44`,
+                  borderRadius:6, padding:"7px 8px", color:T.accent,
+                  fontSize:11, fontWeight:600, cursor: isLoading ? "not-allowed" : "pointer",
+                  opacity: isLoading ? .6 : 1 }}>
+                {isLoading ? "⏳ Adicionando..." : camposVazios.length > 0 ? "✏️ Completar + Codental" : "+ Prontuário Codental"}
+              </button>
+              <button onClick={() => handleAction("doctoralia")} disabled={isLoading}
+                style={{ flex:1, background:"#1a1e3a", border:"1px solid #3a4a8a44",
+                  borderRadius:6, padding:"7px 8px", color:"#7a9af8",
+                  fontSize:11, fontWeight:600, cursor:"pointer",
+                  opacity: isLoading ? .6 : 1 }}>
+                🗓 Doctoralia
+              </button>
+            </div>
+          </>
+        )}
       </div>
 
-      {/* Modal para preencher dados ausentes */}
       {showModal && (
         <Modal
           data={data}
           camposVazios={camposVazios}
           action={modalAction}
-          onConfirm={(formData) => {
-            setShowModal(false);
-            executar(modalAction, formData);
-          }}
+          onConfirm={(formData) => { setShowModal(false); executar(modalAction, formData); }}
           onClose={() => setShowModal(false)}
         />
       )}

@@ -50,11 +50,19 @@ function shouldScanContacts() {
 function markContactsScan() {
   try { localStorage.setItem(CONTACTS_SCAN_KEY, String(Date.now())); } catch {}
 }
-const CHATS_KEY   = "waha_chats";
-const MSGS_PREFIX = "waha_msgs_";
-const CHATS_TTL   = 7  * 24 * 60 * 60 * 1000; // 7 dias
-const MSGS_TTL    = 30 * 24 * 60 * 60 * 1000; // 30 dias
-const ikey        = () => import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
+const CHATS_KEY      = "waha_chats";
+const MSGS_PREFIX    = "waha_msgs_";
+const CHATS_TTL      = 7  * 24 * 60 * 60 * 1000; // 7 dias
+const MSGS_TTL       = 30 * 24 * 60 * 60 * 1000; // 30 dias
+const LAST_SYNC_KEY  = "waha_last_sync_ts";       // timestamp da última sync bem-sucedida
+const ikey           = () => import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
+
+function getLastSyncTs() {
+  try { return parseInt(localStorage.getItem(LAST_SYNC_KEY) || "0"); } catch { return 0; }
+}
+function markLastSync() {
+  try { localStorage.setItem(LAST_SYNC_KEY, String(Date.now())); } catch {}
+}
 
 // Persiste chats no cache utility E no localStorage diretamente
 // Garante que F5 sempre lê o estado correto
@@ -157,18 +165,15 @@ export function useWAHA(operator) {
         } catch {}
       }
 
+      // Calcula fromTs baseado na última sync salva (+ 1 dia de buffer)
       let fromTs = null;
-      if (cachedChats.length > 0) {
-        const lastTs = Math.max(...cachedChats.map(c => {
-          const ts = c.lastTs || c.lastTime;
-          return ts ? new Date(ts).getTime() : 0;
-        }).filter(Boolean));
-        if (lastTs > 0) {
-          const daysSince = Math.ceil((Date.now() - lastTs) / 86400000) + 1;
-          const daysToFetch = Math.min(daysSince, 100);
-          fromTs = Math.floor((Date.now() - daysToFetch * 86400000) / 1000);
-          console.log(`[waha] cache hit: buscando últimos ${daysToFetch} dias`);
-        }
+      const lastSync = getLastSyncTs();
+      if (lastSync > 0) {
+        const msSinceSync = Date.now() - lastSync;
+        const msToFetch   = msSinceSync + 86400000; // + 1 dia de buffer
+        const daysToFetch = Math.min(Math.ceil(msToFetch / 86400000), 100);
+        fromTs = Math.floor((Date.now() - daysToFetch * 86400000) / 1000);
+        console.log(`[waha] última sync: ${new Date(lastSync).toLocaleString()} — buscando últimos ${daysToFetch} dias`);
       } else {
         fromTs = Math.floor((Date.now() - 100 * 86400000) / 1000);
         console.log("[waha] first load: buscando últimos 100 dias");
@@ -255,6 +260,8 @@ export function useWAHA(operator) {
         }
         return merged;
       });
+
+      markLastSync();
 
       const chatIds = normalized.map(c => c.id);
 

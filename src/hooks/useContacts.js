@@ -250,51 +250,57 @@ export function useContacts() {
 
     lookedUp.current.add(phone);
 
-    // ── 3. Codental searchByPhone ─────────────────────────────
+    // ── 3. Codental searchByPhone — tenta todas as variantes BR ──
+    // Necessário pois o WAHA pode fornecer número sem o 9 (ex: 6199246274)
+    // enquanto o Codental tem cadastrado com 9 (61999246274)
+    const codVariants = [...new Set([phone, ...phoneVariants(phone)])];
     try {
-      const r = await fetch(
-        `/api/codental?action=search&phone=${phone}`,
-        { headers: { "X-Internal-Key": codKey } }
-      );
-      if (r.ok) {
+      let patients = [];
+      for (const variant of codVariants) {
+        const r = await fetch(
+          `/api/codental?action=search&phone=${variant}`,
+          { headers: { "X-Internal-Key": codKey } }
+        );
+        if (!r.ok) continue;
         const data = await r.json();
-        const patients = data.patients || [];
-        if (patients.length > 0) {
-          const p = patients[0];
-          const name = p.fullName || p.full_name || p.name;
-          const pPhone = p.cellphone_formated || p.cellphone || phone;
-          if (name) {
-            const incoming = {};
-            for (const v of phoneVariants(pPhone.replace(/\D/g,""))) incoming[v] = name;
-            for (const v of phoneVariants(phone)) incoming[v] = name;
-            mergeMap(incoming, "local");
-            console.log(`[contacts] Codental ${phone} → ${name}`);
-            return name;
-          }
+        patients = data.patients || [];
+        if (patients.length > 0) break;
+      }
+      if (patients.length > 0) {
+        const p = patients[0];
+        const name = p.fullName || p.full_name || p.name;
+        const pPhone = p.cellphone_formated || p.cellphone || phone;
+        if (name) {
+          const incoming = {};
+          for (const v of phoneVariants(pPhone.replace(/\D/g,""))) incoming[v] = name;
+          for (const v of phoneVariants(phone)) incoming[v] = name;
+          mergeMap(incoming, "local");
+          console.log(`[contacts] Codental ${phone} → ${name}`);
+          return name;
         }
       }
     } catch {}
 
-    // ── 4. Google individual — UMA request com cache-bust ────────
-    // _t evita 304 do CDN do Vercel
-    try {
-      const r = await fetch(
-        `/api/contacts?action=search&phone=${phone}&_t=${Date.now()}`,
-        { headers: { "X-Internal-Key": internalKey }, cache: "no-store" }
-      );
-      if (r.status === 304 || !r.ok) {
-        console.warn(`[contacts] Google ${phone}: status ${r.status}`);
-        return null;
+    // ── 4. Google individual — tenta variantes BR até achar ─────
+    const googleVariants = [...new Set([phone, ...phoneVariants(phone)])];
+    for (const variant of googleVariants) {
+      try {
+        const r = await fetch(
+          `/api/contacts?action=search&phone=${variant}&_t=${Date.now()}`,
+          { headers: { "X-Internal-Key": internalKey }, cache: "no-store" }
+        );
+        if (r.status === 304 || !r.ok) continue;
+        const { found, name, variants: fv } = await r.json();
+        if (!found || !name) continue;
+        const incoming = {};
+        for (const gv of (fv || phoneVariants(variant))) incoming[gv] = name;
+        for (const v of phoneVariants(phone)) incoming[v] = name;
+        mergeMap(incoming, "local");
+        console.log(`[contacts] Google ${variant} → ${name}`);
+        return name;
+      } catch (e) {
+        console.warn(`[contacts] Google ${variant} error:`, e.message);
       }
-      const { found, name, variants: fv } = await r.json();
-      if (!found || !name) return null;
-      const incoming = {};
-      for (const gv of (fv || phoneVariants(phone))) incoming[gv] = name;
-      mergeMap(incoming, "local");
-      console.log(`[contacts] Google ${phone} → ${name}`);
-      return name;
-    } catch (e) {
-      console.warn(`[contacts] Google ${phone} error:`, e.message);
     }
 
     return null;
