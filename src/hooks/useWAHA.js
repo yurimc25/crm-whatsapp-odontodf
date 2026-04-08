@@ -97,7 +97,7 @@ export function useWAHA(operator) {
 
   const activeChatRef = useRef(null);
   const socketRef     = useRef(null);
-  const { lookupPhone } = useContactsCtx();
+  const { lookupPhone, searchByName } = useContactsCtx();
 
   const perms = { verTodos: operator?.role === "gerente" || operator?.role === "admin" };
 
@@ -251,9 +251,21 @@ export function useWAHA(operator) {
       try {
         if (typeof lookupPhone === "function") {
           setTimeout(() => {
-            for (const id of chatIds) {
-              try { lookupPhone(id).catch(() => {}); } catch (e) {}
-            }
+            (async () => {
+              for (const n of normalized) {
+                const id = n.id;
+                try {
+                  const found = await lookupPhone(id).catch(() => null);
+                  if (!found) {
+                    // Se não encontrou por telefone, tenta por nome/pushname
+                    const nameToTry = n.pushname || n.name || null;
+                    if (nameToTry && typeof searchByName === "function") {
+                      try { await searchByName(nameToTry).catch(() => {}); } catch (e) {}
+                    }
+                  }
+                } catch (e) {}
+              }
+            })();
           }, 500);
         }
       } catch (e) {}
