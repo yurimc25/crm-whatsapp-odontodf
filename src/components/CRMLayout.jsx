@@ -58,14 +58,14 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
     .filter(c => filter === "all" || c.status === filter)
     .map(c => ({
       ...c,
-      name:  displayName(c.id, c.name),
+      name:  displayName(c.id, c.pushname, c.pushname),
       phone: formatPhone(wahaIdToPhone(c.id)),
     }));
 
   function handleSelectChat(rawChat) {
     setActiveChat({
       ...rawChat,
-      name:  displayName(rawChat.id, rawChat.name),
+      name:  displayName(rawChat.id, rawChat.pushname, rawChat.pushname),
       phone: formatPhone(wahaIdToPhone(rawChat.id)),
     });
     loadMessages(rawChat.id);

@@ -16,12 +16,23 @@ import {
 import { MOCK_CHATS, MOCK_MESSAGES } from "../data/mock";
 import { cache } from "../utils/cache";
 
-// Ordena mensagens — estável por timestamp + índice original
+// Ordena mensagens — estável por timestamp real, nunca usa índice de array como critério primário
+function tsToNum(ts) {
+  if (!ts) return 0;
+  const n = new Date(ts).getTime();
+  return isNaN(n) ? 0 : n;
+}
 function sortMsgs(msgs) {
   return msgs.map((m, i) => ({ m, i }))
     .sort((a, b) => {
-      const diff = new Date(a.m.ts) - new Date(b.m.ts);
-      return diff !== 0 ? diff : a.i - b.i;
+      const ta = tsToNum(a.m.ts);
+      const tb = tsToNum(b.m.ts);
+      if (ta !== tb) return ta - tb;
+      // Mesmo segundo: usa o ID como desempate (IDs do WAHA têm sufixo hex cronológico)
+      if (a.m.id && b.m.id && !a.m.id.startsWith("tmp-") && !b.m.id.startsWith("tmp-")) {
+        return a.m.id < b.m.id ? -1 : a.m.id > b.m.id ? 1 : 0;
+      }
+      return a.i - b.i;
     })
     .map(({ m }) => m);
 }
@@ -117,6 +128,7 @@ export function useWAHA(operator) {
 
   const activeChatRef = useRef(null);
   const socketRef     = useRef(null);
+  const wsConnected   = useRef(false);
   const { lookupPhone, lookupPhonePriority, searchByName, addLocalContact, resolveName } = useContactsCtx();
 
   const perms = { verTodos: operator?.role === "gerente" || operator?.role === "admin" };
@@ -304,35 +316,7 @@ export function useWAHA(operator) {
               } catch (e) {}
             }
             
-            // 3. Fallback: bulk Google search e procura o número nele
-            try {
-              const r = await fetch("/api/contacts", {
-                headers: { "X-Internal-Key": internalKey }
-              });
-              if (r.ok) {
-                const { contacts: googleMap } = await r.json();
-                if (googleMap && typeof googleMap === "object") {
-                  // Extrai telefone do chat
-                  const phone = chatId.replace(/@.*$/, "").replace(/\D/g, "");
-                  // Procura o número no mapa do Google
-                  for (const [key, name] of Object.entries(googleMap)) {
-                    if (key.includes(phone.slice(-8))) {
-                      // Encontrou um match parcial
-                      if (addLocalContact && typeof addLocalContact === "function") {
-                        addLocalContact({ phone, name });
-                        syncedContacts[phone] = name;
-                        console.log(`[auto-sync] ${chatId} → ${name} (via bulk Google)`);
-                      }
-                      return;
-                    }
-                  }
-                }
-              }
-            } catch (e) {
-              console.warn(`[auto-sync] bulk Google failed:`, e?.message);
-            }
-            
-            console.debug(`[auto-sync] ${chatId} not found (phone/name/bulk all failed)`);
+            console.debug(`[auto-sync] ${chatId} not found via phone/name`);
           }));
           
           // Pausa entre batches
@@ -355,21 +339,21 @@ export function useWAHA(operator) {
         }
       }
 
-      // Carrega última mensagem dos chats sem lastMsg (resolve "Sincronizando...")
-      // Limita aos 40 mais recentes para não sobrecarregar
+      // Carrega última mensagem dos chats sem lastMsg (resolve "Sem mensagens recentes")
+      // Limita aos 15 mais recentes — em lotes de 3 com 500ms intervalo
       const semMsg = normalized
-        .filter(c => !c.lastMsg)
+        .filter(c => !c.lastMsg && c.lastTs)
         .sort((a, b) => {
-          const ta = a.lastTs ? new Date(a.lastTs).getTime() : 0;
-          const tb = b.lastTs ? new Date(b.lastTs).getTime() : 0;
+          const ta = new Date(a.lastTs).getTime();
+          const tb = new Date(b.lastTs).getTime();
           return tb - ta;
         })
-        .slice(0, 40)
+        .slice(0, 15)
         .map(c => c.id);
 
       if (semMsg.length > 0) {
-        console.log(`[waha] loadLastMessages para ${semMsg.length} chats sem preview`);
-        setTimeout(() => loadLastMessages(semMsg), 800);
+        console.log(`[waha] loadLastMessages para ${semMsg.length} chats`);
+        setTimeout(() => loadLastMessages(semMsg), 1000);
       }
 
       // Dispara auto-sync em background apenas 2x/dia
@@ -466,7 +450,7 @@ export function useWAHA(operator) {
   // Usa estado atual do React (já mesclado com local) — não dados crus do WAHA
   // ── Carrega APENAS última mensagem de cada chat (lotes de 5) ──
   async function loadLastMessages(chatIds) {
-    const BATCH = 5;
+    const BATCH = 3; // Reduzido: menos concorrência para não travar o WAHA
     for (let i = 0; i < chatIds.length; i += BATCH) {
       const batch = chatIds.slice(i, i + BATCH);
       await Promise.allSettled(batch.map(async (chatId) => {
@@ -481,16 +465,16 @@ export function useWAHA(operator) {
           const raw = await r.json();
           if (!Array.isArray(raw) || raw.length === 0) return;
           const msg = normalizeMessage(raw[raw.length - 1]);
+          const lastMsg = msg.text || (msg.location ? "📍 Localização" : msg.media ? "📎 Mídia" : "");
 
           setChats(prev => {
             const updated = prev.map(c => {
               if (c.id !== chatId) return c;
-              const lastAny = msg;
               const isPatient = msg.from === "patient";
               const autoRes   = isPatient && isFarewell(msg.text);
               return {
                 ...c,
-                lastMsg:  msg.text || c.lastMsg,
+                lastMsg:  lastMsg || c.lastMsg,
                 lastTime: msg.time || c.lastTime,
                 lastTs:   msg.ts   || c.lastTs,
                 lastPatientTs: isPatient && !autoRes ? msg.ts : c.lastPatientTs,
@@ -501,8 +485,7 @@ export function useWAHA(operator) {
           });
         } catch {}
       }));
-      // Pausa entre lotes para não travar
-      if (i + BATCH < chatIds.length) await new Promise(r => setTimeout(r, 300));
+      if (i + BATCH < chatIds.length) await new Promise(r => setTimeout(r, 500));
     }
   }
 
@@ -539,14 +522,19 @@ export function useWAHA(operator) {
 
         // Sempre atualiza preview na ChatList
         setChats(prev => {
+          const exists  = prev.find(c => c.id === msgChatId);
+          const isPatient = msg.from === "patient";
+          const isActive  = msgChatId === activeChatRef.current;
+          const autoRes   = isPatient && isFarewell(msg.text);
+          const lastMsg   = msg.text || (msg.location ? "📍 Localização" : msg.media ? "📎 Mídia" : "");
+
+          if (!exists) return prev; // chat novo chegará via onChatUpdate ou próximo poll
+
           const updated = prev.map(c => {
             if (c.id !== msgChatId) return c;
-            const isPatient = msg.from === "patient";
-            const isActive  = msgChatId === activeChatRef.current;
-            const autoRes   = isPatient && isFarewell(msg.text);
             return {
               ...c,
-              lastMsg:       msg.text,
+              lastMsg,
               lastTime:      msg.time,
               lastTs:        msg.ts,
               lastPatientTs: isPatient && !autoRes ? msg.ts : c.lastPatientTs,
@@ -557,10 +545,29 @@ export function useWAHA(operator) {
           return updated;
         });
       },
-      onStatus: setWsStatus,
-      onError:  () => setWsStatus("reconnecting"),
+      onChatUpdate: (payload) => {
+        // chat.new — novo chat via WS, sem precisar de polling
+        const newChat = normalizeChat(payload);
+        if (!newChat?.id) return;
+        setChats(prev => {
+          if (prev.find(c => c.id === newChat.id)) return prev;
+          const updated = [newChat, ...prev];
+          persistChats(updated);
+          return updated;
+        });
+        // Busca a última mensagem do novo chat
+        loadLastMessages([newChat.id]);
+      },
+      onStatus: (s) => {
+        wsConnected.current = s === "connected";
+        setWsStatus(s);
+      },
+      onError: () => {
+        wsConnected.current = false;
+        setWsStatus("reconnecting");
+      },
     });
-    return () => socketRef.current?.close();
+    return () => { wsConnected.current = false; socketRef.current?.close(); };
   }, [sessionOk]);
 
   // ── Mock ──────────────────────────────────────────────────────
@@ -702,9 +709,12 @@ export function useWAHA(operator) {
   }, []);
 
   // ── Polling mensagens do chat ativo (3s) ─────────────────────
+  // Polling do chat ativo — só roda quando WebSocket está desconectado (fallback)
   useEffect(() => {
     if (!sessionOk || USE_MOCK) return;
     const iv = setInterval(async () => {
+      // Pula se WS está conectado — ele já entrega as mensagens em tempo real
+      if (wsConnected.current) return;
       const chatId = activeChatRef.current;
       if (!chatId) return;
       try {
@@ -729,22 +739,29 @@ export function useWAHA(operator) {
           return { ...prev, [chatId]: updated };
         });
       } catch {}
-    }, 3000);
+    }, 5000); // 5s no fallback (WS desconectado)
     return () => clearInterval(iv);
   }, [sessionOk]);
 
-  // ── Polling lista de chats (5s) — atualiza previews e detecta novas msgs ──
+  // ── Polling lista de chats (10s quando WS conectado, 5s no fallback) ──
+  // Busca apenas chats com atividade nos últimos 5 minutos para reduzir carga
   useEffect(() => {
     if (!sessionOk || USE_MOCK) return;
     const iv = setInterval(async () => {
       try {
-        const raw = await getChats();
-        if (!Array.isArray(raw)) return;
-        // Apenas chats ativos na última hora
-        const cutoff = Math.floor((Date.now() - 60 * 60 * 1000) / 1000);
-        const recent = raw.filter(c => {
+        const SESSION = import.meta.env.VITE_WAHA_SESSION || "default";
+        // Cutoff: 5 minutos atrás (em segundos) — só chats recentes
+        const cutoffSec = Math.floor((Date.now() - 5 * 60 * 1000) / 1000);
+        const r = await fetch(
+          `/api/waha?path=/api/${SESSION}/chats?limit=20&updatedAt.gte=${cutoffSec}`,
+          { headers: { "X-Internal-Key": ikey() } }
+        );
+        const raw = r.ok ? await r.json() : null;
+        // Fallback: se a API não suporta updatedAt.gte, retorna lista maior — filtra client-side
+        const all = Array.isArray(raw) ? raw : [];
+        const recent = all.filter(c => {
           const ts = c.lastMessage?.timestamp || c.lastMessage?.t || 0;
-          return ts >= cutoff;
+          return ts >= cutoffSec;
         });
         if (!recent.length) return;
         const normalized = recent.map(c => normalizeChat(c));
@@ -784,12 +801,12 @@ export function useWAHA(operator) {
           return updated;
         });
 
-        // Busca individual para chats com lastTs novo mas msg vazia
+        // Busca individual para chats com lastTs novo mas msg vazia (máx 5)
         if (precisamMsg.length > 0) {
-          loadLastMessages(precisamMsg.slice(0, 10));
+          loadLastMessages(precisamMsg.slice(0, 5));
         }
       } catch {}
-    }, 5000);
+    }, 10000); // 10s — WS cuida das mensagens em tempo real; polling é só para chats novos/atualizados
     return () => clearInterval(iv);
   }, [sessionOk]);
 

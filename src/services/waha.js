@@ -226,8 +226,11 @@ export function normalizeMessage(wahaMsg) {
     || "";
 
   const tsRaw = wahaMsg.timestamp || wahaMsg._data?.messageTimestamp || wahaMsg.t || null;
-  const tsMs  = tsRaw ? tsRaw * 1000 : Date.now();
-  const ts    = new Date(tsMs).toISOString();
+  // Se não há timestamp real, não fabricar Date.now() — causaria mensagens antigas
+  // sem data aparecendo no topo. Usa epoch 0 e será ordenada no final.
+  // WAHA sempre retorna timestamp em segundos Unix; ms seria > 1e12
+  const tsMs  = tsRaw ? (tsRaw > 1e12 ? tsRaw : tsRaw * 1000) : 0;
+  const ts    = tsMs ? new Date(tsMs).toISOString() : null;
 
   // chatId é o sender (from) — pode ser do payload direto ou precisa extrair do formato
   // Resposta padrão WAHA: "from": "11111111111@c.us" ou similar
@@ -345,7 +348,7 @@ export function normalizeMessage(wahaMsg) {
     id:       wahaMsg.id || `tmp-${tsMs}`,  // ID direto do WAHA já é único
     from:     wahaMsg.fromMe ? "operator" : "patient",
     text:     body,
-    time:     new Date(tsMs).toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" }),
+    time:     tsMs ? new Date(tsMs).toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" }) : "",
     ts,
     chatId,
     type,
@@ -598,10 +601,10 @@ export async function rejectCall(callId) {
 
 // ── WebSocket ─────────────────────────────────────────────────────
 
-export function createWAHASocket({ onMessage, onStatus, onError }) {
+export function createWAHASocket({ onMessage, onChatUpdate, onStatus, onError }) {
   const wsUrl = WAHA_URL.replace(/^http/, "ws");
-  // Escuta message e message.any (enviadas por mim também)
-  const url = `${wsUrl}/ws?session=${SESSION}&events=message,message.any&x-api-key=${WAHA_KEY}`;
+  // message.any = enviadas e recebidas; chat.new = chats novos em tempo real
+  const url = `${wsUrl}/ws?session=${SESSION}&events=message,message.any,chat.new&x-api-key=${WAHA_KEY}`;
 
   let ws, reconnectTimer;
   let dead = false;
@@ -613,16 +616,19 @@ export function createWAHASocket({ onMessage, onStatus, onError }) {
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        if (
-          (data.event === "message" || data.event === "message.any") &&
-          data.payload
-        ) {
-          const msg = normalizeMessage(data.payload);
-          // Injeta chatId se vier em data.payload.from ou data.payload.chatId
-          if (!msg.chatId && data.payload.from) {
-            msg.chatId = data.payload.from.replace(/:.*@/, "@");
+        const { event: ev, payload } = data;
+
+        if ((ev === "message" || ev === "message.any") && payload) {
+          const msg = normalizeMessage(payload);
+          if (!msg.chatId && payload.from) {
+            msg.chatId = payload.from.replace(/:.*@/, "@");
           }
           onMessage?.(msg);
+          return;
+        }
+
+        if (ev === "chat.new" && payload) {
+          onChatUpdate?.(payload);
         }
       } catch (e) {
         console.warn("[WAHA WS] parse error", e);
@@ -641,5 +647,6 @@ export function createWAHASocket({ onMessage, onStatus, onError }) {
   return {
     send:  (data) => ws?.readyState === WebSocket.OPEN && ws.send(JSON.stringify(data)),
     close: () => { dead = true; clearTimeout(reconnectTimer); ws?.close(); },
+    isOpen: () => ws?.readyState === WebSocket.OPEN,
   };
 }

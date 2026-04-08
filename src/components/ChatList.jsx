@@ -1,4 +1,4 @@
-import { useMemo, useState, useRef, useEffect } from "react";
+import { useMemo, useState, useRef, useEffect, useCallback } from "react";
 import { useContactsCtx } from "../App";
 import { formatPhone, wahaIdToPhone, phoneVariants } from "../hooks/useContacts";
 import AgendaFilter from "./AgendaFilter";
@@ -35,9 +35,14 @@ export default function ChatList({
   chats, activeId, search, onSearch, onSelect,
   onForward, onMarkRead, onMarkUnread, loading, onStartNewChat, searchMessages, operator
 }) {
+  const PAGE = 30; // itens iniciais
+  const MORE = 20; // itens por scroll
+
   const [ctxMenu, setCtxMenu]       = useState(null);
   const [agendaOpen, setAgendaOpen] = useState(false);
-  const [codentalHits, setCodentalHits] = useState([]);  // resultados extras do Codental
+  const [codentalHits, setCodentalHits] = useState([]);
+  const [visibleCount, setVisibleCount] = useState(PAGE);
+  const sentinelRef = useRef(null);
   const codentalSearch = useRef(null);
   const { contactMap, addLocalContact } = useContactsCtx();
 
@@ -138,6 +143,23 @@ export default function ChatList({
     return () => { cancelled = true; };
   }, [search, chats, ikey]);
 
+  // Reset paginação quando filtro/busca muda
+  useEffect(() => { setVisibleCount(PAGE); }, [search, chats.length]);
+
+  // IntersectionObserver — carrega mais ao chegar no sentinel
+  useEffect(() => {
+    if (!sentinelRef.current) return;
+    const obs = new IntersectionObserver(entries => {
+      if (entries[0].isIntersecting) {
+        setVisibleCount(v => Math.min(v + MORE, filtered.length));
+      }
+    }, { threshold: 0.1 });
+    obs.observe(sentinelRef.current);
+    return () => obs.disconnect();
+  }, [filtered.length]);
+
+  const visibleChats = search ? filtered : filtered.slice(0, visibleCount);
+
   // Se é número puro digitado e não tem resultado, mostra botão de iniciar
   const inputDigits = search.replace(/\D/g, "");
   const showStartButton = inputDigits.length >= 8 && filtered.length === 0 && contactOnlyResults.length === 0;
@@ -218,7 +240,7 @@ export default function ChatList({
             Nenhuma conversa encontrada
           </div>
         )}
-        {filtered.map(chat => (
+        {visibleChats.map(chat => (
           <ChatItem
             key={chat.id}
             chat={chat}
@@ -227,6 +249,13 @@ export default function ChatList({
             onOpenMenu={(e) => openMenu(e, chat)}
           />
         ))}
+
+        {/* Sentinel — dispara carregamento de mais itens */}
+        {!search && visibleCount < filtered.length && (
+          <div ref={sentinelRef} style={{ padding:"12px", textAlign:"center", color:T.sub, fontSize:11 }}>
+            {filtered.length - visibleCount} conversa{filtered.length - visibleCount !== 1 ? "s" : ""} restante{filtered.length - visibleCount !== 1 ? "s" : ""}...
+          </div>
+        )}
 
         {/* Contatos sem conversa */}
         {contactOnlyResults.length > 0 && (

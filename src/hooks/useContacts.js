@@ -438,7 +438,14 @@ export function useContacts() {
   }, [contactMap, findInMap]);
 
   const displayName = useCallback((wahaId, fallback, pushname) => {
-    return resolveName(wahaId, pushname) || fallback || formatPhone(wahaIdToPhone(wahaId));
+    const resolved = resolveName(wahaId, pushname);
+    if (resolved) return resolved;
+    // Se o fallback é puramente numérico (número bruto sem formatação), formata-o
+    if (fallback) {
+      const isRawNumber = /^\+?[\d\s\-().]+$/.test(fallback) && fallback.replace(/\D/g,"").length >= 8;
+      return isRawNumber ? formatPhone(fallback.replace(/\D/g,"")) : fallback;
+    }
+    return formatPhone(wahaIdToPhone(wahaId));
   }, [resolveName]);
 
   const displayInfo = useCallback((wahaId, fallbackName, pushname) => {

@@ -84,18 +84,18 @@ export default function CRMLayoutMobile({ operator, onLogout, notificationBell }
     .filter(canSeeChat)
     .filter(c => filter === "all" || c.status === filter)
     .filter(c => !search ||
-      displayName(c.id, c.name).toLowerCase().includes(search.toLowerCase()) ||
+      displayName(c.id, c.pushname, c.pushname).toLowerCase().includes(search.toLowerCase()) ||
       c.phone?.includes(search))
     .map(c => ({
       ...c,
-      name:  displayName(c.id, c.name),
+      name:  displayName(c.id, c.pushname, c.pushname),
       phone: formatPhone(wahaIdToPhone(c.id)),
     }));
 
   function handleSelectChat(rawChat) {
     const enriched = {
       ...rawChat,
-      name:  displayName(rawChat.id, rawChat.name),
+      name:  displayName(rawChat.id, rawChat.pushname, rawChat.pushname),
       phone: formatPhone(wahaIdToPhone(rawChat.id)),
     };
     setActiveChat(enriched);
@@ -150,7 +150,7 @@ export default function CRMLayoutMobile({ operator, onLogout, notificationBell }
           {screen === "list"
             ? "Clínica CRM"
             : screen === "chat"
-              ? (activeChat ? displayName(activeChat.id, activeChat.name) : "Chat")
+              ? (activeChat ? displayName(activeChat.id, activeChat.pushname, activeChat.pushname) : "Chat")
               : "Paciente"}
         </span>
 
@@ -282,7 +282,7 @@ export default function CRMLayoutMobile({ operator, onLogout, notificationBell }
           <ChatWindow
             chat={{
               ...activeChat,
-              name:  displayName(activeChat.id, activeChat.name),
+              name:  displayName(activeChat.id, activeChat.pushname, activeChat.pushname),
               phone: formatPhone(wahaIdToPhone(activeChat.id)),
             }}
             messages={messages[activeChat.id] || []}
