@@ -250,107 +250,90 @@ export function useContacts() {
 
     lookedUp.current.add(phone);
 
-    // ── 3. Codental searchByPhone — tenta todas as variantes BR ──
-    // Necessário pois o WAHA pode fornecer número sem o 9 (ex: 6199246274)
-    // enquanto o Codental tem cadastrado com 9 (61999246274)
-    const codVariants = [...new Set([phone, ...phoneVariants(phone)])];
+    const digits = phone.replace(/\D/g, "");
+    const myVariants = new Set(phoneVariants(digits));
+
+    // Verifica se um número (string de dígitos) corresponde ao nosso contato
+    function phoneMatches(cPhone) {
+      const cp = (cPhone || "").replace(/\D/g, "");
+      if (!cp || cp.length < 8) return false;
+      if (myVariants.has(cp)) return true;
+      // Sufixo compartilhado de >= 8 dígitos
+      const minLen = Math.min(cp.length, digits.length);
+      return minLen >= 8 && cp.slice(-minLen) === digits.slice(-minLen);
+    }
+
+    function saveContact(name, cPhone) {
+      const incoming = {};
+      const cp = (cPhone || "").replace(/\D/g, "");
+      if (cp) for (const v of phoneVariants(cp)) incoming[v] = name;
+      for (const v of myVariants) incoming[v] = name;
+      mergeMap(incoming, "local");
+    }
+
+    // ── 3. Codental — busca pelos últimos 8 dígitos (uma requisição) ──
+    // O Codental aceita sufixo numérico e retorna lista de pacientes
     try {
-      let patients = [];
-      for (const variant of codVariants) {
-        const r = await fetch(
-          `/api/codental?action=search&phone=${variant}`,
-          { headers: { "X-Internal-Key": codKey } }
-        );
-        if (!r.ok) continue;
+      const suffix8 = digits.slice(-8);
+      const r = await fetch(
+        `/api/codental?action=search&phone=${suffix8}`,
+        { headers: { "X-Internal-Key": codKey } }
+      );
+      if (r.ok) {
         const data = await r.json();
-        patients = data.patients || [];
-        if (patients.length > 0) break;
-      }
-      if (patients.length > 0) {
-        const p = patients[0];
-        const name = p.fullName || p.full_name || p.name;
-        const pPhone = p.cellphone_formated || p.cellphone || phone;
-        if (name) {
-          const incoming = {};
-          for (const v of phoneVariants(pPhone.replace(/\D/g,""))) incoming[v] = name;
-          for (const v of phoneVariants(phone)) incoming[v] = name;
-          mergeMap(incoming, "local");
-          console.log(`[contacts] Codental ${phone} → ${name}`);
-          return name;
+        const patients = data.patients || [];
+        // Filtra localmente pelo número completo
+        const match = patients.find(p => {
+          const pPhone = (p.cellphone_formated || p.cellphone || "").replace(/\D/g, "");
+          return phoneMatches(pPhone);
+        });
+        if (match) {
+          const name = match.fullName || match.full_name || match.name;
+          const pPhone = match.cellphone_formated || match.cellphone || phone;
+          if (name) {
+            saveContact(name, pPhone);
+            console.log(`[contacts] Codental ${phone} → ${name}`);
+            return name;
+          }
         }
       }
     } catch {}
 
-    // ── 4. Google — fase A: busca por phone com todas as variantes BR ────
-    const googleVariants = [...new Set([phone, ...phoneVariants(phone)])];
-
-    async function tryGooglePhone(variant) {
-      const r = await fetch(
-        `/api/contacts?action=search&phone=${variant}&_t=${Date.now()}`,
-        { headers: { "X-Internal-Key": internalKey }, cache: "no-store" }
-      );
-      if (r.status === 400 || r.status === 304 || !r.ok) return null;
-      const { found, name, variants: fv } = await r.json();
-      if (!found || !name) return null;
-      return { name, fv };
-    }
-
-    async function tryGoogleQ(q) {
+    // ── 4. Google — uma requisição com últimos 4 dígitos, filtra localmente ──
+    async function googleSearchQ(q) {
       const r = await fetch(
         `/api/contacts?action=search&q=${encodeURIComponent(q)}&_t=${Date.now()}`,
         { headers: { "X-Internal-Key": internalKey }, cache: "no-store" }
       );
-      if (!r.ok) return null;
+      if (!r.ok) return [];
       const data = await r.json();
-      if (!data.found) return null;
-      // Pode retornar { name } ou { contacts: [...] }
-      if (data.name) return { name: data.name, fv: data.variants };
-      if (Array.isArray(data.contacts) && data.contacts.length > 0) {
-        const c = data.contacts[0];
-        const cName = c.name || c.fullName || c.title;
-        return cName ? { name: cName, fv: null } : null;
+      if (!data.found) return [];
+      // Normaliza para sempre retornar array de { name, phone }
+      if (data.name) {
+        // Resposta direta: { found, name, variants }
+        const fv = data.variants || [];
+        const cPhone = Array.isArray(fv) ? (fv.find(v => String(v).replace(/\D/g,"").length >= 8) || "") : fv;
+        return [{ name: data.name, phone: String(cPhone).replace(/\D/g,"") }];
       }
-      return null;
+      if (Array.isArray(data.contacts)) {
+        return data.contacts.map(c => ({
+          name: c.name || c.fullName || c.title || "",
+          phone: (c.phone || "").replace(/\D/g, ""),
+        })).filter(c => c.name);
+      }
+      return [];
     }
 
-    function saveGoogle(name, fv, variant) {
-      const incoming = {};
-      for (const gv of (fv || phoneVariants(variant))) incoming[gv] = name;
-      for (const v of phoneVariants(phone)) incoming[v] = name;
-      mergeMap(incoming, "local");
-      console.log(`[contacts] Google ${variant} → ${name}`);
-    }
-
-    for (const variant of googleVariants) {
+    // Tenta com últimos 4 dígitos primeiro (mais genérico, retorna mais resultados)
+    // Depois sobe para 8 se não achou correspondência
+    for (const suffix of [digits.slice(-4), digits.slice(-8)]) {
+      if (!suffix || suffix.length < 4) continue;
       try {
-        const hit = await tryGooglePhone(variant);
-        if (hit) { saveGoogle(hit.name, hit.fv, variant); return hit.name; }
-      } catch {}
-    }
-
-    // Fase B: fallback por busca de texto (q) com os últimos 8 dígitos
-    // Valida que o contato retornado tem telefone compatível com o número original
-    const digits = phone.replace(/\D/g, "");
-    const myVariants = new Set(phoneVariants(digits));
-
-    function contactPhoneMatchesOriginal(fv) {
-      if (!fv) return false;
-      const fvArr = Array.isArray(fv) ? fv : [fv];
-      return fvArr.some(v => {
-        const vd = String(v).replace(/\D/g, "");
-        // Considera match se compartilham >= 8 dígitos finais
-        if (myVariants.has(vd)) return true;
-        const overlap = digits.slice(-8);
-        return overlap.length >= 8 && vd.endsWith(overlap);
-      });
-    }
-
-    const suffix8 = digits.slice(-8);
-    if (suffix8.length === 8) {
-      try {
-        const hit = await tryGoogleQ(suffix8);
-        if (hit && contactPhoneMatchesOriginal(hit.fv)) {
-          saveGoogle(hit.name, hit.fv, suffix8);
+        const candidates = await googleSearchQ(suffix);
+        const hit = candidates.find(c => phoneMatches(c.phone));
+        if (hit) {
+          saveContact(hit.name, hit.phone);
+          console.log(`[contacts] Google q=${suffix} → ${hit.name} (${hit.phone})`);
           return hit.name;
         }
       } catch {}

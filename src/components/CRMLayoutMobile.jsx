@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import ChatList from "./ChatList";
 import ChatWindow from "./ChatWindow";
 import PatientPanel from "./PatientPanel";
+import NewChatModal from "./NewChatModal";
 import { useWAHA } from "../hooks/useWAHA";
 import { ROLE_PERMISSIONS } from "../data/mock";
 import { useContactsCtx } from "../App";
@@ -24,10 +25,12 @@ export default function CRMLayoutMobile({ operator, onLogout, notificationBell }
   const [activeChat, setActiveChat] = useState(null);
   const [filter, setFilter]         = useState("all");
   const [search, setSearch]         = useState("");
+  const [showNewChat, setShowNewChat] = useState(false);
 
   const { displayName } = useContactsCtx();
   const {
     chats, messages, loadMessages, loadOlderMessages, send,
+    deleteMsg, editMsg, searchMessages,
     forwardChat, resolveChat, markRead, markUnread,
     loading, error, wsStatus,
   } = useWAHA(operator);
@@ -240,18 +243,39 @@ export default function CRMLayoutMobile({ operator, onLogout, notificationBell }
       <div style={{ flex:1, overflow:"hidden", display:"flex", flexDirection:"column" }}>
 
         {screen === "list" && (
-          <ChatList
-            chats={enrichedChats}
-            activeId={activeChat?.id}
-            search={search}
-            onSearch={setSearch}
-            onSelect={c => handleSelectChat(chats.find(x => x.id === c.id) || c)}
-            onForward={(chatId, toRole) => forwardChat(chatId, toRole)}
-            onMarkRead={markRead}
-            onMarkUnread={markUnread}
-            loading={loading}
-            operator={operator}
-          />
+          <>
+            {/* Botão Nova Conversa */}
+            <div style={{ padding:"8px 10px 0", flexShrink:0 }}>
+              <button onClick={() => setShowNewChat(true)} style={{
+                width:"100%", background:"#3a2a1e", border:"1px solid #d4956a44",
+                borderRadius:8, padding:"7px 12px", color:"#d4956a",
+                fontSize:12, fontWeight:600, cursor:"pointer",
+                display:"flex", alignItems:"center", justifyContent:"center", gap:6,
+              }}>
+                ✏️ Nova conversa
+              </button>
+            </div>
+            <ChatList
+              chats={enrichedChats}
+              activeId={activeChat?.id}
+              search={search}
+              onSearch={setSearch}
+              onSelect={c => handleSelectChat(chats.find(x => x.id === c.id) || c)}
+              onForward={(chatId, toRole) => forwardChat(chatId, toRole)}
+              onMarkRead={markRead}
+              onMarkUnread={markUnread}
+              loading={loading}
+              operator={operator}
+              searchMessages={searchMessages}
+              onStartNewChat={phone => {
+                const digits = phone.replace(/\D/g, "");
+                const chatId = digits.startsWith("55") ? `${digits}@c.us` : `55${digits}@c.us`;
+                const existing = chats.find(c => c.id === chatId || c.id.startsWith(digits));
+                if (existing) handleSelectChat(existing);
+                else setShowNewChat(true);
+              }}
+            />
+          </>
         )}
 
         {screen === "chat" && activeChat && (
@@ -268,6 +292,8 @@ export default function CRMLayoutMobile({ operator, onLogout, notificationBell }
             onResolve={() => resolveChat(activeChat.id)}
             canForwardToAdmin={perms.verAdmin}
             onLoadOlder={loadOlderMessages}
+            onDeleteMsg={(msgId) => deleteMsg?.(activeChat.id, msgId)}
+            onEditMsg={(msgId, newText) => editMsg?.(activeChat.id, msgId, newText)}
           />
         )}
 
@@ -275,6 +301,32 @@ export default function CRMLayoutMobile({ operator, onLogout, notificationBell }
           <PatientPanel chat={activeChat} operator={operator} />
         )}
       </div>
+
+      {/* Modal Nova Conversa */}
+      {showNewChat && (
+        <NewChatModal
+          operator={operator}
+          onClose={() => setShowNewChat(false)}
+          onStartChat={chatId => {
+            setShowNewChat(false);
+            const existing = chats.find(c => c.id === chatId);
+            if (existing) {
+              handleSelectChat(existing);
+            } else {
+              const tmp = {
+                id: chatId, name: chatId, pushname: null,
+                phone: chatId.replace(/@.*$/, ""),
+                isValidPhone: true, lastMsg: "", lastTime: "", lastTs: null,
+                unread: 0, status: "open", assignedTo: null, tags: [],
+                avatar: "??", avatarColor: "#555", photoUrl: null,
+              };
+              handleSelectChat(tmp);
+            }
+          }}
+        />
+      )}
+
+      {/* Backup Drive — admin/gerente, acessível via botão na topbar da lista */}
     </div>
   );
 }
