@@ -489,75 +489,136 @@ export function useWAHA(operator) {
     }
   }
 
-  // ── 3. WebSocket — tempo real ─────────────────────────────────
+  // ── 3. Tempo real: SSE relay local → fallback WebSocket WAHA ────
   useEffect(() => {
     if (!sessionOk || USE_MOCK) return;
-    socketRef.current = createWAHASocket({
-      onMessage: (msg) => {
-        const msgChatId = msg.chatId;
-        if (!msgChatId) return;
 
-        // Notificação local quando página em segundo plano
-        if (msg.from === "patient" && document.hidden) {
-          try {
-            const chatName = msg.chatId?.replace(/@.*$/, "") || "Paciente";
-            navigator.serviceWorker?.controller?.postMessage({
-              type: "SHOW_NOTIFICATION",
-              title: chatName,
-              body: msg.text?.slice(0, 100) || "Nova mensagem",
-              chatId: msgChatId,
-            });
-          } catch {}
-        }
+    const RELAY_URL = import.meta.env.VITE_RELAY_URL; // ex: http://localhost:3001
 
-        // Atualiza ChatWindow só se estiver aberto
-        setMessages(prev => {
-          const existing = prev[msgChatId] || [];
-          if (existing.find(m => m.id === msg.id)) return prev;
-          const semTmp  = removeTmp(existing, [msg]);
-          const updated = sortMsgs([...semTmp, msg]);
-          cache.set(MSGS_PREFIX + msgChatId, updated, MSGS_TTL);
-          return { ...prev, [msgChatId]: updated };
-        });
+    // Handlers compartilhados entre SSE e WS
+    function handleMsg(msg) {
+      const msgChatId = msg.chatId;
+      if (!msgChatId) return;
 
-        // Sempre atualiza preview na ChatList
-        setChats(prev => {
-          const exists  = prev.find(c => c.id === msgChatId);
-          const isPatient = msg.from === "patient";
-          const isActive  = msgChatId === activeChatRef.current;
-          const autoRes   = isPatient && isFarewell(msg.text);
-          const lastMsg   = msg.text || (msg.location ? "📍 Localização" : msg.media ? "📎 Mídia" : "");
-
-          if (!exists) return prev; // chat novo chegará via onChatUpdate ou próximo poll
-
-          const updated = prev.map(c => {
-            if (c.id !== msgChatId) return c;
-            return {
-              ...c,
-              lastMsg,
-              lastTime:      msg.time,
-              lastTs:        msg.ts,
-              lastPatientTs: isPatient && !autoRes ? msg.ts : c.lastPatientTs,
-              unread: isPatient && !isActive && !autoRes ? (c.unread || 0) + 1 : c.unread,
-            };
+      if (msg.from === "patient" && document.hidden) {
+        try {
+          navigator.serviceWorker?.controller?.postMessage({
+            type: "SHOW_NOTIFICATION",
+            title: msg.chatId?.replace(/@.*$/, "") || "Paciente",
+            body: msg.text?.slice(0, 100) || "Nova mensagem",
+            chatId: msgChatId,
           });
-          persistChats(updated);
-          return updated;
+        } catch {}
+      }
+
+      setMessages(prev => {
+        const existing = prev[msgChatId] || [];
+        if (existing.find(m => m.id === msg.id)) return prev;
+        const semTmp  = removeTmp(existing, [msg]);
+        const updated = sortMsgs([...semTmp, msg]);
+        cache.set(MSGS_PREFIX + msgChatId, updated, MSGS_TTL);
+        return { ...prev, [msgChatId]: updated };
+      });
+
+      setChats(prev => {
+        const exists    = prev.find(c => c.id === msgChatId);
+        const isPatient = msg.from === "patient";
+        const isActive  = msgChatId === activeChatRef.current;
+        const autoRes   = isPatient && isFarewell(msg.text);
+        const lastMsg   = msg.text || (msg.location ? "📍 Localização" : msg.media ? "📎 Mídia" : "");
+        if (!exists) return prev;
+        const updated = prev.map(c => c.id !== msgChatId ? c : {
+          ...c,
+          lastMsg,
+          lastTime:      msg.time,
+          lastTs:        msg.ts,
+          lastPatientTs: isPatient && !autoRes ? msg.ts : c.lastPatientTs,
+          unread: isPatient && !isActive && !autoRes ? (c.unread || 0) + 1 : c.unread,
         });
-      },
-      onChatUpdate: (payload) => {
-        // chat.new — novo chat via WS, sem precisar de polling
-        const newChat = normalizeChat(payload);
-        if (!newChat?.id) return;
-        setChats(prev => {
-          if (prev.find(c => c.id === newChat.id)) return prev;
-          const updated = [newChat, ...prev];
-          persistChats(updated);
-          return updated;
+        persistChats(updated);
+        return updated;
+      });
+    }
+
+    function handleChatNew(payload) {
+      const newChat = normalizeChat(payload);
+      if (!newChat?.id) return;
+      setChats(prev => {
+        if (prev.find(c => c.id === newChat.id)) return prev;
+        const updated = [newChat, ...prev];
+        persistChats(updated);
+        return updated;
+      });
+      loadLastMessages([newChat.id]);
+    }
+
+    // Tenta SSE do relay local
+    if (RELAY_URL) {
+      const ikey = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
+      let es;
+      let reconnectTimer;
+      let dead = false;
+
+      function connectSSE() {
+        if (dead) return;
+        const url = `${RELAY_URL}/events?key=${encodeURIComponent(ikey)}`;
+        es = new EventSource(url);
+
+        es.addEventListener("connected", () => {
+          wsConnected.current = true;
+          setWsStatus("connected");
+          console.log("[relay] SSE connected");
         });
-        // Busca a última mensagem do novo chat
-        loadLastMessages([newChat.id]);
-      },
+
+        es.addEventListener("message", e => {
+          try {
+            const { payload } = JSON.parse(e.data);
+            handleMsg(normalizeMessage(payload));
+          } catch {}
+        });
+
+        es.addEventListener("message.any", e => {
+          try {
+            const { payload } = JSON.parse(e.data);
+            handleMsg(normalizeMessage(payload));
+          } catch {}
+        });
+
+        es.addEventListener("chat.new", e => {
+          try {
+            const { payload } = JSON.parse(e.data);
+            handleChatNew(payload);
+          } catch {}
+        });
+
+        es.addEventListener("reconnect", () => {
+          // Servidor pediu para reconectar (timeout de 50s)
+          es.close();
+          reconnectTimer = setTimeout(connectSSE, 100);
+        });
+
+        es.onerror = () => {
+          wsConnected.current = false;
+          setWsStatus("reconnecting");
+          es.close();
+          if (!dead) reconnectTimer = setTimeout(connectSSE, 3000);
+        };
+      }
+
+      connectSSE();
+
+      return () => {
+        dead = true;
+        wsConnected.current = false;
+        clearTimeout(reconnectTimer);
+        es?.close();
+      };
+    }
+
+    // Fallback: WebSocket direto do WAHA
+    socketRef.current = createWAHASocket({
+      onMessage: handleMsg,
+      onChatUpdate: handleChatNew,
       onStatus: (s) => {
         wsConnected.current = s === "connected";
         setWsStatus(s);
