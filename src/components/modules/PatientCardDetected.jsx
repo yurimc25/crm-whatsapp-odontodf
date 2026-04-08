@@ -207,7 +207,7 @@ function isTemplateVazio(text) {
 // Divide o texto em blocos de pacientes quando há múltiplos prontuários
 function splitPatientBlocks(text) {
   // Detecta se há mais de um bloco pelo marcador "Nome completo:" ou "Nome:"
-  const RE_BLOCK_START = /(?=(?:Nome completo|Nome)\s*:/i);
+  const RE_BLOCK_START = new RegExp("(?=(?:Nome completo|Nome)\\s*:)", "i");
   const parts = text.split(RE_BLOCK_START).map(s => s.trim()).filter(Boolean);
   // Só divide se cada parte tiver ao menos um campo de formulário
   const RE_FIELD = /(?:cpf|e-mail|email|telefone|nascimento|convênio|convenio)/i;
