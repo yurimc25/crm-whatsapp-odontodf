@@ -678,7 +678,7 @@ export function useWAHA(operator) {
     } catch { return { hasMore: false }; }
   }, []);
 
-  // ── Polling leve para chats ativos (30s) ──────────────────────
+  // ── Polling mensagens do chat ativo (3s) ─────────────────────
   useEffect(() => {
     if (!sessionOk || USE_MOCK) return;
     const iv = setInterval(async () => {
@@ -706,7 +706,55 @@ export function useWAHA(operator) {
           return { ...prev, [chatId]: updated };
         });
       } catch {}
-    }, 30000);
+    }, 3000);
+    return () => clearInterval(iv);
+  }, [sessionOk]);
+
+  // ── Polling leve da lista de chats (5s) ───────────────────────
+  useEffect(() => {
+    if (!sessionOk || USE_MOCK) return;
+    const iv = setInterval(async () => {
+      try {
+        const raw = await getChats();
+        if (!Array.isArray(raw)) return;
+        // Filtra só chats com atividade recente (última hora) para reduzir trabalho
+        const cutoff = Math.floor((Date.now() - 60 * 60 * 1000) / 1000);
+        const recent = raw.filter(c => {
+          const ts = c.lastMessage?.timestamp || c.lastMessage?.t || 0;
+          return ts >= cutoff;
+        });
+        if (!recent.length) return;
+        const normalized = recent.map(c => normalizeChat(c));
+        setChats(prev => {
+          const prevMap = Object.fromEntries(prev.map(c => [c.id, c]));
+          let changed = false;
+          const updated = prev.map(c => {
+            const n = normalized.find(x => x.id === c.id);
+            if (!n) return c;
+            // Só atualiza se a mensagem mudou
+            if (n.lastMsg === c.lastMsg && n.lastTs === c.lastTs) return c;
+            changed = true;
+            // Unread: usa o valor do WAHA se for maior (evita reduzir contagem local)
+            const newUnread = Math.max(c.unread || 0, n.unread || 0);
+            return {
+              ...c,
+              lastMsg:  n.lastMsg  || c.lastMsg,
+              lastTime: n.lastTime || c.lastTime,
+              lastTs:   n.lastTs   || c.lastTs,
+              unread:   newUnread,
+            };
+          });
+          // Adiciona chats novos que não estão na lista
+          const ids = new Set(prev.map(c => c.id));
+          for (const n of normalized) {
+            if (!ids.has(n.id)) { updated.push(n); changed = true; }
+          }
+          if (!changed) return prev;
+          persistChats(updated);
+          return updated;
+        });
+      } catch {}
+    }, 5000);
     return () => clearInterval(iv);
   }, [sessionOk]);
 
