@@ -355,6 +355,23 @@ export function useWAHA(operator) {
         }
       }
 
+      // Carrega última mensagem dos chats sem lastMsg (resolve "Sincronizando...")
+      // Limita aos 40 mais recentes para não sobrecarregar
+      const semMsg = normalized
+        .filter(c => !c.lastMsg)
+        .sort((a, b) => {
+          const ta = a.lastTs ? new Date(a.lastTs).getTime() : 0;
+          const tb = b.lastTs ? new Date(b.lastTs).getTime() : 0;
+          return tb - ta;
+        })
+        .slice(0, 40)
+        .map(c => c.id);
+
+      if (semMsg.length > 0) {
+        console.log(`[waha] loadLastMessages para ${semMsg.length} chats sem preview`);
+        setTimeout(() => loadLastMessages(semMsg), 800);
+      }
+
       // Dispara auto-sync em background apenas 2x/dia
       try {
         if (typeof lookupPhone === "function" && typeof searchByName === "function") {

@@ -403,7 +403,7 @@ function ChatItem({ chat, active, onClick, onOpenMenu }) {
           {lastMsgPreview
             ? lastMsgPreview
             : <span style={{ fontStyle:"italic", color:"#444", fontWeight:400, fontSize:11 }}>
-                {info.hasContact ? "Sem mensagens recentes" : "Sincronizando…"}
+                {"Sem mensagens recentes"}
               </span>
           }
         </div>
