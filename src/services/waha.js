@@ -295,12 +295,16 @@ export function normalizeMessage(wahaMsg) {
       ? `/api/waha?path=${encodeURIComponent(directUrl)}`
       : null;  // null → ChatWindow vai usar /download-media pelo msgId como last resort
 
-    // Para WAHA NOWEB, o msgId para o endpoint de download é o hex curto
-    // "false_186208474898514@lid_3A4B8E43562008A405D5" → "3A4B8E43562008A405D5"
+    // Extrai o hex curto do msgId serializado.
+    // Formato grupo: "false_120363@g.us_3A1C485_186208@lid" → "3A1C485"
+    // Formato direto: "false_556194@c.us_3EB0ABC" → "3EB0ABC"
+    // O hex da mensagem é sempre o último segmento sem "@".
     const rawMsgId = wahaMsg.id || null;
-    const shortMsgId = (typeof rawMsgId === "string" && rawMsgId.includes("_"))
-      ? (rawMsgId.split("_").pop() || rawMsgId)
-      : rawMsgId;
+    const shortMsgId = (() => {
+      if (typeof rawMsgId !== "string" || !rawMsgId.includes("_")) return rawMsgId;
+      const parts = rawMsgId.split("_");
+      return [...parts].reverse().find(p => !p.includes("@")) || rawMsgId;
+    })();
 
     media = {
       type:      realType,

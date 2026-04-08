@@ -5,6 +5,28 @@ import { useContactsCtx } from "../App";
 import { normalizeMessage } from "../services/waha";
 import { ContactLookupModal } from "./ContactLookupModal";
 
+// Fila global para downloads de mídia — evita sobrecarregar o WAHA com
+// muitas requests simultâneas quando o chat tem muitas imagens/áudios.
+const MEDIA_CONCURRENCY = 3;
+let _mediaActive = 0;
+const _mediaQueue = [];
+function _runMediaQueue() {
+  while (_mediaActive < MEDIA_CONCURRENCY && _mediaQueue.length > 0) {
+    _mediaActive++;
+    _mediaQueue.shift()();
+  }
+}
+function mediaQueue(fn) {
+  return new Promise((resolve, reject) => {
+    _mediaQueue.push(async () => {
+      try { resolve(await fn()); }
+      catch (e) { reject(e); }
+      finally { _mediaActive--; _runMediaQueue(); }
+    });
+    _runMediaQueue();
+  });
+}
+
 // Renderiza formatação WhatsApp: *negrito* _itálico_ ~riscado~
 function renderText(text) {
   if (!text) return null;
