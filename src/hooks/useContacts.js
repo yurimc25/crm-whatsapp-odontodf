@@ -281,28 +281,62 @@ export function useContacts() {
       }
     } catch {}
 
-    // ── 4. Google individual — tenta variantes BR até achar ─────
-    // Inclui sufixo curto (8 dígitos) pois a API do Google aceita busca parcial por sufixo
-    const suffix8 = phone.replace(/\D/g, "").slice(-8);
-    const googleVariants = [...new Set([phone, ...phoneVariants(phone), suffix8])];
+    // ── 4. Google — fase A: busca por phone com todas as variantes BR ────
+    const googleVariants = [...new Set([phone, ...phoneVariants(phone)])];
+
+    async function tryGooglePhone(variant) {
+      const r = await fetch(
+        `/api/contacts?action=search&phone=${variant}&_t=${Date.now()}`,
+        { headers: { "X-Internal-Key": internalKey }, cache: "no-store" }
+      );
+      if (r.status === 400 || r.status === 304 || !r.ok) return null;
+      const { found, name, variants: fv } = await r.json();
+      if (!found || !name) return null;
+      return { name, fv };
+    }
+
+    async function tryGoogleQ(q) {
+      const r = await fetch(
+        `/api/contacts?action=search&q=${encodeURIComponent(q)}&_t=${Date.now()}`,
+        { headers: { "X-Internal-Key": internalKey }, cache: "no-store" }
+      );
+      if (!r.ok) return null;
+      const data = await r.json();
+      if (!data.found) return null;
+      // Pode retornar { name } ou { contacts: [...] }
+      if (data.name) return { name: data.name, fv: data.variants };
+      if (Array.isArray(data.contacts) && data.contacts.length > 0) {
+        const c = data.contacts[0];
+        const cName = c.name || c.fullName || c.title;
+        return cName ? { name: cName, fv: null } : null;
+      }
+      return null;
+    }
+
+    function saveGoogle(name, fv, variant) {
+      const incoming = {};
+      for (const gv of (fv || phoneVariants(variant))) incoming[gv] = name;
+      for (const v of phoneVariants(phone)) incoming[v] = name;
+      mergeMap(incoming, "local");
+      console.log(`[contacts] Google ${variant} → ${name}`);
+    }
+
     for (const variant of googleVariants) {
       try {
-        const r = await fetch(
-          `/api/contacts?action=search&phone=${variant}&_t=${Date.now()}`,
-          { headers: { "X-Internal-Key": internalKey }, cache: "no-store" }
-        );
-        if (r.status === 304 || !r.ok) continue;
-        const { found, name, variants: fv } = await r.json();
-        if (!found || !name) continue;
-        const incoming = {};
-        for (const gv of (fv || phoneVariants(variant))) incoming[gv] = name;
-        for (const v of phoneVariants(phone)) incoming[v] = name;
-        mergeMap(incoming, "local");
-        console.log(`[contacts] Google ${variant} → ${name}`);
-        return name;
-      } catch (e) {
-        console.warn(`[contacts] Google ${variant} error:`, e.message);
-      }
+        const hit = await tryGooglePhone(variant);
+        if (hit) { saveGoogle(hit.name, hit.fv, variant); return hit.name; }
+      } catch {}
+    }
+
+    // Fase B: fallback por busca de texto (q) com os últimos 4 e 8 dígitos
+    // Necessário quando a API exige match exato por phone mas aceita sufixo por q
+    const digits = phone.replace(/\D/g, "");
+    for (const suffix of [digits.slice(-8), digits.slice(-4)]) {
+      if (!suffix || suffix.length < 4) continue;
+      try {
+        const hit = await tryGoogleQ(suffix);
+        if (hit) { saveGoogle(hit.name, hit.fv, suffix); return hit.name; }
+      } catch {}
     }
 
     return null;
