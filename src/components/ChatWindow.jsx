@@ -595,6 +595,7 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
           result = await resolveMediaBinary(fallbackDownloadPath).catch(() => ({ ok: false, status: 0 }));
           if (cancelled) return;
         }
+        if (cancelled) return;
         if (!result.ok) {
           if (result.status === 404) { setDownload(false); return; }
           setError(true); setDownload(false); return;
@@ -604,7 +605,7 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
         const url  = URL.createObjectURL(blob);
         blobUrlRef.current = url;
         console.debug(`[media] autoLoad objectURL created for msgId=${msgId}`);
-        if (!cancelled) setFullUrl(url);
+        setFullUrl(url);
       } catch (e) {
         console.error(`[media] autoLoad error for ${msgId}:`, e?.message || e);
         if (!cancelled) setError(true);

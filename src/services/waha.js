@@ -308,7 +308,7 @@ export function normalizeMessage(wahaMsg) {
       filename:  wahaMsg.media?.filename || mediaData.fileName || mediaData.title || null,
       thumbUrl,              // miniatura base64 para exibir antes do download
       url:       mediaUrl,   // URL via proxy (com auth)
-      msgId:     shortMsgId, // hex curto: "3A4B8E43562008A405D5"
+      msgId:     shortMsgId,
       hasMedia:  true,
     };
   }
