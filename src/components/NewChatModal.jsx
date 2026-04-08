@@ -29,10 +29,26 @@ export default function NewChatModal({ operator, onClose, onStartChat, initialPh
   }, [onClose]);
 
   // Auto-verifica quando abre com número pré-preenchido (ex: clique na agenda)
+  // Se achar, abre direto sem mostrar o modal
   useEffect(() => {
-    if (initialPhone) {
-      handleCheckAndStart(initialPhone);
-    }
+    if (!initialPhone) return;
+    (async () => {
+      const digits = initialPhone.replace(/\D/g, "");
+      if (!digits || digits.length < 8) return;
+      setChecking(true);
+      try {
+        const data = await checkPhoneExists(digits);
+        if (data?.numberExists) {
+          const chatId = data.chatId || `${digits}@c.us`;
+          onStartChat(chatId); // abre direto, sem exibir o modal
+        } else {
+          setCheckResult({ exists: false, phone: digits });
+          setChecking(false);
+        }
+      } catch {
+        setChecking(false);
+      }
+    })();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Busca local no mapa de contatos
