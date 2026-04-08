@@ -191,7 +191,12 @@ export default function PatientPanel({ chat, operator }) {
           const p = result.patients[0];
           const patientName = p.name || p.fullName;
           const chatPhone   = info.phone.replace(/\D/g, "");
-          if (patientName && chatPhone) addLocalContact({ phone: chatPhone, name: patientName });
+          const pPhone      = (p.cellphone_formated || p.cellphone || "").replace(/\D/g, "");
+          // Só salva no mapa de contatos se o telefone do paciente coincide com o do chat (>= 8 dígitos)
+          const sameTail8 = chatPhone.slice(-8) && pPhone.slice(-8) === chatPhone.slice(-8);
+          if (patientName && chatPhone && sameTail8) {
+            addLocalContact({ phone: chatPhone, name: patientName });
+          }
           await carregarDados(p);
         } else {
           setEvols([]);

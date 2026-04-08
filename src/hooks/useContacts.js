@@ -237,6 +237,24 @@ export function useContacts() {
     if (Object.keys(incoming).length) mergeMap(incoming, "local");
   }, [mergeMap]);
 
+  // ── removeContact — remove todas as variantes de um número do mapa ──
+  const removeContact = useCallback((phone) => {
+    const digits = (phone || "").replace(/\D/g, "");
+    if (!digits) return;
+    const toRemove = new Set(phoneVariants(digits));
+    setContactMap(prev => {
+      const updated = { ...prev };
+      let changed = false;
+      for (const k of toRemove) {
+        if (k in updated) { delete updated[k]; changed = true; }
+      }
+      if (!changed) return prev;
+      writeLocalMap(updated);
+      pendingSync.current = true;
+      return updated;
+    });
+  }, []);
+
   // ── lookupPhone — hierarquia: Codental → Google ───────────────
   const lookupPhone = useCallback(async (wahaId) => {
     const phone = wahaIdToPhone(wahaId);
@@ -434,7 +452,7 @@ export function useContacts() {
 
   return {
     contactMap, resolveName, displayName, displayInfo,
-    addLocalContact, lookupPhone, lookupPhonePriority, searchByName, loading,
+    addLocalContact, removeContact, lookupPhone, lookupPhonePriority, searchByName, loading,
     refresh: fetchGoogleBulk,
   };
 }

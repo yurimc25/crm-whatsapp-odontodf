@@ -209,7 +209,7 @@ export default function ChatWindow({
   const bottomRef   = useRef(null);
   const scrollRef   = useRef(null);
   const prevScrollH = useRef(0);
-  const { displayInfo, addLocalContact } = useContactsCtx();
+  const { displayInfo, addLocalContact, removeContact } = useContactsCtx();
   const info = displayInfo(chat.id, chat.name, chat.pushname);
 
   // Auto-refresh a cada 5 segundos
@@ -744,6 +744,8 @@ export default function ChatWindow({
             }
             if (!name) return;
             const digits = String(phone || "").replace(/\D/g, "");
+            // Remove mapeamento antigo do número do chat antes de salvar o novo
+            removeContact(info.phone);
             addLocalContact({ phone: digits || info.phone, name });
             setShowContactLookup(false);
             setConfirmMsg(`✓ Contato atualizado: ${name}`);

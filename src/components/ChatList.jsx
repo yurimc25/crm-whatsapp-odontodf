@@ -33,11 +33,13 @@ function formatTimeSince(ts) {
 
 export default function ChatList({
   chats, activeId, search, onSearch, onSelect,
-  onForward, onMarkRead, onMarkUnread, loading, onStartNewChat, searchMessages
+  onForward, onMarkRead, onMarkUnread, loading, onStartNewChat, searchMessages, operator
 }) {
   const [ctxMenu, setCtxMenu]       = useState(null);
   const [agendaOpen, setAgendaOpen] = useState(false);
-  const { contactMap } = useContactsCtx();
+  const [codentalHits, setCodentalHits] = useState([]);  // resultados extras do Codental
+  const codentalSearch = useRef(null);
+  const { contactMap, addLocalContact } = useContactsCtx();
 
   // Resultados de busca em conteúdo de mensagens
   const msgSearchResults = useMemo(() => {
@@ -99,6 +101,42 @@ export default function ChatList({
     }
     return out;
   }, [search, contactMap, chats]);
+
+  // Busca extra no Codental quando pesquisa por nome e não há resultados locais
+  const ikey = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
+  useEffect(() => {
+    setCodentalHits([]);
+    const digits = search.replace(/\D/g, "");
+    const isName = search.length >= 3 && digits.length < search.length; // tem letras
+    if (!isName) return;
+    // Cancela busca anterior
+    let cancelled = false;
+    if (codentalSearch.current) clearTimeout(codentalSearch.current);
+    codentalSearch.current = setTimeout(async () => {
+      try {
+        const r = await fetch(`/api/codental?action=search&q=${encodeURIComponent(search.trim())}`, {
+          headers: { "X-Internal-Key": ikey },
+        });
+        if (!r.ok || cancelled) return;
+        const data = await r.json();
+        const patients = data.patients || [];
+        const hits = [];
+        for (const p of patients.slice(0, 5)) {
+          const name  = p.fullName || p.full_name || p.name;
+          const phone = (p.cellphone_formated || p.cellphone || "").replace(/\D/g, "");
+          if (!name || !phone) continue;
+          // Registra no mapa de contatos para futuras pesquisas
+          addLocalContact({ phone, name });
+          // Verifica se já existe conversa aberta com este número
+          const chatId = phone.startsWith("55") ? `${phone}@c.us` : `55${phone}@c.us`;
+          const existing = chats.find(c => c.id === chatId || c.id.replace(/\D/g,"").slice(-8) === phone.slice(-8));
+          hits.push({ name, phone, chatId, existing: existing || null });
+        }
+        if (!cancelled) setCodentalHits(hits);
+      } catch {}
+    }, 600);
+    return () => { cancelled = true; };
+  }, [search, chats, ikey]);
 
   // Se é número puro digitado e não tem resultado, mostra botão de iniciar
   const inputDigits = search.replace(/\D/g, "");
@@ -175,7 +213,7 @@ export default function ChatList({
             Carregando conversas...
           </div>
         )}
-        {!loading && filtered.length === 0 && contactOnlyResults.length === 0 && !showStartButton && (
+        {!loading && filtered.length === 0 && contactOnlyResults.length === 0 && codentalHits.length === 0 && !showStartButton && (
           <div style={{ padding:24, textAlign:"center", color:T.sub, fontSize:13 }}>
             Nenhuma conversa encontrada
           </div>
@@ -217,6 +255,40 @@ export default function ChatList({
                   </div>
                 </div>
                 <span style={{ color:T.accent, fontSize:11 }}>iniciar →</span>
+              </div>
+            ))}
+          </>
+        )}
+
+        {/* Resultados do Codental (busca por nome) */}
+        {codentalHits.length > 0 && (
+          <>
+            <div style={{ padding:"6px 14px 2px", color:T.sub, fontSize:10, fontWeight:600 }}>
+              CODENTAL
+            </div>
+            {codentalHits.map((c, i) => (
+              <div key={i}
+                onClick={() => c.existing ? onSelect(c.existing) : onStartNewChat?.(c.phone)}
+                style={{ padding:"10px 14px", cursor:"pointer", borderBottom:`1px solid ${T.border}`,
+                  display:"flex", gap:10, alignItems:"center", transition:"background .1s" }}
+                onMouseEnter={e => e.currentTarget.style.background=T.hover}
+                onMouseLeave={e => e.currentTarget.style.background="transparent"}>
+                <div style={{ width:38, height:38, borderRadius:"50%", flexShrink:0,
+                  background:"#1a2e22", color:"#4caf87",
+                  display:"flex", alignItems:"center", justifyContent:"center",
+                  fontSize:13, fontWeight:700, border:"2px solid #2a4432" }}>
+                  {c.name.slice(0,2).toUpperCase()}
+                </div>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ color:T.text, fontSize:13, fontWeight:500,
+                    overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{c.name}</div>
+                  <div style={{ color:T.sub, fontSize:10, fontFamily:"'DM Mono',monospace" }}>
+                    {formatPhone(c.phone)}
+                  </div>
+                </div>
+                <span style={{ color: c.existing ? T.accent : T.sub, fontSize:11 }}>
+                  {c.existing ? "abrir →" : "iniciar →"}
+                </span>
               </div>
             ))}
           </>
