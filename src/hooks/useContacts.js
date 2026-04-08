@@ -328,14 +328,31 @@ export function useContacts() {
       } catch {}
     }
 
-    // Fase B: fallback por busca de texto (q) com os últimos 4 e 8 dígitos
-    // Necessário quando a API exige match exato por phone mas aceita sufixo por q
+    // Fase B: fallback por busca de texto (q) com os últimos 8 dígitos
+    // Valida que o contato retornado tem telefone compatível com o número original
     const digits = phone.replace(/\D/g, "");
-    for (const suffix of [digits.slice(-8), digits.slice(-4)]) {
-      if (!suffix || suffix.length < 4) continue;
+    const myVariants = new Set(phoneVariants(digits));
+
+    function contactPhoneMatchesOriginal(fv) {
+      if (!fv) return false;
+      const fvArr = Array.isArray(fv) ? fv : [fv];
+      return fvArr.some(v => {
+        const vd = String(v).replace(/\D/g, "");
+        // Considera match se compartilham >= 8 dígitos finais
+        if (myVariants.has(vd)) return true;
+        const overlap = digits.slice(-8);
+        return overlap.length >= 8 && vd.endsWith(overlap);
+      });
+    }
+
+    const suffix8 = digits.slice(-8);
+    if (suffix8.length === 8) {
       try {
-        const hit = await tryGoogleQ(suffix);
-        if (hit) { saveGoogle(hit.name, hit.fv, suffix); return hit.name; }
+        const hit = await tryGoogleQ(suffix8);
+        if (hit && contactPhoneMatchesOriginal(hit.fv)) {
+          saveGoogle(hit.name, hit.fv, suffix8);
+          return hit.name;
+        }
       } catch {}
     }
 
