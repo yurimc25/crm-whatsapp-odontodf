@@ -300,6 +300,37 @@ export function useContacts() {
     return null;
   }, [findInMap, mergeMap, internalKey, codKey]);
 
+  // ── searchByName — busca no Google por nome e mescla resultados no mapa
+  const searchByName = useCallback(async (name) => {
+    if (!name || name.trim().length < 2) return false;
+    try {
+      const r = await fetch(`/api/contacts?action=search&q=${encodeURIComponent(name.trim())}&_t=${Date.now()}`, {
+        headers: { "X-Internal-Key": internalKey }, cache: "no-store"
+      });
+      if (!r.ok) {
+        console.warn(`[contacts] searchByName ${name}: status ${r.status}`);
+        return false;
+      }
+      const data = await r.json();
+      if (!data.found || !Array.isArray(data.contacts) || data.contacts.length === 0) return false;
+      const incoming = {};
+      for (const c of data.contacts) {
+        const nm = c.name;
+        const ph = (c.phone || "").replace(/\D/g, "");
+        if (!nm || !ph) continue;
+        for (const v of phoneVariants(ph)) incoming[v] = nm;
+      }
+      if (Object.keys(incoming).length) {
+        mergeMap(incoming, "google-name");
+        pendingSync.current = true;
+        return true;
+      }
+    } catch (e) {
+      console.warn(`[contacts] searchByName error for '${name}':`, e?.message || e);
+    }
+    return false;
+  }, [internalKey, mergeMap]);
+
   // ── Resolvers ─────────────────────────────────────────────────
   const resolveName = useCallback((wahaId, pushname) => {
     const phone = wahaIdToPhone(wahaId);
@@ -321,7 +352,7 @@ export function useContacts() {
 
   return {
     contactMap, resolveName, displayName, displayInfo,
-    addLocalContact, lookupPhone, loading,
+    addLocalContact, lookupPhone, searchByName, loading,
     refresh: fetchGoogleBulk,
   };
 }
