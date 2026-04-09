@@ -438,7 +438,7 @@ export function useWAHA(operator) {
   // Usa estado atual do React (já mesclado com local) — não dados crus do WAHA
   // ── Carrega APENAS última mensagem de cada chat (lotes de 5) ──
   async function loadLastMessages(chatIds) {
-    const BATCH = 3; // Reduzido: menos concorrência para não travar o WAHA
+    const BATCH = 3;
     for (let i = 0; i < chatIds.length; i += BATCH) {
       const batch = chatIds.slice(i, i + BATCH);
       await Promise.allSettled(batch.map(async (chatId) => {
@@ -446,14 +446,26 @@ export function useWAHA(operator) {
           const SESSION = import.meta.env.VITE_WAHA_SESSION || "default";
           const id = encodeURIComponent(chatId);
           const r  = await fetch(
-            `/api/waha?path=/api/${SESSION}/chats/${id}/messages&limit=1&downloadMedia=false`,
+            `/api/waha?path=/api/${SESSION}/chats/${id}/messages&limit=10&downloadMedia=false`,
             { headers: { "X-Internal-Key": ikey() } }
           );
           if (!r.ok) return;
           const raw = await r.json();
           if (!Array.isArray(raw) || raw.length === 0) return;
-          const msg = normalizeMessage(raw[raw.length - 1]);
+
+          const allNorm = raw.map(normalizeMessage).filter(Boolean)
+            .sort((a, b) => tsToNum(a.ts) - tsToNum(b.ts));
+          const msg = allNorm[allNorm.length - 1];
+          if (!msg) return;
+
           const lastMsg = msg.text || (msg.location ? "📍 Localização" : msg.media ? "📎 Mídia" : "");
+
+          // Unread: msgs do paciente após a última resposta do operador
+          let unread = 0;
+          for (let j = allNorm.length - 1; j >= 0; j--) {
+            if (allNorm[j].from === "operator") break;
+            if (allNorm[j].from === "patient") unread++;
+          }
 
           setChats(prev => {
             const updated = prev.map(c => {
@@ -462,10 +474,11 @@ export function useWAHA(operator) {
               const autoRes   = isPatient && isFarewell(msg.text);
               return {
                 ...c,
-                lastMsg:  lastMsg || c.lastMsg,
-                lastTime: msg.time || c.lastTime,
-                lastTs:   msg.ts   || c.lastTs,
+                lastMsg:       lastMsg || c.lastMsg,
+                lastTime:      msg.time || c.lastTime,
+                lastTs:        msg.ts   || c.lastTs,
                 lastPatientTs: isPatient && !autoRes ? msg.ts : c.lastPatientTs,
+                unread,
               };
             });
             persistChats(updated);
@@ -903,7 +916,7 @@ export function useWAHA(operator) {
         const SESSION   = import.meta.env.VITE_WAHA_SESSION || "default";
         const cutoffSec = Math.floor((Date.now() - 60 * 60 * 1000) / 1000); // 1h atrás
         const r = await fetch(
-          `/api/waha?path=${encodeURIComponent(`/api/${SESSION}/chats`)}&limit=20`,
+          `/api/waha?path=${encodeURIComponent(`/api/${SESSION}/chats`)}&limit=30`,
           { headers: { "X-Internal-Key": ikey() } }
         );
         if (!r.ok) return;
@@ -1128,7 +1141,7 @@ export function useWAHA(operator) {
     try {
       // 1. Busca lista de chats do WAHA
       const r = await fetch(
-        `/api/waha?path=${encodeURIComponent(`/api/${SESSION}/chats`)}&limit=100`,
+        `/api/waha?path=${encodeURIComponent(`/api/${SESSION}/chats`)}&limit=200`,
         { headers: { "X-Internal-Key": ikey() } }
       );
       if (!r.ok) { console.warn("[resync] falha ao buscar chats:", r.status); return; }
@@ -1152,7 +1165,8 @@ export function useWAHA(operator) {
         return merged;
       });
 
-      // 3. Busca últimas 3 mensagens de cada chat → atualiza lastMsg, lastTs, unread
+      // 3. Busca últimas 10 mensagens de cada chat → lastMsg + unread real
+      // unread = nº de mensagens do paciente após a última resposta do operador
       const BATCH = 5;
       for (let i = 0; i < normalized.length; i += BATCH) {
         const batch = normalized.slice(i, i + BATCH);
@@ -1160,31 +1174,45 @@ export function useWAHA(operator) {
           try {
             const id = encodeURIComponent(chat.id);
             const r  = await fetch(
-              `/api/waha?path=/api/${SESSION}/chats/${id}/messages&limit=3&downloadMedia=false`,
+              `/api/waha?path=/api/${SESSION}/chats/${id}/messages&limit=10&downloadMedia=false`,
               { headers: { "X-Internal-Key": ikey() } }
             );
             if (!r.ok) return;
             const msgs = await r.json();
             if (!Array.isArray(msgs) || !msgs.length) return;
 
-            // Ordena por timestamp e pega a mais recente
-            const allNorm  = msgs.map(normalizeMessage).filter(Boolean);
-            const lastMsg  = allNorm.sort((a, b) => tsToNum(b.ts) - tsToNum(a.ts))[0];
+            // Ordena cronologicamente (mais antiga → mais recente)
+            const allNorm = msgs.map(normalizeMessage).filter(Boolean)
+              .sort((a, b) => tsToNum(a.ts) - tsToNum(b.ts));
+
+            const lastMsg = allNorm[allNorm.length - 1];
             if (!lastMsg) return;
 
             const preview = lastMsg.text
               || (lastMsg.location ? "📍 Localização" : lastMsg.media ? "📎 Mídia" : "");
 
+            // Conta mensagens do paciente após a última resposta do operador
+            let unreadCount = 0;
+            for (let j = allNorm.length - 1; j >= 0; j--) {
+              if (allNorm[j].from === "operator") break; // chegou na última resposta
+              if (allNorm[j].from === "patient") unreadCount++;
+            }
+
             setChats(prev => {
               const idx = prev.findIndex(c => c.id === chat.id);
               if (idx === -1) return prev;
-              const c   = prev[idx];
-              // Só atualiza se a mensagem encontrada é mais recente que o estado atual
+              const c      = prev[idx];
               const localTs = tsToNum(c.lastTs);
               const newTs   = tsToNum(lastMsg.ts);
-              if (newTs && newTs < localTs) return prev; // estado já é mais recente
+              if (newTs && newTs < localTs) return prev;
               const updated = [...prev];
-              updated[idx] = { ...c, lastMsg: preview || c.lastMsg, lastTs: lastMsg.ts || c.lastTs, lastTime: lastMsg.time || c.lastTime };
+              updated[idx]  = {
+                ...c,
+                lastMsg:  preview || c.lastMsg,
+                lastTs:   lastMsg.ts  || c.lastTs,
+                lastTime: lastMsg.time || c.lastTime,
+                unread:   unreadCount, // substitui pelo valor calculado
+              };
               persistChats(updated);
               return updated;
             });
