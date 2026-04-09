@@ -203,8 +203,22 @@ export default function ChatWindow({
   const recChunksRef  = useRef([]);
   const recTimerRef   = useRef(null);
   const fileInputRef  = useRef(null);
+  // Mensagens sintéticas (PatientCards gerados por OCR de imagem)
+  const [extraMessages, setExtraMessages] = useState([]);
   // Auto-refresh a cada 5s
   const [lastRefresh, setLastRefresh] = useState(Date.now());
+
+  function handleOcrResult(text) {
+    const syntheticMsg = {
+      id:            `ocr-${Date.now()}`,
+      hasPatientCard: true,
+      text,
+      from:          "operator",
+      time:          new Date().toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" }),
+      ts:            new Date().toISOString(),
+    };
+    setExtraMessages(prev => [...prev, syntheticMsg]);
+  }
 
   const bottomRef   = useRef(null);
   const scrollRef   = useRef(null);
@@ -369,10 +383,10 @@ export default function ChatWindow({
     ...(canForwardToAdmin ? [{ label:"Administrativo 🔒", value:"admin" }] : []),
   ].filter(t => t.value !== chat.assignedTo);
 
-  // Separadores de dia
+  // Separadores de dia — inclui mensagens sintéticas (PatientCards de OCR) ao final
   const msgsWithSeps = [];
   let lastDay = null;
-  for (const msg of messages) {
+  for (const msg of [...messages, ...extraMessages]) {
     const dk = dayKey(msg.ts);
     if (dk && dk !== lastDay) {
       msgsWithSeps.push({ __sep:true, ts:msg.ts, label:dayLabel(msg.ts) });
@@ -528,6 +542,7 @@ export default function ChatWindow({
               key={item.id || i}
               msg={item}
               currentOperator={operator}
+              onOcrResult={handleOcrResult}
               onContextMenu={(e, msg) => {
                 e.preventDefault();
                 setMsgCtxMenu({ msg, x: e.clientX, y: e.clientY });
@@ -818,7 +833,7 @@ function LocationBubble({ location }) {
   );
 }
 
-function MessageBubble({ msg, currentOperator, onContextMenu }) {
+function MessageBubble({ msg, currentOperator, onContextMenu, onOcrResult }) {
   if (msg.hasPatientCard) return <PatientCardDetected msg={msg} />;
   const isPatient  = msg.from === "patient";
   const isBot      = msg.operator?.includes("🤖");
@@ -870,6 +885,7 @@ function MessageBubble({ msg, currentOperator, onContextMenu }) {
               msgId={msg.media.msgId || msg.id}
               chatId={msg.chatId}
               chatSession={import.meta.env.VITE_WAHA_SESSION || "default"}
+              onOcrResult={onOcrResult}
             />
           )}
 
@@ -987,7 +1003,7 @@ function MsgContextMenu({ msg, x, y, isOwn, onClose, onReply, onEdit, onDelete, 
 }
 
 // ── Renderizador de mídia ──────────────────────────────────────────
-function MediaContent({ media, msgId, chatId, chatSession }) {
+function MediaContent({ media, msgId, chatId, chatSession, onOcrResult }) {
   const [lightbox,     setLightbox]    = useState(false);
   const [fullUrl,      setFullUrl]     = useState(null);
   const [downloading,  setDownload]    = useState(false);
@@ -1188,7 +1204,8 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
             downloadUrl={media.url || downloadPath}
             iKey={iKey}
             msgId={msgId}
-            onClose={() => setLightbox(false)} />
+            onClose={() => setLightbox(false)}
+            onOcrResult={text => { setLightbox(false); onOcrResult?.(text); }} />
         )}
       </>
     );
@@ -1396,11 +1413,10 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
 }
 
 // ── Lightbox de imagem com zoom ───────────────────────────────────
-function ImageLightbox({ src, fullUrl, downloadUrl, iKey, msgId, onClose }) {
+function ImageLightbox({ src, fullUrl, downloadUrl, iKey, msgId, onClose, onOcrResult }) {
   const [zoom, setZoom] = useState(1);
   const [pos, setPos]   = useState({ x:0, y:0 });
   const [drag, setDrag] = useState(null);
-  const [ocrResult, setOcrResult] = useState(null);
   const [ocrLoading, setOcrLoading] = useState(false);
 
   useEffect(() => {
@@ -1473,15 +1489,15 @@ function ImageLightbox({ src, fullUrl, downloadUrl, iKey, msgId, onClose }) {
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         console.error("[ocr] erro:", res.status, err);
-        setOcrResult("Erro ao analisar imagem: " + (err.error || res.status));
+        alert("Erro ao analisar imagem: " + (err.error || res.status));
         setOcrLoading(false);
         return;
       }
       const data = await res.json();
-      setOcrResult(data.text || "Nenhum dado encontrado");
+      onOcrResult?.(data.text || "");
     } catch (e) {
       console.error("[ocr] error:", e?.message || e);
-      setOcrResult("Erro: " + e.message);
+      alert("Erro: " + e.message);
     }
     setOcrLoading(false);
   }
@@ -1526,21 +1542,6 @@ function ImageLightbox({ src, fullUrl, downloadUrl, iKey, msgId, onClose }) {
         )}
         <button onClick={onClose} style={{ ...btnStyle, background:"#c0412c44" }}>✕</button>
       </div>
-      {/* Resultado OCR */}
-      {ocrResult && (
-        <div onClick={e => e.stopPropagation()} style={{
-          position:"fixed", bottom:50, left:"50%", transform:"translateX(-50%)",
-          background:"#252525", border:"1px solid #d4956a44", borderRadius:10,
-          padding:"12px 16px", maxWidth:480, width:"90vw",
-          color:"#ececec", fontSize:12, lineHeight:1.6,
-          boxShadow:"0 8px 32px rgba(0,0,0,.6)", zIndex:10000,
-        }}>
-          <div style={{ color:"#d4956a", fontWeight:700, fontSize:11, marginBottom:6, textTransform:"uppercase" }}>
-            🔎 Dados detectados na imagem
-          </div>
-          <pre style={{ margin:0, whiteSpace:"pre-wrap", fontFamily:"inherit" }}>{ocrResult}</pre>
-        </div>
-      )}
       <div style={{ position:"fixed", bottom:16, left:"50%", transform:"translateX(-50%)",
         color:"rgba(255,255,255,.4)", fontSize:11 }}>
         Scroll para zoom · Arraste para mover · Esc para fechar
