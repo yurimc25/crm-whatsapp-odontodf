@@ -196,6 +196,14 @@ export function useWAHA(operator) {
     return () => clearInterval(iv);
   }, [sessionOk]);
 
+  // Auto-resync a cada 5 minutos — e imediatamente ao abrir a página
+  useEffect(() => {
+    if (!sessionOk || USE_MOCK) return;
+    resyncChats();
+    const iv = setInterval(resyncChats, 5 * 60 * 1000);
+    return () => clearInterval(iv);
+  }, [sessionOk]);
+
   async function loadChats() {
     setLoading(true);
     try {

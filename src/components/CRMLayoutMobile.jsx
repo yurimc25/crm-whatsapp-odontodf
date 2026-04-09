@@ -33,7 +33,7 @@ export default function CRMLayoutMobile({ operator, onLogout, notificationBell }
     chats, messages, loadMessages, loadOlderMessages, send,
     deleteMsg, editMsg, searchMessages,
     forwardChat, resolveChat, markRead, markUnread,
-    resyncChats, loading, error, wsStatus,
+    loading, error, wsStatus,
   } = useWAHA(operator);
 
   const perms = ROLE_PERMISSIONS[operator.role] || {};
@@ -130,7 +130,7 @@ export default function CRMLayoutMobile({ operator, onLogout, notificationBell }
         input,textarea,button{font-family:'DM Sans',sans-serif}
       `}</style>
 
-      {/* ── Top bar ────────────────────────────────────────────── */}
+      {/* ── Top bar ────────────────────────────────────────────────── */}
       <div style={{
         height:52, background:T.header, borderBottom:`1px solid ${T.border}`,
         display:"flex", alignItems:"center", padding:"0 14px", gap:8, flexShrink:0,
@@ -155,18 +155,10 @@ export default function CRMLayoutMobile({ operator, onLogout, notificationBell }
               : "Paciente"}
         </span>
 
-        {/* Status WS + Resync */}
-        <div style={{ display:"flex", alignItems:"center", gap:5 }}>
-          <div style={{ width:7, height:7, borderRadius:"50%", flexShrink:0,
-            background: WS_COLOR[wsStatus] || "#666",
-            boxShadow: wsStatus==="connected" ? `0 0 0 2px ${T.green}33` : "none" }} />
-          <button
-            onClick={resyncChats} disabled={loading}
-            style={{ background:"none", border:"none", cursor: loading ? "wait" : "pointer",
-              color:T.sub, fontSize:16, padding:"0 2px", opacity: loading ? 0.4 : 1 }}
-            title="Ressincronizar chats"
-          >⟳</button>
-        </div>
+        {/* Status WS */}
+        <div style={{ width:7, height:7, borderRadius:"50%", flexShrink:0,
+          background: WS_COLOR[wsStatus] || "#666",
+          boxShadow: wsStatus==="connected" ? `0 0 0 2px ${T.green}33` : "none" }} />
 
         {/* Ações no chat */}
         {screen === "chat" && activeChat && (
