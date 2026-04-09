@@ -9,6 +9,7 @@
     "relay": "node relay-server.js"
   },
   "dependencies": {
+    "@vercel/speed-insights": "^2.0.0",
     "mongodb": "^7.1.1",
     "partysocket": "^1.1.16",
     "react": "^18.3.0",

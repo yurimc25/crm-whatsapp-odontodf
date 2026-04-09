@@ -504,12 +504,13 @@ export async function sendImage(chatId, base64DataUri, caption = "") {
 }
 
 export async function sendFile(chatId, base64DataUri, filename, mimetype, caption = "") {
+  const rawBase64 = base64DataUri.includes(",") ? base64DataUri.split(",")[1] : base64DataUri;
   const r = await fetch(`${WAHA_URL}/api/sendFile`, {
     method: "POST",
     headers: headers(),
     body: JSON.stringify({
       session: SESSION, chatId,
-      file: { data: base64DataUri, filename, mimetype },
+      file: { data: rawBase64, filename, mimetype },
       caption,
     }),
   });
