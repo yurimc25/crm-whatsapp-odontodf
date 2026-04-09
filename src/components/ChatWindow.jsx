@@ -1461,7 +1461,6 @@ function ImageLightbox({ src, fullUrl, downloadUrl, iKey, msgId, onClose, onOcrR
   async function handleOcr() {
     if (!fullUrl && !downloadUrl) return;
     setOcrLoading(true);
-    setOcrResult(null);
     try {
       // Converte para base64 — aceita blob: e URLs normais
       let base64 = null;
