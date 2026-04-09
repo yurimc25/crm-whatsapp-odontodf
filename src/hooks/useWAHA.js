@@ -149,10 +149,51 @@ export function useWAHA(operator) {
   }, []);
 
   // ── 2. Carrega lista de chats ─────────────────────────────────
-  // Estratégia: cache local primeiro → depois WAHA para período desde última atualização
+  // Estratégia: cache local → R2 (webhook data) → WAHA completo
   useEffect(() => {
     if (!sessionOk || USE_MOCK) return;
     loadChats();
+  }, [sessionOk]);
+
+  // Aplica dados do R2 sobre o estado atual de chats
+  // fallback: lista de chats local caso prev ainda esteja vazia (race no primeiro render)
+  async function applyR2Chats(fallbackChats = []) {
+    try {
+      const r2Res = await fetch("/api/r2-data?type=chats", {
+        headers: { "X-Internal-Key": ikey() }
+      });
+      if (!r2Res.ok) return;
+      const r2Chats = await r2Res.json();
+      if (!Array.isArray(r2Chats) || r2Chats.length === 0) return;
+      const r2Map = Object.fromEntries(r2Chats.map(c => [c.id, c]));
+      setChats(prev => {
+        const base = prev.length ? prev : fallbackChats;
+        if (!base.length) return prev; // sem base, aguarda WAHA carregar
+        let changed = false;
+        const updated = base.map(c => {
+          const r2 = r2Map[c.id];
+          if (!r2) return c;
+          const r2TsMs  = r2.lastTs || 0;
+          const localTs = c.lastTs ? new Date(c.lastTs).getTime() : 0;
+          if (r2TsMs <= localTs) return c;
+          changed = true;
+          return { ...c, lastMsg: r2.lastMsg || c.lastMsg, lastTs: new Date(r2TsMs).toISOString() };
+        });
+        if (!changed) return prev;
+        persistChats(updated);
+        return updated;
+      });
+      console.log(`[r2] chatlist aplicado: ${r2Chats.length} chats`);
+    } catch (e) {
+      console.warn("[r2] applyR2Chats:", e.message);
+    }
+  }
+
+  // Polling R2 a cada 30s para capturar mensagens que chegaram via webhook
+  useEffect(() => {
+    if (!sessionOk || USE_MOCK) return;
+    const iv = setInterval(() => applyR2Chats(), 30000);
+    return () => clearInterval(iv);
   }, [sessionOk]);
 
   async function loadChats() {
@@ -173,35 +214,8 @@ export function useWAHA(operator) {
         } catch {}
       }
 
-      // ── 2. R2: atualiza lastMsg/lastTs com dados do webhook ──────
-      // R2 tem o estado mais recente (atualizado por cada webhook recebido)
-      try {
-        const r2Res = await fetch("/api/r2-data?type=chats", {
-          headers: { "X-Internal-Key": ikey() }
-        });
-        if (r2Res.ok) {
-          const r2Chats = await r2Res.json();
-          if (Array.isArray(r2Chats) && r2Chats.length > 0) {
-            const r2Map = Object.fromEntries(r2Chats.map(c => [c.id, c]));
-            setChats(prev => {
-              const base = prev.length ? prev : cachedChats;
-              const updated = base.map(c => {
-                const r2 = r2Map[c.id];
-                if (!r2) return c;
-                // Só atualiza se R2 tem dado mais recente
-                const r2TsMs = r2.lastTs || 0;
-                const localTs = c.lastTs ? new Date(c.lastTs).getTime() : 0;
-                if (r2TsMs <= localTs) return c;
-                return { ...c, lastMsg: r2.lastMsg || c.lastMsg, lastTs: new Date(r2TsMs).toISOString() };
-              });
-              return updated;
-            });
-            console.log(`[r2] chatlist: ${r2Chats.length} chats no R2`);
-          }
-        }
-      } catch (e) {
-        console.warn("[r2] chatlist load:", e.message);
-      }
+      // ── 2. R2: atualiza lastMsg/lastTs com dados persistidos pelo webhook ──
+      await applyR2Chats(cachedChats);
 
       // Calcula fromTs baseado na última sync salva (+ 1 dia de buffer)
       let fromTs = null;
@@ -811,13 +825,10 @@ export function useWAHA(operator) {
     } catch { return { hasMore: false }; }
   }, []);
 
-  // ── Polling mensagens do chat ativo ──────────────────────────
-  // Só roda quando PartyKit está desconectado (fallback direto ao WAHA)
+  // ── Polling mensagens do chat ativo (sempre ativo como fallback) ──
   useEffect(() => {
     if (!sessionOk || USE_MOCK) return;
     const iv = setInterval(async () => {
-      // Pula se WS está conectado — ele já entrega as mensagens em tempo real
-      if (wsConnected.current) return;
       const chatId = activeChatRef.current;
       if (!chatId) return;
       try {
@@ -846,25 +857,24 @@ export function useWAHA(operator) {
     return () => clearInterval(iv);
   }, [sessionOk]);
 
-  // ── Polling lista de chats (10s quando WS conectado, 5s no fallback) ──
-  // Busca apenas chats com atividade nos últimos 5 minutos para reduzir carga
+  // ── Polling lista de chats (10s) — busca 20 mais recentes direto no WAHA ──
   useEffect(() => {
     if (!sessionOk || USE_MOCK) return;
     const iv = setInterval(async () => {
       try {
-        const SESSION = import.meta.env.VITE_WAHA_SESSION || "default";
-        // Cutoff: 5 minutos atrás (em segundos) — só chats recentes
-        const cutoffSec = Math.floor((Date.now() - 5 * 60 * 1000) / 1000);
+        const SESSION   = import.meta.env.VITE_WAHA_SESSION || "default";
+        const cutoffSec = Math.floor((Date.now() - 60 * 60 * 1000) / 1000); // 1h atrás
         const r = await fetch(
-          `/api/waha?path=${encodeURIComponent(`/api/${SESSION}/chats`)}&limit=20&updatedAt.gte=${cutoffSec}`,
+          `/api/waha?path=${encodeURIComponent(`/api/${SESSION}/chats`)}&limit=20`,
           { headers: { "X-Internal-Key": ikey() } }
         );
-        const raw = r.ok ? await r.json() : null;
-        // Fallback: se a API não suporta updatedAt.gte, retorna lista maior — filtra client-side
-        const all = Array.isArray(raw) ? raw : [];
+        if (!r.ok) return;
+        const all = await r.json();
+        if (!Array.isArray(all)) return;
+        // Filtra client-side: só chats com atividade na última hora
         const recent = all.filter(c => {
           const ts = c.lastMessage?.timestamp || c.lastMessage?.t || 0;
-          return ts >= cutoffSec;
+          return ts === 0 || ts >= cutoffSec;
         });
         if (!recent.length) return;
         const normalized = recent.map(c => normalizeChat(c));
