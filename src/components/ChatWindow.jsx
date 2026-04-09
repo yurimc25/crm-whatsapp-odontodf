@@ -305,7 +305,21 @@ export default function ChatWindow({
       if (file.type.startsWith("image/")) {
         await sendImage(chat.id, b64, text.trim() || "");
       } else {
-        await sendFile(chat.id, b64, file.name, file.type, text.trim() || "");
+        // WAHA NOWEB não suporta sendFile — faz upload pro R2 e envia URL
+        const rawBase64 = b64.includes(",") ? b64.split(",")[1] : b64;
+        const ikey = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
+        const upRes = await fetch("/api/upload", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Internal-Key": ikey },
+          body: JSON.stringify({ filename: file.name, mimetype: file.type, data: rawBase64 }),
+        });
+        if (!upRes.ok) {
+          const e = await upRes.json().catch(() => ({}));
+          throw new Error(e.error || `Upload falhou: ${upRes.status}`);
+        }
+        const { url } = await upRes.json();
+        const caption = text.trim() ? `${text.trim()}\n${url}` : url;
+        await import("../services/waha").then(m => m.sendText(chat.id, caption));
       }
       setText("");
     } catch (err) { alert("Erro ao enviar arquivo: " + err.message); }
