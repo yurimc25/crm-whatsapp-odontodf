@@ -16,7 +16,7 @@ const RELEVANT_EVENTS = new Set(["message", "message.any", "chat.new", "message.
 // Mantém últimos N eventos em memória para novos clientes que se conectam
 const MAX_HISTORY = 50;
 
-export default class CRMServer implements Party.Server {
+class CRMServer implements Party.Server {
   history: Array<{ event: string; payload: unknown; ts: number }> = [];
 
   constructor(readonly room: Party.Room) {}
@@ -69,4 +69,4 @@ export default class CRMServer implements Party.Server {
   }
 }
 
-export { CRMServer as default };
+export default CRMServer;

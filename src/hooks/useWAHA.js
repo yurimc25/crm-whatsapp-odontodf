@@ -813,7 +813,7 @@ export function useWAHA(operator) {
         // Cutoff: 5 minutos atrás (em segundos) — só chats recentes
         const cutoffSec = Math.floor((Date.now() - 5 * 60 * 1000) / 1000);
         const r = await fetch(
-          `/api/waha?path=/api/${SESSION}/chats?limit=20&updatedAt.gte=${cutoffSec}`,
+          `/api/waha?path=${encodeURIComponent(`/api/${SESSION}/chats`)}&limit=20&updatedAt.gte=${cutoffSec}`,
           { headers: { "X-Internal-Key": ikey() } }
         );
         const raw = r.ok ? await r.json() : null;
