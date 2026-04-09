@@ -84,16 +84,29 @@ function persistChats(chats) {
   } catch {}
 }
 
-// Palavras de despedida para auto-resolver
+// Padrões de despedida: correspondem somente a mensagens curtas sem pedidos
 const FAREWELL_PATTERNS = [
-  /^(ok|okay|oks|okey)[\s!.]*$/i,
-  /obrigad/i, /agradeç/i, /igualmente/i,
-  /disponha/i, /excelente dia/i, /boa noite/i, /boa tarde/i, /bom dia/i,
-  /até logo/i, /tchau/i, /flw/i, /vlw/i, /falou/i,
+  /^(ok|okay|oks|okey)[\s!.,]*$/i,
+  /^obrigad/i,
+  /^agradeç/i,
+  /^igualmente[\s!.]*$/i,
+  /^disponha/i,
+  /^excelente dia/i,
+  /^(até logo|até mais|até amanhã|até breve)[\s!.]*$/i,
+  /^(tchau|xau|xao|bi|bye)[\s!]*$/i,
+  /^(flw|vlw|falou)[\s!]*$/i,
+  /^(boa noite|boa tarde|bom dia)[!.\s🌙☀️🙏😊]*$/i,
 ];
+// Palavras que indicam pedido/pergunta — impede classificação como despedida
+const REQUEST_WORDS = /avise|avisa|lembre|confirme|gostaria|quero|preciso|pode(ria)?|consegue|horário|agenda|consulta|compromisso|tenho |posso |não (posso|consigo|vou)\b/i;
+
 function isFarewell(text) {
   if (!text) return false;
-  return FAREWELL_PATTERNS.some(p => p.test(text.trim()));
+  const t = text.trim();
+  if (t.length > 80) return false;             // mensagens longas não são despedidas
+  if (/\?/.test(t)) return false;              // perguntas não são despedidas
+  if (REQUEST_WORDS.test(t)) return false;     // pedidos/informações não são despedidas
+  return FAREWELL_PATTERNS.some(p => p.test(t));
 }
 
 function detectAutoResolve(msgs) {
@@ -1029,7 +1042,7 @@ export function useWAHA(operator) {
     });
     setChats(prev => {
       const updated = prev.map(c => c.id !== chatId ? c : {
-        ...c, lastMsg: formatted, lastTime: tmpMsg.time, lastPatientTs: null,
+        ...c, lastMsg: formatted, lastTime: tmpMsg.time, lastPatientTs: null, unread: 0,
       });
       persistChats(updated);
       return updated;

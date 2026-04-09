@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useContactsCtx } from "../../App";
 
 const T = {
   bg:       "#212121",
@@ -269,11 +270,13 @@ export default function PatientCardDetected({ msg }) {
 }
 
 function PatientCard({ block, index, total, iKey }) {
+  const { addLocalContact } = useContactsCtx();
   const [showModal, setShowModal] = useState(false);
   const [modalAction, setModalAction] = useState(null);
-  const [status, setStatus] = useState("idle");
-  const [result, setResult] = useState(null);
-  const [error, setError]   = useState(null);
+  const [loading,         setLoading]         = useState(false);
+  const [successCodent,   setSuccessCodent]   = useState(null); // { result }
+  const [successDoctoral, setSuccessDoctoral] = useState(null);
+  const [error, setError] = useState(null);
 
   const data        = parsePatientData(block);
   const camposVazios = CAMPOS.filter(c => !data[c] || data[c].trim() === "");
@@ -299,42 +302,43 @@ function PatientCard({ block, index, total, iKey }) {
     }
   }
 
+  // Salva contato localmente quando nome e telefone estão disponíveis
+  function salvarContato(formData) {
+    const nome = formData.nome?.trim();
+    const tel  = (formData.telefone || "").replace(/\D/g, "");
+    if (nome && tel.length >= 8) {
+      addLocalContact({ phone: tel, name: nome });
+    }
+  }
+
   async function executar(action, formData) {
-    if (action === "doctoralia") {
-      setStatus("loading"); setError(null);
-      try {
+    setLoading(true); setError(null);
+    try {
+      if (action === "doctoralia") {
         const r = await fetch("/api/doctoralia?action=create", {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-Internal-Key": iKey },
           body: JSON.stringify(formData),
         });
         const json = await r.json();
-        if (json.tokenExpired) {
-          setError("Token Doctoralia expirado — atualize DOCTORALIA_TOKEN no Vercel.");
-          setStatus("error"); return;
-        }
+        if (json.tokenExpired) { setError("Token Doctoralia expirado — atualize DOCTORALIA_TOKEN no Vercel."); return; }
         if (!r.ok) throw new Error(json.error || `Erro ${r.status}`);
-        setResult(json); setStatus("success_doctoralia");
-      } catch (e) { setError(e.message); setStatus("error"); }
-      return;
-    }
-    if (action !== "codental") return;
-    setStatus("loading"); setError(null);
-    try {
-      const r = await fetch("/api/codental?action=create", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Internal-Key": iKey },
-        body: JSON.stringify(formData),
-      });
-      const json = await r.json();
-      if (!r.ok) throw new Error(json.error || `Erro ${r.status}`);
-      setResult(json); setStatus("success_codental");
-    } catch (e) { setError(e.message); setStatus("error"); }
+        salvarContato(formData);
+        setSuccessDoctoral(json);
+      } else if (action === "codental") {
+        const r = await fetch("/api/codental?action=create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Internal-Key": iKey },
+          body: JSON.stringify(formData),
+        });
+        const json = await r.json();
+        if (!r.ok) throw new Error(json.error || `Erro ${r.status}`);
+        salvarContato(formData);
+        setSuccessCodent(json);
+      }
+    } catch (e) { setError(e.message); }
+    finally { setLoading(false); }
   }
-
-  const isSuccess = status === "success_codental" || status === "success_doctoralia";
-  const isLoading = status === "loading";
-  const isError   = status === "error";
 
   return (
     <>
@@ -383,47 +387,63 @@ function PatientCard({ block, index, total, iKey }) {
           ))}
         </div>
 
-        {/* Botões */}
-        {isSuccess ? (
-          <div style={{ background:T.greenBg, border:`1px solid ${T.green}44`,
-            borderRadius:6, padding:"8px 12px", color:T.green,
-            fontSize:12, fontWeight:600, textAlign:"center" }}>
-            ✓ {status === "success_codental" ? "Paciente adicionado ao Codental!" : "Paciente adicionado ao Doctoralia!"}
-            {result?.url && (
-              <a href={result.url} target="_blank" rel="noreferrer"
-                style={{ display:"block", marginTop:4, color:T.accent,
-                  fontSize:11, textDecoration:"underline" }}>
-                {status === "success_codental" ? "Ver prontuário →" : "Ver no Doctoralia →"}
-              </a>
-            )}
+        {/* Botões — sucesso por serviço (independentes) */}
+        {error && (
+          <div style={{ background:"#2a1010", border:"1px solid #c0412c44",
+            borderRadius:6, padding:"6px 10px", color:"#e57373",
+            fontSize:11, marginBottom:6 }}>
+            ⚠ {error}
           </div>
-        ) : (
-          <>
-            {isError && (
-              <div style={{ background:"#2a1010", border:"1px solid #c0412c44",
-                borderRadius:6, padding:"6px 10px", color:"#e57373",
-                fontSize:11, marginBottom:6 }}>
-                ⚠ {error}
-              </div>
-            )}
-            <div style={{ display:"flex", gap:6 }}>
-              <button onClick={() => handleAction("codental")} disabled={isLoading}
-                style={{ flex:1, background:T.accentBg, border:`1px solid ${T.accent}44`,
-                  borderRadius:6, padding:"7px 8px", color:T.accent,
-                  fontSize:11, fontWeight:600, cursor: isLoading ? "not-allowed" : "pointer",
-                  opacity: isLoading ? .6 : 1 }}>
-                {isLoading ? "⏳ Adicionando..." : camposVazios.length > 0 ? "✏️ Completar + Codental" : "+ Prontuário Codental"}
-              </button>
-              <button onClick={() => handleAction("doctoralia")} disabled={isLoading}
-                style={{ flex:1, background:"#1a1e3a", border:"1px solid #3a4a8a44",
-                  borderRadius:6, padding:"7px 8px", color:"#7a9af8",
-                  fontSize:11, fontWeight:600, cursor:"pointer",
-                  opacity: isLoading ? .6 : 1 }}>
-                🗓 Doctoralia
-              </button>
-            </div>
-          </>
         )}
+        <div style={{ display:"flex", gap:6 }}>
+          {/* Codental */}
+          {successCodent ? (
+            <div style={{ flex:1, background:T.greenBg, border:`1px solid ${T.green}44`,
+              borderRadius:6, padding:"7px 8px", color:T.green,
+              fontSize:11, fontWeight:600, textAlign:"center" }}>
+              ✓ Adicionado ao Codental!
+              {successCodent?.url && (
+                <a href={successCodent.url} target="_blank" rel="noreferrer"
+                  style={{ display:"block", marginTop:2, color:T.accent,
+                    fontSize:10, textDecoration:"underline" }}>
+                  Ver prontuário →
+                </a>
+              )}
+            </div>
+          ) : (
+            <button onClick={() => handleAction("codental")} disabled={loading}
+              style={{ flex:1, background:T.accentBg, border:`1px solid ${T.accent}44`,
+                borderRadius:6, padding:"7px 8px", color:T.accent,
+                fontSize:11, fontWeight:600, cursor: loading ? "not-allowed" : "pointer",
+                opacity: loading ? .6 : 1 }}>
+              {loading ? "⏳ Adicionando..." : camposVazios.length > 0 ? "✏️ Completar + Codental" : "+ Codental"}
+            </button>
+          )}
+
+          {/* Doctoralia */}
+          {successDoctoral ? (
+            <div style={{ flex:1, background:T.greenBg, border:`1px solid ${T.green}44`,
+              borderRadius:6, padding:"7px 8px", color:T.green,
+              fontSize:11, fontWeight:600, textAlign:"center" }}>
+              ✓ Adicionado ao Doctoralia!
+              {successDoctoral?.url && (
+                <a href={successDoctoral.url} target="_blank" rel="noreferrer"
+                  style={{ display:"block", marginTop:2, color:"#7a9af8",
+                    fontSize:10, textDecoration:"underline" }}>
+                  Ver no Doctoralia →
+                </a>
+              )}
+            </div>
+          ) : (
+            <button onClick={() => handleAction("doctoralia")} disabled={loading}
+              style={{ flex:1, background:"#1a1e3a", border:"1px solid #3a4a8a44",
+                borderRadius:6, padding:"7px 8px", color:"#7a9af8",
+                fontSize:11, fontWeight:600, cursor: loading ? "not-allowed" : "pointer",
+                opacity: loading ? .6 : 1 }}>
+              🗓 Doctoralia
+            </button>
+          )}
+        </div>
       </div>
 
       {showModal && (
