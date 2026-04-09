@@ -215,8 +215,6 @@ export function useWAHA(operator) {
       }
 
       // ── 2. R2: atualiza lastMsg/lastTs com dados persistidos pelo webhook ──
-      await applyR2Chats(cachedChats);
-
       // Calcula fromTs baseado na última sync salva (+ 1 dia de buffer)
       let fromTs = null;
       const lastSync = getLastSyncTs();
@@ -231,7 +229,15 @@ export function useWAHA(operator) {
         console.log("[waha] first load: buscando últimos 100 dias");
       }
 
-      const raw = await getChats();
+      // Busca WAHA + MongoDB + R2 em paralelo
+      const [raw, dbRes, r2Res] = await Promise.all([
+        getChats(),
+        fetch(`/api/db?action=chats`, { headers: { "X-Internal-Key": ikey() } })
+          .then(r => r.json()).catch(() => ({ chats: {} })),
+        fetch("/api/r2-data?type=chats", { headers: { "X-Internal-Key": ikey() } })
+          .then(r => r.ok ? r.json() : []).catch(() => []),
+      ]);
+
       if (!Array.isArray(raw)) return;
 
       const filtered = fromTs
@@ -242,11 +248,12 @@ export function useWAHA(operator) {
           })
         : raw;
 
-      // Metadata do MongoDB
-      const dbRes = await fetch(`/api/db?action=chats`, {
-        headers: { "X-Internal-Key": ikey() }
-      }).then(r => r.json()).catch(() => ({ chats: {} }));
-      const dbMeta = dbRes.chats || {};
+      const dbMeta = dbRes?.chats || {};
+      // R2: mapa de id → { lastMsg, lastTs } — fonte mais recente (atualizado por webhook)
+      const r2Map  = Array.isArray(r2Res)
+        ? Object.fromEntries(r2Res.map(c => [c.id, c]))
+        : {};
+      console.log(`[r2] ${Object.keys(r2Map).length} chats no R2`);
 
       const normalized = filtered.map(c => {
         const n    = normalizeChat(c);
@@ -265,15 +272,20 @@ export function useWAHA(operator) {
         const prevMap = Object.fromEntries(prev.map(c => [c.id, c]));
         const merged  = normalized.map(n => {
           const local = prevMap[n.id];
-          // Chat novo sem histórico local — usa dados do WAHA
+          // Chat novo sem histórico local — usa dados do WAHA + R2
           if (!local) {
-            // Verifica se já deveria ser auto-resolvido
-            const lpt = n.lastPatientTs ? new Date(n.lastPatientTs).getTime() : 0;
-            if (lpt && agora - lpt > TRINTA_DIAS && n.status !== "resolved") {
-              toAutoResolveIds.add(n.id);
-              return { ...n, status: "resolved", unread: 0, lastPatientTs: null };
+            const r2   = r2Map[n.id];
+            const r2Ts = r2?.lastTs || 0;
+            const nTs  = n.lastTs ? new Date(n.lastTs).getTime() : 0;
+            const withR2 = r2Ts > nTs
+              ? { ...n, lastMsg: r2.lastMsg || n.lastMsg, lastTs: new Date(r2Ts).toISOString() }
+              : n;
+            const lpt = withR2.lastPatientTs ? new Date(withR2.lastPatientTs).getTime() : 0;
+            if (lpt && agora - lpt > TRINTA_DIAS && withR2.status !== "resolved") {
+              toAutoResolveIds.add(withR2.id);
+              return { ...withR2, status: "resolved", unread: 0, lastPatientTs: null };
             }
-            return n;
+            return withR2;
           }
           // Chat existente — preserva estado local
           const resolvedLocally = local.status === "resolved";
@@ -289,7 +301,21 @@ export function useWAHA(operator) {
             assignedTo:    local.assignedTo  ?? n.assignedTo,
             unread:        shouldAutoResolve ? 0 : (local.unread ?? n.unread),
             lastPatientTs: (resolvedLocally || shouldAutoResolve) ? null : lpt,
-            lastMsg:       n.lastMsg   || local.lastMsg || "",
+            lastMsg:       (() => {
+              const r2    = r2Map[n.id];
+              const r2Ts  = r2?.lastTs || 0;
+              const nTs   = n.lastTs   ? new Date(n.lastTs).getTime()   : 0;
+              const locTs = local.lastTs ? new Date(local.lastTs).getTime() : 0;
+              if (r2Ts > nTs && r2Ts > locTs) return r2.lastMsg || n.lastMsg || local.lastMsg || "";
+              return n.lastMsg || local.lastMsg || "";
+            })(),
+            lastTs:        (() => {
+              const r2   = r2Map[n.id];
+              const r2Ts = r2?.lastTs || 0;
+              const nTs  = n.lastTs ? new Date(n.lastTs).getTime() : 0;
+              if (r2Ts > nTs) return new Date(r2Ts).toISOString();
+              return n.lastTs || local.lastTs;
+            })(),
             photoUrl:      local.photoUrl ?? null,
             tags:          local.tags    ?? n.tags,
           };
