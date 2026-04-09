@@ -1248,9 +1248,13 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
       if (!fullUrl || transcribing) return;
       setTranscribing(true);
       try {
-        const blob = await fetch(fullUrl).then(r => r.blob());
+        const rawBlob = await fetch(fullUrl).then(r => r.blob());
+        // Groq aceita: ogg, opus, mp4, webm, wav, mp3, flac, m4a
+        // Normaliza o tipo — WAHA às vezes retorna audio/ogg;codecs=opus
+        const mimeType = rawBlob.type.split(";")[0] || "audio/ogg";
+        const blob = new Blob([rawBlob], { type: mimeType });
         const form = new FormData();
-        form.append("file", blob, "audio.ogg");
+        form.append("file", blob, "audio." + (mimeType.split("/")[1] || "ogg"));
         const r = await fetch("/api/transcribe", {
           method: "POST",
           headers: { "X-Internal-Key": iKey },
@@ -1443,18 +1447,16 @@ function ImageLightbox({ src, fullUrl, downloadUrl, iKey, msgId, onClose }) {
     setOcrLoading(true);
     setOcrResult(null);
     try {
-      // Converte para base64
+      // Converte para base64 — aceita blob: e URLs normais
       let base64 = null;
       let mime = "image/jpeg";
-      if (fullUrl && fullUrl.startsWith("blob:")) {
-        const r = await fetch(fullUrl);
+      const srcUrl = fullUrl || downloadUrl;
+      if (srcUrl) {
+        const r = await fetch(srcUrl);
         const blob = await r.blob();
         mime = blob.type || "image/jpeg";
         const ab = await blob.arrayBuffer();
-        const bytes = new Uint8Array(ab);
-        let binary = "";
-        for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-        base64 = btoa(binary);
+        base64 = btoa(String.fromCharCode(...new Uint8Array(ab)));
       }
       if (!base64) { setOcrLoading(false); return; }
       const res = await fetch("/api/ocr", {
