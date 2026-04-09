@@ -1,53 +1,51 @@
 // api/webhook.js
-// Recebe eventos do WAHA via webhook e persiste no MongoDB para SSE
-// WAHA envia: message, message.any, chat.new, session.status, etc.
-// TTL: eventos ficam 60s no MongoDB (suficiente para SSE pegar)
+// Recebe eventos do WAHA e encaminha ao PartyKit (hub de tempo real)
+// WAHA → Vercel /api/webhook → PartyKit room → browsers via WebSocket
 
-import { MongoClient } from "mongodb";
-
-let client;
-async function getDb() {
-  if (!client) {
-    client = new MongoClient(process.env.MONGODB_URI);
-    await client.connect();
-  }
-  return client.db("clinica");
-}
+const RELEVANT = new Set(["message", "message.any", "chat.new", "message.revoked"]);
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Api-Key");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Api-Key, Authorization");
 
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).end();
 
-  // Valida chave do WAHA (opcional mas recomendado)
+  // Valida chave do WAHA
   const wahaKey = process.env.WAHA_API_KEY;
   if (wahaKey) {
-    const incoming = req.headers["x-api-key"] || req.headers["authorization"]?.replace("Bearer ", "");
+    const incoming = req.headers["x-api-key"] || (req.headers["authorization"] || "").replace("Bearer ", "");
     if (incoming !== wahaKey) return res.status(401).json({ error: "Unauthorized" });
   }
 
   try {
-    const body = req.body;
-    const event = body?.event;
-    const payload = body?.payload;
+    const { event, payload, session } = req.body || {};
 
-    if (!event || !payload) return res.status(200).json({ ok: true });
+    if (!event || !payload || !RELEVANT.has(event)) {
+      return res.status(200).json({ ok: true, skipped: event || "empty" });
+    }
 
-    // Só processa eventos relevantes
-    const RELEVANT = ["message", "message.any", "chat.new", "message.revoked"];
-    if (!RELEVANT.includes(event)) return res.status(200).json({ ok: true, skipped: event });
+    // Encaminha ao PartyKit
+    const partyHost = process.env.PARTYKIT_HOST; // ex: crm-whatsapp.seuuser.partykit.dev
+    if (!partyHost) {
+      console.warn("[webhook] PARTYKIT_HOST não configurado");
+      return res.status(200).json({ ok: true, warn: "no partykit host" });
+    }
 
-    const db = await getDb();
-    await db.collection("waha_events").insertOne({
-      event,
-      payload,
-      session: body.session || "default",
-      createdAt: new Date(),
-      // TTL index deve ser criado: db.waha_events.createIndex({createdAt:1},{expireAfterSeconds:120})
+    const partyUrl = `https://${partyHost}/parties/default/clinic`;
+    const r = await fetch(partyUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-internal-key": process.env.INTERNAL_API_KEY || "@Deuse10",
+      },
+      body: JSON.stringify({ event, payload, session: session || "default" }),
     });
+
+    if (!r.ok) {
+      console.error("[webhook] PartyKit error:", r.status, await r.text());
+    }
 
     res.status(200).json({ ok: true });
   } catch (e) {

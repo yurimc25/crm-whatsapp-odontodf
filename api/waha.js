@@ -1,9 +1,13 @@
 // api/waha.js — Proxy para o WAHA rodando no EasyPanel
 // O browser não pode chamar o WAHA diretamente por causa de CORS.
 // Este endpoint recebe as requisições do frontend e repassa ao WAHA.
+// Mídia é cacheada no Cloudflare R2 para reduzir carga no WAHA.
+
+import { r2Get, r2Put, r2KeyFromPath } from "./_r2.js";
 
 const WAHA_URL = process.env.VITE_WAHA_URL || "";
 const WAHA_KEY = process.env.VITE_WAHA_API_KEY || "";
+const R2_ENABLED = !!(process.env.R2_ACCOUNT_ID && process.env.R2_ACCESS_KEY_ID && process.env.R2_BUCKET_NAME);
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -40,6 +44,21 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "path inválido" });
   }
   console.debug(`[waha-proxy] proxying to ${url}`);
+
+  // ── R2 cache check para mídia ────────────────────────────────────
+  const isMediaPath = qpath.includes("download-media") || qpath.includes("/api/files/");
+  if (R2_ENABLED && req.method === "GET" && isMediaPath) {
+    const r2key = r2KeyFromPath(qpath);
+    const cached = await r2Get(r2key).catch(() => null);
+    if (cached) {
+      console.debug(`[r2] cache hit: ${r2key}`);
+      res.setHeader("Content-Type", cached.contentType);
+      res.setHeader("Cache-Control", "public, max-age=86400, stale-while-revalidate=3600");
+      res.setHeader("X-Cache", "HIT");
+      return res.status(200).end(cached.buf);
+    }
+    console.debug(`[r2] cache miss: ${r2key}`);
+  }
 
   try {
     // Não força Content-Type para GET (pode ser binário). Só adiciona quando houver corpo.
@@ -116,9 +135,14 @@ export default async function handler(req, res) {
                   if (fr.ok) {
                     const buf = await fr.arrayBuffer();
                     const ctype = fr.headers.get("content-type") || "application/octet-stream";
+                    const fbBuf = Buffer.from(buf);
+                    if (R2_ENABLED) {
+                      const r2key = r2KeyFromPath(qpath);
+                      r2Put(r2key, fbBuf, ctype).catch(() => {});
+                    }
                     res.setHeader("Content-Type", ctype);
                     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
-                    return res.status(200).end(Buffer.from(buf));
+                    return res.status(200).end(fbBuf);
                   } else {
                     const txt = await fr.text().catch(() => "");
                     console.debug(`[waha-proxy] fallback ${c} returned ${fr.status}: ${txt.slice ? txt.slice(0,200) : txt}`);
@@ -137,8 +161,16 @@ export default async function handler(req, res) {
         if (buf.byteLength === 0) {
           return res.status(404).json({ error: "Mídia vazia ou não encontrada" });
         }
-        res.setHeader("Content-Type", ct || "application/octet-stream");
-        return res.status(wahaRes.status || 200).end(Buffer.from(buf));
+        const finalCt = ct || "application/octet-stream";
+        const finalBuf = Buffer.from(buf);
+        // Armazena no R2 em background (fire-and-forget)
+        if (R2_ENABLED && req.method === "GET") {
+          const r2key = r2KeyFromPath(qpath);
+          r2Put(r2key, finalBuf, finalCt).catch(() => {});
+        }
+        res.setHeader("Content-Type", finalCt);
+        res.setHeader("X-Cache", "MISS");
+        return res.status(wahaRes.status || 200).end(finalBuf);
       } catch (e) {
         console.error("[waha-proxy] binary error:", e.message || e);
         return res.status(502).json({ error: "Erro ao baixar mídia" });

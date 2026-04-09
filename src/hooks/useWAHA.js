@@ -10,7 +10,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useContactsCtx } from "../App";
 import {
   getChats, getMessages, sendText, getSessionStatus,
-  normalizeChat, normalizeMessage, createWAHASocket, getProfilePicture,
+  normalizeChat, normalizeMessage, getProfilePicture,
   deleteMessage as wahaDeleteMessage, editMessage as wahaEditMessage,
 } from "../services/waha";
 import { MOCK_CHATS, MOCK_MESSAGES } from "../data/mock";
@@ -489,13 +489,13 @@ export function useWAHA(operator) {
     }
   }
 
-  // ── 3. Tempo real: SSE relay local → fallback WebSocket WAHA ────
+  // ── 3. Tempo real: PartyKit → fallback polling WAHA ─────────────
   useEffect(() => {
     if (!sessionOk || USE_MOCK) return;
 
-    const RELAY_URL = import.meta.env.VITE_RELAY_URL; // ex: http://localhost:3001
+    const PARTY_HOST = import.meta.env.VITE_PARTYKIT_HOST;
 
-    // Handlers compartilhados entre SSE e WS
+    // Handlers compartilhados
     function handleMsg(msg) {
       const msgChatId = msg.chatId;
       if (!msgChatId) return;
@@ -552,83 +552,82 @@ export function useWAHA(operator) {
       loadLastMessages([newChat.id]);
     }
 
-    // Tenta SSE do relay local
-    if (RELAY_URL) {
-      const ikey = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
-      let es;
-      let reconnectTimer;
-      let dead = false;
+    function dispatch(event, payload) {
+      if (!payload) return;
+      if (event === "message" || event === "message.any") {
+        const msg = normalizeMessage(payload);
+        if (!msg.chatId && payload.from) msg.chatId = payload.from.replace(/:.*@/, "@");
+        handleMsg(msg);
+      } else if (event === "chat.new") {
+        handleChatNew(payload);
+      } else if (event === "message.revoked") {
+        const msgId = payload.id || payload._data?.id?.id;
+        const chatId = payload.from || payload.chatId;
+        if (msgId && chatId) {
+          setMessages(prev => {
+            const cur = prev[chatId];
+            if (!cur) return prev;
+            const updated = cur.filter(m => m.id !== msgId);
+            return { ...prev, [chatId]: updated };
+          });
+        }
+      }
+    }
 
-      function connectSSE() {
-        if (dead) return;
-        const url = `${RELAY_URL}/events?key=${encodeURIComponent(ikey)}`;
-        es = new EventSource(url);
+    // ── PartyKit (preferido) ──────────────────────────────────────
+    if (PARTY_HOST) {
+      import("partysocket").then(({ default: PartySocket }) => {
+        const ps = new PartySocket({
+          host: PARTY_HOST,
+          room: "clinic",
+        });
 
-        es.addEventListener("connected", () => {
+        ps.onopen = () => {
           wsConnected.current = true;
           setWsStatus("connected");
-          console.log("[relay] SSE connected");
-        });
+          console.log("[party] connected");
+        };
 
-        es.addEventListener("message", e => {
+        ps.onmessage = (e) => {
           try {
-            const { payload } = JSON.parse(e.data);
-            handleMsg(normalizeMessage(payload));
+            const data = JSON.parse(e.data);
+            const { event, payload } = data;
+
+            if (event === "connected") return;
+
+            // Histórico de reconexão — processa cada evento
+            if (event === "history" && Array.isArray(payload)) {
+              for (const item of payload) {
+                dispatch(item.event, item.payload);
+              }
+              return;
+            }
+
+            dispatch(event, payload);
           } catch {}
-        });
+        };
 
-        es.addEventListener("message.any", e => {
-          try {
-            const { payload } = JSON.parse(e.data);
-            handleMsg(normalizeMessage(payload));
-          } catch {}
-        });
-
-        es.addEventListener("chat.new", e => {
-          try {
-            const { payload } = JSON.parse(e.data);
-            handleChatNew(payload);
-          } catch {}
-        });
-
-        es.addEventListener("reconnect", () => {
-          // Servidor pediu para reconectar (timeout de 50s)
-          es.close();
-          reconnectTimer = setTimeout(connectSSE, 100);
-        });
-
-        es.onerror = () => {
+        ps.onclose = () => {
           wsConnected.current = false;
           setWsStatus("reconnecting");
-          es.close();
-          if (!dead) reconnectTimer = setTimeout(connectSSE, 3000);
         };
-      }
 
-      connectSSE();
+        ps.onerror = () => {
+          wsConnected.current = false;
+          setWsStatus("reconnecting");
+        };
+
+        socketRef.current = { close: () => ps.close() };
+      });
 
       return () => {
-        dead = true;
         wsConnected.current = false;
-        clearTimeout(reconnectTimer);
-        es?.close();
+        socketRef.current?.close();
       };
     }
 
-    // Fallback: WebSocket direto do WAHA
-    socketRef.current = createWAHASocket({
-      onMessage: handleMsg,
-      onChatUpdate: handleChatNew,
-      onStatus: (s) => {
-        wsConnected.current = s === "connected";
-        setWsStatus(s);
-      },
-      onError: () => {
-        wsConnected.current = false;
-        setWsStatus("reconnecting");
-      },
-    });
-    return () => { wsConnected.current = false; socketRef.current?.close(); };
+    // Sem PartyKit configurado: polling é o único mecanismo (ver abaixo)
+    setWsStatus("disconnected");
   }, [sessionOk]);
 
   // ── Mock ──────────────────────────────────────────────────────
@@ -769,8 +768,8 @@ export function useWAHA(operator) {
     } catch { return { hasMore: false }; }
   }, []);
 
-  // ── Polling mensagens do chat ativo (3s) ─────────────────────
-  // Polling do chat ativo — só roda quando WebSocket está desconectado (fallback)
+  // ── Polling mensagens do chat ativo ──────────────────────────
+  // Só roda quando PartyKit está desconectado (fallback direto ao WAHA)
   useEffect(() => {
     if (!sessionOk || USE_MOCK) return;
     const iv = setInterval(async () => {
@@ -867,7 +866,7 @@ export function useWAHA(operator) {
           loadLastMessages(precisamMsg.slice(0, 5));
         }
       } catch {}
-    }, 10000); // 10s — WS cuida das mensagens em tempo real; polling é só para chats novos/atualizados
+    }, 10000); // 10s — PartyKit cuida do tempo real; polling cobre chats novos e reconexão
     return () => clearInterval(iv);
   }, [sessionOk]);
 
