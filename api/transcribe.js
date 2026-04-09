@@ -2,7 +2,7 @@
 // Requer GROQ_API_KEY nas variáveis de ambiente.
 // Limite Groq: 25MB por arquivo. Arquivos maiores retornam erro orientando split.
 
-import formidable from "formidable";
+import { formidable } from "formidable";
 import fs from "fs";
 import Groq from "groq-sdk";
 

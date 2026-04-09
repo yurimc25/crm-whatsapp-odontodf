@@ -1456,7 +1456,13 @@ function ImageLightbox({ src, fullUrl, downloadUrl, iKey, msgId, onClose }) {
         const blob = await r.blob();
         mime = blob.type || "image/jpeg";
         const ab = await blob.arrayBuffer();
-        base64 = btoa(String.fromCharCode(...new Uint8Array(ab)));
+        const bytes = new Uint8Array(ab);
+        let binary = "";
+        const CHUNK = 8192;
+        for (let i = 0; i < bytes.length; i += CHUNK) {
+          binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+        }
+        base64 = btoa(binary);
       }
       if (!base64) { setOcrLoading(false); return; }
       const res = await fetch("/api/ocr", {
