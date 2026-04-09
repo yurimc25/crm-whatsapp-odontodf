@@ -50,16 +50,13 @@ function removeTmp(current, incoming) {
 }
 
 const USE_MOCK    = import.meta.env.VITE_USE_MOCK === "true";
-const CONTACTS_SCAN_KEY = "waha_contacts_scan_at";
-const CONTACTS_SCAN_INTERVAL = 12 * 60 * 60 * 1000; // 2x/dia
-function shouldScanContacts() {
-  try {
-    const last = parseInt(localStorage.getItem(CONTACTS_SCAN_KEY) || "0");
-    return Date.now() - last > CONTACTS_SCAN_INTERVAL;
-  } catch { return true; }
+const SCAN_HOUR_KEY  = "waha_scan_hour_at";   // varredura 5 dias — 1x/hora
+const SCAN_DAY_KEY   = "waha_scan_day_at";    // varredura 100 dias — 1x/dia
+function shouldRun(key, intervalMs) {
+  try { return Date.now() - parseInt(localStorage.getItem(key) || "0") > intervalMs; } catch { return true; }
 }
-function markContactsScan() {
-  try { localStorage.setItem(CONTACTS_SCAN_KEY, String(Date.now())); } catch {}
+function markRun(key) {
+  try { localStorage.setItem(key, String(Date.now())); } catch {}
 }
 const CHATS_KEY      = "waha_chats";
 const MSGS_PREFIX    = "waha_msgs_";
@@ -161,7 +158,7 @@ export function useWAHA(operator) {
   async function loadChats() {
     setLoading(true);
     try {
-      // Lê cache do localStorage diretamente (mais confiável que cache utility após F5)
+      // ── 1. localStorage: exibe imediatamente enquanto carrega ────
       let cachedChats = cache.get(CHATS_KEY) || [];
       if (!cachedChats.length) {
         try {
@@ -170,11 +167,40 @@ export function useWAHA(operator) {
             const parsed = JSON.parse(raw);
             if (parsed?.value?.length && Date.now() < parsed.expires) {
               cachedChats = parsed.value;
-              // Restaura estado imediatamente do localStorage
               setChats(cachedChats);
             }
           }
         } catch {}
+      }
+
+      // ── 2. R2: atualiza lastMsg/lastTs com dados do webhook ──────
+      // R2 tem o estado mais recente (atualizado por cada webhook recebido)
+      try {
+        const r2Res = await fetch("/api/r2-data?type=chats", {
+          headers: { "X-Internal-Key": ikey() }
+        });
+        if (r2Res.ok) {
+          const r2Chats = await r2Res.json();
+          if (Array.isArray(r2Chats) && r2Chats.length > 0) {
+            const r2Map = Object.fromEntries(r2Chats.map(c => [c.id, c]));
+            setChats(prev => {
+              const base = prev.length ? prev : cachedChats;
+              const updated = base.map(c => {
+                const r2 = r2Map[c.id];
+                if (!r2) return c;
+                // Só atualiza se R2 tem dado mais recente
+                const r2TsMs = r2.lastTs || 0;
+                const localTs = c.lastTs ? new Date(c.lastTs).getTime() : 0;
+                if (r2TsMs <= localTs) return c;
+                return { ...c, lastMsg: r2.lastMsg || c.lastMsg, lastTs: new Date(r2TsMs).toISOString() };
+              });
+              return updated;
+            });
+            console.log(`[r2] chatlist: ${r2Chats.length} chats no R2`);
+          }
+        }
+      } catch (e) {
+        console.warn("[r2] chatlist load:", e.message);
       }
 
       // Calcula fromTs baseado na última sync salva (+ 1 dia de buffer)
@@ -277,68 +303,6 @@ export function useWAHA(operator) {
 
       const chatIds = normalized.map(c => c.id);
 
-      // ── Auto-sincroniza contatos: phone → name → bulk Google, depois MongoDB ──
-      async function autoSyncContacts(chatsToSync) {
-        console.log(`[waha] starting auto-sync for ${chatsToSync.length} chats`);
-        const internalKey = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
-        const syncedContacts = {};
-        
-        // Batches de 3 para não travar a renderização
-        for (let i = 0; i < chatsToSync.length; i += 3) {
-          const batch = chatsToSync.slice(i, Math.min(i + 3, chatsToSync.length));
-          
-          await Promise.allSettled(batch.map(async (chat) => {
-            const chatId = chat.id;
-            // Verifica se já tem contato mapeado
-            const alreadyHas = resolveName(chatId, null);
-            if (alreadyHas) {
-              console.debug(`[auto-sync] ${chatId} já tem contato: ${alreadyHas}`);
-              return;
-            }
-            
-            // 1. Tenta por telefone
-            let found = null;
-            try { found = await lookupPhone(chatId).catch(() => null); } catch (e) {}
-            if (found) {
-              console.log(`[auto-sync] ${chatId} → ${found} (via phone)`);
-              return;
-            }
-            
-            // 2. Tenta por nome (pushname)
-            const nameToTry = chat.pushname || chat.name || null;
-            if (nameToTry) {
-              try { 
-                const result = await searchByName(nameToTry).catch(() => false);
-                if (result) {
-                  console.log(`[auto-sync] ${chatId} → (via name "${nameToTry}")`);
-                  return;
-                }
-              } catch (e) {}
-            }
-            
-            console.debug(`[auto-sync] ${chatId} not found via phone/name`);
-          }));
-          
-          // Pausa entre batches
-          if (i + 3 < chatsToSync.length) await new Promise(r => setTimeout(r, 200));
-        }
-        
-        // Força sync com MongoDB ao final
-        if (Object.keys(syncedContacts).length > 0) {
-          console.log(`[auto-sync] completed: ${Object.keys(syncedContacts).length} contacts synced`);
-          try {
-            // Tenta ler o mapa local atualizado e sincronizar com MongoDB
-            await fetch("/api/db?action=contacts_cache", {
-              method: "POST",
-              headers: { "Content-Type": "application/json", "X-Internal-Key": internalKey },
-              body: JSON.stringify({ contacts: syncedContacts }),
-            }).catch(() => {});
-          } catch (e) {
-            console.warn("[auto-sync] MongoDB sync failed:", e?.message);
-          }
-        }
-      }
-
       // Carrega última mensagem dos chats sem lastMsg (resolve "Sem mensagens recentes")
       // Limita aos 15 mais recentes — em lotes de 3 com 500ms intervalo
       const semMsg = normalized
@@ -355,22 +319,6 @@ export function useWAHA(operator) {
         console.log(`[waha] loadLastMessages para ${semMsg.length} chats`);
         setTimeout(() => loadLastMessages(semMsg), 1000);
       }
-
-      // Dispara auto-sync em background apenas 2x/dia
-      try {
-        if (typeof lookupPhone === "function" && typeof searchByName === "function") {
-          if (shouldScanContacts()) {
-            markContactsScan();
-            setTimeout(() => {
-              autoSyncContacts(normalized).catch((e) => {
-                console.error("[auto-sync] error:", e?.message || e);
-              });
-            }, 500);
-          } else {
-            console.log("[auto-sync] skip — última varredura < 12h atrás");
-          }
-        }
-      } catch (e) {}
 
     } catch (e) {
       console.error("[waha] loadChats:", e.message);
@@ -488,6 +436,80 @@ export function useWAHA(operator) {
       if (i + BATCH < chatIds.length) await new Promise(r => setTimeout(r, 500));
     }
   }
+
+  // ── Auto-sync contatos: busca chatlist direto no WAHA e resolve nomes ──
+  // Chats individuais (não grupos) sem contato mapeado são pesquisados por telefone/nome
+  async function autoSyncContacts(dias) {
+    if (USE_MOCK) return;
+    const SESSION = import.meta.env.VITE_WAHA_SESSION || "default";
+    const fromTs  = Math.floor((Date.now() - dias * 86400000) / 1000);
+
+    console.log(`[auto-sync] buscando chats dos últimos ${dias} dias direto no WAHA`);
+    let rawChats = [];
+    try {
+      const r = await fetch(
+        `/api/waha?path=${encodeURIComponent(`/api/${SESSION}/chats`)}&limit=500`,
+        { headers: { "X-Internal-Key": ikey() } }
+      );
+      if (!r.ok) return;
+      const all = await r.json();
+      if (!Array.isArray(all)) return;
+      rawChats = all.filter(c => {
+        const ts = c.lastMessage?.timestamp || c.lastMessage?.t || 0;
+        return !c.isGroup && (ts === 0 || ts >= fromTs);
+      });
+    } catch (e) {
+      console.error("[auto-sync] erro ao buscar chats:", e.message);
+      return;
+    }
+
+    const chats = rawChats.map(c => normalizeChat(c));
+    console.log(`[auto-sync] ${chats.length} chats para verificar (${dias} dias)`);
+
+    let found = 0;
+    for (let i = 0; i < chats.length; i += 3) {
+      const batch = chats.slice(i, i + 3);
+      await Promise.allSettled(batch.map(async (chat) => {
+        if (resolveName(chat.id, null)) return; // já tem nome
+        let ok = false;
+        try { ok = !!(await lookupPhone(chat.id).catch(() => null)); } catch {}
+        if (ok) { found++; return; }
+        const nome = chat.pushname || chat.name || null;
+        if (nome) {
+          try { ok = !!(await searchByName(nome).catch(() => false)); } catch {}
+          if (ok) { found++; }
+        }
+      }));
+      if (i + 3 < chats.length) await new Promise(r => setTimeout(r, 200));
+    }
+    console.log(`[auto-sync] concluído: ${found} novos contatos encontrados (${dias} dias)`);
+  }
+
+  // Varredura horária: últimos 5 dias
+  useEffect(() => {
+    if (!sessionOk || USE_MOCK) return;
+    function run() {
+      if (!shouldRun(SCAN_HOUR_KEY, 60 * 60 * 1000)) return;
+      markRun(SCAN_HOUR_KEY);
+      autoSyncContacts(5).catch(e => console.error("[auto-sync 5d]", e?.message));
+    }
+    run(); // executa imediatamente ao iniciar
+    const iv = setInterval(run, 60 * 60 * 1000); // a cada 1h
+    return () => clearInterval(iv);
+  }, [sessionOk]);
+
+  // Varredura diária: últimos 100 dias
+  useEffect(() => {
+    if (!sessionOk || USE_MOCK) return;
+    function run() {
+      if (!shouldRun(SCAN_DAY_KEY, 24 * 60 * 60 * 1000)) return;
+      markRun(SCAN_DAY_KEY);
+      autoSyncContacts(100).catch(e => console.error("[auto-sync 100d]", e?.message));
+    }
+    run(); // executa imediatamente ao iniciar (se passou 1 dia)
+    const iv = setInterval(run, 60 * 60 * 1000); // checa a cada hora se já passou 1 dia
+    return () => clearInterval(iv);
+  }, [sessionOk]);
 
   // ── 3. Tempo real: PartyKit → fallback polling WAHA ─────────────
   useEffect(() => {
@@ -659,7 +681,7 @@ export function useWAHA(operator) {
       return updated;
     });
 
-    // Exibe cache local imediatamente se tiver
+    // ── Cache local: exibe imediatamente ────────────────────────
     const cached = cache.get(MSGS_PREFIX + chatId);
     if (cached?.length) {
       setMessages(prev => ({ ...prev, [chatId]: cached }));
@@ -670,16 +692,37 @@ export function useWAHA(operator) {
       return;
     }
 
+    // ── R2: mescla mensagens persistidas pelo webhook ────────────
+    // Roda em paralelo com o WAHA para não atrasar, aplica ao finalizar
+    const r2MsgsPromise = fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`, {
+      headers: { "X-Internal-Key": ikey() }
+    }).then(r => r.ok ? r.json() : []).catch(() => []);
+
     try {
-      const raw        = await getMessages(chatId, 60);
+      const [raw, r2Raw] = await Promise.all([getMessages(chatId, 60), r2MsgsPromise]);
       const normalized = sortMsgs(raw.map(normalizeMessage));
 
       setMessages(prev => {
-        // Mescla com cache para não perder msgs do WS que chegaram enquanto carregava
         const existing = prev[chatId] || [];
         const ids      = new Set(normalized.map(m => m.id));
-        const extras   = existing.filter(m => !ids.has(m.id) && !m.id.startsWith("tmp-"));
-        const merged   = sortMsgs([...normalized, ...extras]);
+
+        // Mescla mensagens do R2 (persistidas pelo webhook) que o WAHA não retornou
+        const r2Extras = Array.isArray(r2Raw)
+          ? r2Raw
+              .filter(m => !ids.has(m.id) && m.chatId === chatId)
+              .map(m => ({
+                id:     m.id,
+                chatId: m.chatId,
+                from:   m.fromMe ? "operator" : "patient",
+                text:   m.body || "",
+                type:   m.type || "chat",
+                ts:     m.ts ? new Date(m.ts).toISOString() : null,
+                time:   m.ts ? new Date(m.ts).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "",
+              }))
+          : [];
+
+        const wsExtras = existing.filter(m => !ids.has(m.id) && !m.id.startsWith("tmp-"));
+        const merged   = sortMsgs([...normalized, ...r2Extras, ...wsExtras]);
         cache.set(MSGS_PREFIX + chatId, merged, MSGS_TTL);
         return { ...prev, [chatId]: merged };
       });
