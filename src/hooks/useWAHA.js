@@ -1233,97 +1233,87 @@ export function useWAHA(operator) {
     wsStatus,
   };
 
-  // ── Força ressincronização: últimos 100 chats + 3 mensagens cada ──
+  // ── Força ressincronização: chats do WAHA + dados enriquecidos do R2 ──
+  // Não faz mais chamadas por chat — lê lastPatientTs/unread/lastMsg do R2 (webhook já computa)
   async function resyncChats() {
     if (USE_MOCK) return;
     const SESSION = import.meta.env.VITE_WAHA_SESSION || "default";
     console.log("[resync] iniciando...");
 
     try {
-      // 1. Busca lista de chats do WAHA
-      const r = await fetch(
-        `/api/waha?path=${encodeURIComponent(`/api/${SESSION}/chats`)}&limit=200`,
-        { headers: { "X-Internal-Key": ikey() } }
-      );
-      if (!r.ok) { console.warn("[resync] falha ao buscar chats:", r.status); return; }
-      const raw = await r.json();
-      if (!Array.isArray(raw)) return;
-      console.log(`[resync] ${raw.length} chats recebidos do WAHA`);
+      // 1. Busca lista de chats (WAHA) + dados enriquecidos (R2) em paralelo
+      const [wahaRes, r2Res] = await Promise.all([
+        fetch(
+          `/api/waha?path=${encodeURIComponent(`/api/${SESSION}/chats`)}&limit=200`,
+          { headers: { "X-Internal-Key": ikey() } }
+        ).then(r => r.ok ? r.json() : []).catch(() => []),
+        fetch("/api/r2-data?type=chats", { headers: { "X-Internal-Key": ikey() } })
+          .then(r => r.ok ? r.json() : []).catch(() => []),
+      ]);
 
-      // 2. Adiciona chats novos ao estado (preserva dados locais dos existentes)
-      const normalized = raw.map(c => normalizeChat(c));
+      if (!Array.isArray(wahaRes)) return;
+      console.log(`[resync] ${wahaRes.length} chats do WAHA, ${r2Res.length} do R2`);
+
+      // R2 tem lastMsg, lastTs, lastPatientTs, unread pré-computados pelo webhook
+      const r2Map = Object.fromEntries((Array.isArray(r2Res) ? r2Res : []).map(c => [c.id, c]));
+
+      const normalized = wahaRes.map(c => normalizeChat(c));
+
       setChats(prev => {
         const prevMap = Object.fromEntries(prev.map(c => [c.id, c]));
         const merged  = normalized.map(n => {
-          const local = prevMap[n.id];
-          if (!local) return n; // chat novo
-          // Preserva campos locais mas atualiza unread com valor do WAHA
-          return { ...local, unread: Math.max(local.unread || 0, n.unread || 0) };
+          const local   = prevMap[n.id];
+          const r2      = r2Map[n.id];
+          const isMuted = mutedChatsRef.current.has(n.id);
+
+          // Escolhe o lastTs mais recente entre WAHA, R2 e local
+          const wahaTsMs  = n.lastTs   ? new Date(n.lastTs).getTime()   : 0;
+          const r2TsMs    = r2?.lastTs || 0;
+          const localTsMs = local?.lastTs ? new Date(local.lastTs).getTime() : 0;
+          const bestTsMs  = Math.max(wahaTsMs, r2TsMs, localTsMs);
+
+          const lastMsg = (r2TsMs >= wahaTsMs && r2TsMs >= localTsMs && r2?.lastMsg)
+            ? r2.lastMsg
+            : (n.lastMsg || local?.lastMsg || "");
+
+          const lastTs = bestTsMs ? new Date(bestTsMs).toISOString() : (n.lastTs || local?.lastTs);
+
+          // lastPatientTs: R2 tem o valor mais preciso (computado pelo webhook em tempo real)
+          const r2Lpt = r2?.lastPatientTs ? new Date(r2.lastPatientTs).getTime() : null;
+          const localLpt = local?.lastPatientTs ? new Date(local.lastPatientTs).getTime() : null;
+          // Usa o maior (mais recente) entre R2 e local, respeitando null (operador respondeu)
+          const lpt = isMuted ? null
+            : r2?.lastPatientTs !== undefined
+              ? (r2Lpt ? new Date(Math.max(r2Lpt, localLpt || 0)).toISOString() : null)
+              : (local?.lastPatientTs ?? null);
+
+          const unread = isMuted ? 0
+            : r2?.unread !== undefined
+              ? Math.max(r2.unread || 0, local?.unread || 0)
+              : (local?.unread ?? n.unread ?? 0);
+
+          return {
+            ...(local || n),
+            lastMsg,
+            lastTs,
+            unread,
+            lastPatientTs: lpt,
+            // preserva status/assignedTo/tags do local
+            status:     local?.status     ?? n.status,
+            assignedTo: local?.assignedTo ?? n.assignedTo,
+            tags:       local?.tags       ?? n.tags,
+            pushname:   n.pushname || local?.pushname || r2?.pushname,
+          };
         });
+
+        // Preserva chats locais não retornados pelo WAHA
         const wahaIds = new Set(normalized.map(c => c.id));
         for (const c of prev) if (!wahaIds.has(c.id)) merged.push(c);
+
         persistChats(merged);
         return merged;
       });
 
-      // 3. Busca últimas 10 mensagens de cada chat → lastMsg + unread real
-      // unread = nº de mensagens do paciente após a última resposta do operador
-      const BATCH = 5;
-      for (let i = 0; i < normalized.length; i += BATCH) {
-        const batch = normalized.slice(i, i + BATCH);
-        await Promise.allSettled(batch.map(async (chat) => {
-          try {
-            const id = encodeURIComponent(chat.id);
-            const r  = await fetch(
-              `/api/waha?path=/api/${SESSION}/chats/${id}/messages&limit=10&downloadMedia=false`,
-              { headers: { "X-Internal-Key": ikey() } }
-            );
-            if (!r.ok) return;
-            const msgs = await r.json();
-            if (!Array.isArray(msgs) || !msgs.length) return;
-
-            // Ordena cronologicamente (mais antiga → mais recente)
-            const allNorm = msgs.map(normalizeMessage).filter(Boolean)
-              .sort((a, b) => tsToNum(a.ts) - tsToNum(b.ts));
-
-            const lastMsg = allNorm[allNorm.length - 1];
-            if (!lastMsg) return;
-
-            const preview = lastMsg.text
-              || (lastMsg.location ? "📍 Localização" : lastMsg.media ? "📎 Mídia" : "");
-
-            // Conta mensagens do paciente após a última resposta do operador
-            let unreadCount = 0;
-            for (let j = allNorm.length - 1; j >= 0; j--) {
-              if (allNorm[j].from === "operator") break;
-              if (allNorm[j].from === "patient") unreadCount++;
-            }
-            const newLastPatientTs = computeLastPatientTs(allNorm);
-            const isMuted = mutedChatsRef.current.has(chat.id);
-
-            setChats(prev => {
-              const idx = prev.findIndex(c => c.id === chat.id);
-              if (idx === -1) return prev;
-              const c       = prev[idx];
-              const localTs = tsToNum(c.lastTs);
-              const newTs   = tsToNum(lastMsg.ts);
-              if (newTs && newTs <= localTs) return prev; // não sobrescreve dado local mais recente
-              const updated = [...prev];
-              updated[idx]  = {
-                ...c,
-                lastMsg:       preview || c.lastMsg,
-                lastTs:        lastMsg.ts  || c.lastTs,
-                lastTime:      lastMsg.time || c.lastTime,
-                unread:        isMuted ? 0 : unreadCount,
-                lastPatientTs: isMuted ? null : newLastPatientTs,
-              };
-              persistChats(updated);
-              return updated;
-            });
-          } catch {}
-        }));
-        if (i + BATCH < normalized.length) await new Promise(r => setTimeout(r, 200));
-      }
       console.log("[resync] concluído");
     } catch (e) {
       console.error("[resync]", e.message);

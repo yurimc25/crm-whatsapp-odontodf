@@ -5,44 +5,58 @@
 //   DOCTORALIA_EMAIL   — email de login da clínica no Doctoralia
 //   DOCTORALIA_PASSWORD— senha de login
 
-import { r2Get, r2Put } from "./_r2.js";
+import { MongoClient } from "mongodb";
 
 const BASE_URL    = "https://docplanner.doctoralia.com.br";
 const FACILITY_ID = 311940;
-const TOKEN_R2_KEY = "doctoralia-token.json";
 
 // Cache em memória (dura enquanto a lambda está quente)
 let _insuranceCache = null;
-let _tokenCache     = null; // { token, fetchedAt }
+let _tokenCache     = null;
+let _mongoClient    = null;
+
+async function getDb() {
+  if (!_mongoClient) {
+    _mongoClient = new MongoClient(process.env.MONGODB_URI);
+    await _mongoClient.connect();
+  }
+  return _mongoClient.db("clinica");
+}
 
 // ── Gerenciamento de token ────────────────────────────────────────
 
 async function getToken() {
-  // 1. Cache em memória (mais rápido)
-  if (_tokenCache?.token) return _tokenCache.token;
+  // 1. Cache em memória
+  if (_tokenCache) return _tokenCache;
 
-  // 2. R2 (token salvo após último refresh)
+  // 2. MongoDB
   try {
-    const r2 = await r2Get(TOKEN_R2_KEY);
-    if (r2) {
-      const { token } = JSON.parse(r2.buf.toString("utf8"));
-      if (token) {
-        _tokenCache = { token };
-        return token;
-      }
+    const db  = await getDb();
+    const doc = await db.collection("config").findOne({ _id: "doctoralia_token" });
+    if (doc?.token) {
+      _tokenCache = doc.token;
+      return doc.token;
     }
-  } catch {}
+  } catch (e) {
+    console.warn("[doctoralia] Erro ao ler token do MongoDB:", e.message);
+  }
 
   // 3. Fallback: env var do Vercel
   return process.env.DOCTORALIA_TOKEN || "";
 }
 
 async function saveToken(token) {
-  _tokenCache = { token };
+  _tokenCache = token;
   try {
-    await r2Put(TOKEN_R2_KEY, Buffer.from(JSON.stringify({ token, savedAt: new Date().toISOString() })), "application/json");
+    const db = await getDb();
+    await db.collection("config").updateOne(
+      { _id: "doctoralia_token" },
+      { $set: { token, savedAt: new Date() } },
+      { upsert: true }
+    );
+    console.log("[doctoralia] Token salvo no MongoDB.");
   } catch (e) {
-    console.warn("[doctoralia] Erro ao salvar token no R2:", e.message);
+    console.warn("[doctoralia] Erro ao salvar token no MongoDB:", e.message);
   }
 }
 
@@ -302,6 +316,20 @@ export default async function handler(req, res) {
   }
 
   const { action } = req.query;
+
+  // ── Salvar token (chamado pela extensão Chrome) ──────────────────
+  // POST /api/doctoralia?action=token
+  // Header: X-Internal-Key
+  // Body: { token: "bearer xxx..." }
+  if (action === "token" && req.method === "POST") {
+    const { token } = req.body || {};
+    if (!token || typeof token !== "string" || token.length < 20) {
+      return res.status(400).json({ error: "token inválido" });
+    }
+    _tokenCache = null; // limpa cache para usar o novo
+    await saveToken(token.replace(/^bearer\s+/i, "").trim());
+    return res.status(200).json({ ok: true });
+  }
 
   // ── Verificar/renovar token ──────────────────────────────────────
   if (action === "check") {

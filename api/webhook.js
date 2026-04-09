@@ -11,6 +11,44 @@ function chatKey(chatId) {
   return "msgs/" + chatId.replace(/[^a-zA-Z0-9_-]/g, "_") + ".json";
 }
 
+// ── isFarewell / computeLastPatientTs (espelhado do frontend) ────
+const FAREWELL_PATTERNS = [
+  /^(ok|okay|oks|okey)[\s!.,]*$/i,
+  /^obrigad/i, /^agradeç/i, /^igualmente[\s!.]*$/i,
+  /^disponha/i, /^excelente dia/i,
+  /^(até logo|até mais|até amanhã|até breve)[\s!.]*$/i,
+  /^(tchau|xau|xao|bi|bye)[\s!]*$/i,
+  /^(flw|vlw|falou)[\s!]*$/i,
+  /^(boa noite|boa tarde|bom dia)[!.\s]*$/i,
+];
+const REQUEST_WORDS = /avise|avisa|lembre|confirme|gostaria|quero|preciso|pode(ria)?|consegue|horário|agenda|consulta|compromisso|tenho |posso |não (posso|consigo|vou)/i;
+function isFarewell(text) {
+  if (!text) return false;
+  const t = text.trim();
+  if (t.length > 80) return false;
+  if (/\?/.test(t)) return false;
+  if (REQUEST_WORDS.test(t)) return false;
+  return FAREWELL_PATTERNS.some(p => p.test(t));
+}
+function computeLastPatientTs(msgs) {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (!m.fromMe) { // fromMe=false → paciente
+      return isFarewell(m.body) ? null : m.ts;
+    }
+    if (m.fromMe) return null; // operador respondeu — sem timer
+  }
+  return null;
+}
+function computeUnread(msgs) {
+  let count = 0;
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].fromMe) break;
+    count++;
+  }
+  return count;
+}
+
 // Normaliza payload WAHA para objeto enxuto
 function normalizeMsg(payload) {
   const tsRaw = payload.timestamp || payload._data?.t || 0;
@@ -41,38 +79,40 @@ async function r2WriteJson(key, data) {
   await r2Put(key, Buffer.from(JSON.stringify(data), "utf8"), "application/json");
 }
 
-// Atualiza chats.json com a última mensagem de um chat
-async function updateChatsIndex(msg) {
+// Atualiza chats.json com última msg + lastPatientTs + unread pré-computados
+async function updateChatsIndex(msg, msgs) {
   const chats = await r2Json("chats.json", []);
   const idx   = chats.findIndex(c => c.id === msg.chatId);
+  const lpt   = computeLastPatientTs(msgs);
+  const unread = computeUnread(msgs);
   const entry = {
-    id:       msg.chatId,
-    lastMsg:  msg.body,
-    lastTs:   msg.ts,
-    fromMe:   msg.fromMe,
-    pushname: msg.pushname || (idx >= 0 ? chats[idx].pushname : ""),
+    id:            msg.chatId,
+    lastMsg:       msg.body,
+    lastTs:        msg.ts,
+    fromMe:        msg.fromMe,
+    pushname:      msg.pushname || (idx >= 0 ? chats[idx].pushname : ""),
+    lastPatientTs: lpt,
+    unread,
   };
   if (idx >= 0) {
     chats[idx] = { ...chats[idx], ...entry };
   } else {
     chats.unshift(entry);
-    // Limita a 1000 chats no índice
     if (chats.length > 1000) chats.splice(1000);
   }
   await r2WriteJson("chats.json", chats);
 }
 
-// Salva mensagem no histórico do chat no R2
+// Salva mensagem no histórico e retorna lista atualizada
 async function saveMessage(msg) {
   const key  = chatKey(msg.chatId);
   const msgs = await r2Json(key, []);
-  // Evita duplicata
-  if (msgs.find(m => m.id === msg.id)) return;
+  if (msgs.find(m => m.id === msg.id)) return msgs; // duplicata
   msgs.push(msg);
-  // Mantém só as mais recentes (ordena por ts)
   msgs.sort((a, b) => a.ts - b.ts);
   if (msgs.length > MAX_MSGS_PER_CHAT) msgs.splice(0, msgs.length - MAX_MSGS_PER_CHAT);
   await r2WriteJson(key, msgs);
+  return msgs;
 }
 
 export default async function handler(req, res) {
@@ -103,10 +143,10 @@ export default async function handler(req, res) {
       if (event === "message" || event === "message.any") {
         const msg = normalizeMsg(payload);
         if (msg.chatId) {
-          Promise.all([
-            saveMessage(msg).catch(e => console.warn("[r2] saveMessage:", e.message)),
-            updateChatsIndex(msg).catch(e => console.warn("[r2] updateChats:", e.message)),
-          ]);
+          // Salva mensagem primeiro, depois atualiza índice com msgs atualizadas
+          saveMessage(msg)
+            .then(msgs => updateChatsIndex(msg, msgs))
+            .catch(e => console.warn("[r2] save/updateChats:", e.message));
         }
       } else if (event === "chat.new") {
         // Garante que o chat existe no índice mesmo sem mensagem ainda
