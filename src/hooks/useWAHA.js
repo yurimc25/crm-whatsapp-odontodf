@@ -109,6 +109,20 @@ function isFarewell(text) {
   return FAREWELL_PATTERNS.some(p => p.test(t));
 }
 
+// Calcula lastPatientTs a partir do histórico de mensagens (ordem cronológica)
+// null = operador respondeu por último (ou despedida) → sem timer
+// ts   = último paciente que precisa de resposta
+function computeLastPatientTs(msgs) {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (m.from === "operator") return null;
+    if (m.from === "patient") {
+      return isFarewell(m.text) ? null : m.ts;
+    }
+  }
+  return null;
+}
+
 function detectAutoResolve(msgs) {
   if (!msgs?.length) return false;
   const last5 = msgs.slice(-5);
@@ -496,18 +510,20 @@ export function useWAHA(operator) {
             if (allNorm[j].from === "patient") unread++;
           }
 
+          const newLastPatientTs = computeLastPatientTs(allNorm);
+
           setChats(prev => {
             const updated = prev.map(c => {
               if (c.id !== chatId) return c;
-              const isPatient = msg.from === "patient";
-              const autoRes   = isPatient && isFarewell(msg.text);
+              // Não sobrescreve lastPatientTs de chats silenciados
+              const lpt = mutedChatsRef.current.has(chatId) ? null : newLastPatientTs;
               return {
                 ...c,
                 lastMsg:       lastMsg || c.lastMsg,
                 lastTime:      msg.time || c.lastTime,
                 lastTs:        msg.ts   || c.lastTs,
-                lastPatientTs: isPatient && !autoRes ? msg.ts : c.lastPatientTs,
-                unread,
+                lastPatientTs: lpt,
+                unread:        mutedChatsRef.current.has(chatId) ? 0 : unread,
               };
             });
             persistChats(updated);
@@ -646,8 +662,14 @@ export function useWAHA(operator) {
           lastMsg,
           lastTime:      msg.time,
           lastTs:        msg.ts,
-          lastPatientTs: isPatient && !autoRes && !isMuted ? msg.ts : c.lastPatientTs,
-          unread:        isPatient && !autoRes && !isMuted ? (c.unread || 0) + 1 : c.unread,
+          // patient normal → define timer; despedida ou operador → limpa timer
+          lastPatientTs: isPatient && !autoRes && !isMuted ? msg.ts
+                       : !isPatient || autoRes           ? null
+                       : c.lastPatientTs,
+          // patient normal → +1 unread; operador → zera unread
+          unread:        isPatient && !autoRes && !isMuted ? (c.unread || 0) + 1
+                       : !isPatient                       ? 0
+                       : c.unread,
           status:        isPatient && !autoRes && !isMuted && c.status === "resolved" ? "open" : c.status,
         });
         // Persiste reabertura no MongoDB em background
@@ -1273,24 +1295,27 @@ export function useWAHA(operator) {
             // Conta mensagens do paciente após a última resposta do operador
             let unreadCount = 0;
             for (let j = allNorm.length - 1; j >= 0; j--) {
-              if (allNorm[j].from === "operator") break; // chegou na última resposta
+              if (allNorm[j].from === "operator") break;
               if (allNorm[j].from === "patient") unreadCount++;
             }
+            const newLastPatientTs = computeLastPatientTs(allNorm);
+            const isMuted = mutedChatsRef.current.has(chat.id);
 
             setChats(prev => {
               const idx = prev.findIndex(c => c.id === chat.id);
               if (idx === -1) return prev;
-              const c      = prev[idx];
+              const c       = prev[idx];
               const localTs = tsToNum(c.lastTs);
               const newTs   = tsToNum(lastMsg.ts);
-              if (newTs && newTs <= localTs) return prev; // não sobrescreve dados locais mais recentes
+              if (newTs && newTs <= localTs) return prev; // não sobrescreve dado local mais recente
               const updated = [...prev];
               updated[idx]  = {
                 ...c,
-                lastMsg:  preview || c.lastMsg,
-                lastTs:   lastMsg.ts  || c.lastTs,
-                lastTime: lastMsg.time || c.lastTime,
-                unread:   unreadCount, // substitui pelo valor calculado
+                lastMsg:       preview || c.lastMsg,
+                lastTs:        lastMsg.ts  || c.lastTs,
+                lastTime:      lastMsg.time || c.lastTime,
+                unread:        isMuted ? 0 : unreadCount,
+                lastPatientTs: isMuted ? null : newLastPatientTs,
               };
               persistChats(updated);
               return updated;
