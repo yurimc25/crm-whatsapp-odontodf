@@ -33,7 +33,7 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true, warn: "no partykit host" });
     }
 
-    const partyUrl = `https://${partyHost}/parties/default/clinic`;
+    const partyUrl = `https://${partyHost}/parties/main/clinic`;
     const r = await fetch(partyUrl, {
       method: "POST",
       headers: {
