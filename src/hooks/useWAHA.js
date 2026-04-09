@@ -595,7 +595,8 @@ export function useWAHA(operator) {
           lastTime:      msg.time,
           lastTs:        msg.ts,
           lastPatientTs: isPatient && !autoRes ? msg.ts : c.lastPatientTs,
-          unread: isPatient && !isActive && !autoRes ? (c.unread || 0) + 1 : c.unread,
+          // Sempre incrementa unread para mensagens do paciente — só zera ao enviar resposta
+          unread: isPatient && !autoRes ? (c.unread || 0) + 1 : c.unread,
         });
         persistChats(updated);
         return updated;
@@ -618,7 +619,13 @@ export function useWAHA(operator) {
       if (!payload) return;
       if (event === "message" || event === "message.any") {
         const msg = normalizeMessage(payload);
-        if (!msg.chatId && payload.from) msg.chatId = payload.from.replace(/:.*@/, "@");
+        // Normaliza chatId: remove sufixo de device ":N" ou ":N@lid" que o WAHA inclui em webhooks
+        // Ex: "556198...@c.us:3" → "556198...@c.us"
+        if (msg.chatId) {
+          msg.chatId = msg.chatId.replace(/:\d+(@\S+)?$/, "");
+        } else if (payload.from) {
+          msg.chatId = payload.from.replace(/:\d+(@\S+)?$/, "");
+        }
         handleMsg(msg);
       } else if (event === "chat.new") {
         handleChatNew(payload);
@@ -711,15 +718,7 @@ export function useWAHA(operator) {
         }).catch(() => {});
       }
     } catch {}
-    // Zera unread apenas ao abrir (se já respondido o unread será zerado ao enviar)
-    setChats(prev => {
-      const chat = prev.find(c => c.id === chatId);
-      // Mantém unread se paciente está aguardando resposta
-      const keepUnread = chat?.lastPatientTs && chat?.unread > 0;
-      const updated = prev.map(c => c.id === chatId ? { ...c, unread: keepUnread ? c.unread : 0 } : c);
-      persistChats(updated);
-      return updated;
-    });
+    // Não zera unread ao abrir — só zera quando o operador enviar uma resposta
 
     // ── Cache local: exibe imediatamente ────────────────────────
     const cached = cache.get(MSGS_PREFIX + chatId);
@@ -780,14 +779,13 @@ export function useWAHA(operator) {
 
       setChats(prev => {
         const existing = prev.find(c => c.id === chatId);
-        // Mantém unread se paciente ainda aguarda resposta (não zeramos ao só "ler")
-        const keepUnread = !ultimoFoiOp && !autoResolve && (existing?.unread || 0) > 0;
         const updated = prev.map(c => c.id !== chatId ? c : {
           ...c,
           lastMsg:       lastAny?.text || c.lastMsg,
           lastTime:      lastAny?.time || c.lastTime,
           lastPatientTs: novoLPTs,
-          unread:        keepUnread ? (existing?.unread || 0) : 0,
+          // Unread só é zerado ao enviar resposta (send/markRead) — abrir o chat não zera
+          unread:        existing?.unread ?? 0,
         });
         persistChats(updated);
         return updated;
