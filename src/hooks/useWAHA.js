@@ -123,10 +123,11 @@ export function useWAHA(operator) {
   const [wsStatus, setWsStatus] = useState("disconnected");
   const [sessionOk, setSessionOk] = useState(false);
 
-  const activeChatRef  = useRef(null);
-  const socketRef      = useRef(null);
-  const wsConnected    = useRef(false);
-  const handleMsgRef   = useRef(null); // compartilhado entre PartyKit e polling
+  const activeChatRef   = useRef(null);
+  const socketRef       = useRef(null);
+  const wsConnected     = useRef(false);
+  const handleMsgRef    = useRef(null);   // compartilhado entre PartyKit e polling
+  const seenMsgIds      = useRef({});     // chatId → Set<id> — dedup fora de state updater
   const { lookupPhone, lookupPhonePriority, searchByName, addLocalContact, resolveName } = useContactsCtx();
 
   const perms = { verTodos: operator?.role === "gerente" || operator?.role === "admin" };
@@ -747,6 +748,7 @@ export function useWAHA(operator) {
   // ── 4. loadMessages — abre ChatWindow: últimas 60 msgs ────────
   const loadMessages = useCallback(async (chatId) => {
     activeChatRef.current = chatId;
+    delete seenMsgIds.current[chatId]; // reseta dedup para nova poll começar do zero
     // Busca contato on-demand com prioridade (ignora cache de sessão)
     try {
       const existing = resolveName(chatId, null);
@@ -904,21 +906,31 @@ export function useWAHA(operator) {
         const raw = await r.json();
         if (!Array.isArray(raw)) return;
         const normalized = sortMsgs(raw.map(normalizeMessage));
-        let novosGlobal = [];
+
+        // Dedup fora do state updater (que é assíncrono) — usa ref para saber quais IDs já foram vistos
+        const prevSeen = seenMsgIds.current[chatId]; // undefined na primeira poll
+        const allIds   = normalized.map(m => m.id).filter(Boolean);
+        seenMsgIds.current[chatId] = new Set(allIds);
+
+        // Na primeira poll apenas inicializa; não trata mensagens existentes como novas
+        const novos = prevSeen
+          ? normalized.filter(m => m.id && !prevSeen.has(m.id))
+          : [];
+
         setMessages(prev => {
           const current = prev[chatId] || [];
           const ids     = new Set(current.filter(m => !m.id.startsWith("tmp-")).map(m => m.id));
-          const novos   = normalized.filter(m => !ids.has(m.id));
-          if (!novos.length) return prev;
-          novosGlobal = novos;
-          const semTmp  = removeTmp(current, novos);
-          const updated = sortMsgs([...semTmp, ...novos]);
+          const toAdd   = normalized.filter(m => !ids.has(m.id));
+          if (!toAdd.length) return prev;
+          const semTmp  = removeTmp(current, toAdd);
+          const updated = sortMsgs([...semTmp, ...toAdd]);
           cache.set(MSGS_PREFIX + chatId, updated, MSGS_TTL);
           return { ...prev, [chatId]: updated };
         });
-        // Propaga novas mensagens para chatlist + notificações (igual ao PartyKit)
-        if (novosGlobal.length && handleMsgRef.current) {
-          for (const m of novosGlobal) {
+
+        // Propaga mensagens realmente novas → chatlist + notificações (igual ao PartyKit)
+        if (novos.length && handleMsgRef.current) {
+          for (const m of novos) {
             if (!m.chatId) m.chatId = chatId;
             handleMsgRef.current(m);
           }
@@ -962,8 +974,8 @@ export function useWAHA(operator) {
             // Nada mudou
             if (n.lastTs === c.lastTs && (n.lastMsg || c.lastMsg)) return c;
             changed = true;
-            // Se WAHA devolveu msg vazia mas lastTs mudou → enfileira busca individual
-            if (!n.lastMsg && n.lastTs && n.lastTs !== c.lastTs) {
+            // lastTs mudou → busca a mensagem real para garantir lastMsg e unread corretos
+            if (n.lastTs && n.lastTs !== c.lastTs) {
               precisamMsg.push(c.id);
             }
             const newUnread = Math.max(c.unread || 0, n.unread || 0);
