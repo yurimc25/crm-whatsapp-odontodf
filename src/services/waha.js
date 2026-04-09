@@ -514,7 +514,10 @@ export async function sendFile(chatId, base64DataUri, filename, mimetype, captio
       caption,
     }),
   });
-  if (!r.ok) throw new Error(`WAHA sendFile: ${r.status}`);
+  if (!r.ok) {
+    const errBody = await r.text().catch(() => "");
+    throw new Error(`WAHA sendFile: ${r.status} — ${errBody}`);
+  }
   return r.json();
 }
 
