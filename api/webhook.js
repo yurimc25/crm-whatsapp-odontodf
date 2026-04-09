@@ -41,6 +41,8 @@ function computeLastPatientTs(msgs) {
   return null;
 }
 function computeUnread(msgs) {
+  // Se não há timer pendente, não há não-lidos
+  if (computeLastPatientTs(msgs) === null) return 0;
   let count = 0;
   for (let i = msgs.length - 1; i >= 0; i--) {
     if (msgs[i].fromMe) break;

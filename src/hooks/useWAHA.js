@@ -1295,7 +1295,8 @@ export function useWAHA(operator) {
               ? (r2Lpt ? new Date(Math.max(r2Lpt, localLpt || 0)).toISOString() : null)
               : (local?.lastPatientTs ?? null);
 
-          const unread = isMuted ? 0
+          // Invariante: sem timer pendente → sem não-lidos
+          const unread = isMuted || !lpt ? 0
             : r2?.unread !== undefined
               ? Math.max(r2.unread || 0, local?.unread || 0)
               : (local?.unread ?? n.unread ?? 0);
