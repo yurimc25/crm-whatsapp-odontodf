@@ -123,9 +123,10 @@ export function useWAHA(operator) {
   const [wsStatus, setWsStatus] = useState("disconnected");
   const [sessionOk, setSessionOk] = useState(false);
 
-  const activeChatRef = useRef(null);
-  const socketRef     = useRef(null);
-  const wsConnected   = useRef(false);
+  const activeChatRef  = useRef(null);
+  const socketRef      = useRef(null);
+  const wsConnected    = useRef(false);
+  const handleMsgRef   = useRef(null); // compartilhado entre PartyKit e polling
   const { lookupPhone, lookupPhonePriority, searchByName, addLocalContact, resolveName } = useContactsCtx();
 
   const perms = { verTodos: operator?.role === "gerente" || operator?.role === "admin" };
@@ -638,6 +639,8 @@ export function useWAHA(operator) {
       });
     }
 
+    handleMsgRef.current = handleMsg;
+
     function handleChatNew(payload) {
       const newChat = normalizeChat(payload);
       if (!newChat?.id) return;
@@ -901,16 +904,25 @@ export function useWAHA(operator) {
         const raw = await r.json();
         if (!Array.isArray(raw)) return;
         const normalized = sortMsgs(raw.map(normalizeMessage));
+        let novosGlobal = [];
         setMessages(prev => {
           const current = prev[chatId] || [];
           const ids     = new Set(current.filter(m => !m.id.startsWith("tmp-")).map(m => m.id));
           const novos   = normalized.filter(m => !ids.has(m.id));
           if (!novos.length) return prev;
+          novosGlobal = novos;
           const semTmp  = removeTmp(current, novos);
           const updated = sortMsgs([...semTmp, ...novos]);
           cache.set(MSGS_PREFIX + chatId, updated, MSGS_TTL);
           return { ...prev, [chatId]: updated };
         });
+        // Propaga novas mensagens para chatlist + notificações (igual ao PartyKit)
+        if (novosGlobal.length && handleMsgRef.current) {
+          for (const m of novosGlobal) {
+            if (!m.chatId) m.chatId = chatId;
+            handleMsgRef.current(m);
+          }
+        }
       } catch {}
     }, 5000); // 5s no fallback (WS desconectado)
     return () => clearInterval(iv);
@@ -1212,7 +1224,7 @@ export function useWAHA(operator) {
               const c      = prev[idx];
               const localTs = tsToNum(c.lastTs);
               const newTs   = tsToNum(lastMsg.ts);
-              if (newTs && newTs < localTs) return prev;
+              if (newTs && newTs <= localTs) return prev; // não sobrescreve dados locais mais recentes
               const updated = [...prev];
               updated[idx]  = {
                 ...c,
