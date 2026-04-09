@@ -42,7 +42,7 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
   const {
     chats, messages, loadMessages, loadOlderMessages, send, deleteMsg, editMsg,
     forwardChat, resolveChat, markRead, markUnread, searchMessages,
-    loading, error, wsStatus,
+    resyncChats, loading, error, wsStatus,
   } = useWAHA(operator);
 
   const perms = ROLE_PERMISSIONS[operator.role] || {};
@@ -124,6 +124,22 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
           }} />
           <span style={{ color:T.sub, fontSize:11 }}>{WS_LABEL[wsStatus] || wsStatus}</span>
         </div>
+
+        {/* Botão ressincronizar */}
+        <button
+          onClick={resyncChats}
+          disabled={loading}
+          title="Ressincronizar chats (últimos 100 + 3 mensagens)"
+          style={{
+            background:"#252525", border:`1px solid ${T.border}`,
+            borderRadius:20, padding:"3px 10px", cursor: loading ? "wait" : "pointer",
+            color: T.sub, fontSize:11, display:"flex", alignItems:"center", gap:4,
+            opacity: loading ? 0.5 : 1,
+          }}
+        >
+          <span style={{ fontSize:13, lineHeight:1 }}>⟳</span>
+          {loading ? "Sincronizando..." : "Resync"}
+        </button>
 
         <div style={{ flex:1 }} />
 

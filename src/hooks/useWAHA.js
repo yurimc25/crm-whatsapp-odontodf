@@ -583,21 +583,35 @@ export function useWAHA(operator) {
       });
 
       setChats(prev => {
-        const exists    = prev.find(c => c.id === msgChatId);
         const isPatient = msg.from === "patient";
-        const isActive  = msgChatId === activeChatRef.current;
         const autoRes   = isPatient && isFarewell(msg.text);
         const lastMsg   = msg.text || (msg.location ? "📍 Localização" : msg.media ? "📎 Mídia" : "");
-        if (!exists) return prev;
-        const updated = prev.map(c => c.id !== msgChatId ? c : {
+        const msgTail   = msgChatId.replace(/\D/g, "").slice(-10);
+
+        // Encontra o chat por ID exato ou por tail de telefone (cobre variações com/sem 9, DDI)
+        const target = prev.find(c => c.id === msgChatId)
+          || prev.find(c => {
+            const t = c.id.replace(/\D/g, "").slice(-10);
+            return t.length >= 8 && t === msgTail;
+          });
+        if (!target) return prev;
+
+        const updated = prev.map(c => c.id !== target.id ? c : {
           ...c,
           lastMsg,
           lastTime:      msg.time,
           lastTs:        msg.ts,
           lastPatientTs: isPatient && !autoRes ? msg.ts : c.lastPatientTs,
           // Sempre incrementa unread para mensagens do paciente — só zera ao enviar resposta
-          unread: isPatient && !autoRes ? (c.unread || 0) + 1 : c.unread,
+          unread:        isPatient && !autoRes ? (c.unread || 0) + 1 : c.unread,
+          // Reabre chat resolvido se paciente mandou mensagem nova
+          status:        isPatient && !autoRes && c.status === "resolved" ? "open" : c.status,
         });
+        // Persiste reabertura no MongoDB em background
+        const reopened = updated.find(c => c.id === target.id);
+        if (reopened?.status === "open" && target.status === "resolved") {
+          persistChat(target.id, { status: "open", lastPatientTs: msg.ts });
+        }
         persistChats(updated);
         return updated;
       });
@@ -1099,10 +1113,98 @@ export function useWAHA(operator) {
     markRead,
     markUnread,
     searchMessages,
+    resyncChats,
     loading,
     error,
     wsStatus,
   };
+
+  // ── Força ressincronização: últimos 100 chats + 3 mensagens cada ──
+  async function resyncChats() {
+    if (USE_MOCK) return;
+    const SESSION = import.meta.env.VITE_WAHA_SESSION || "default";
+    console.log("[resync] iniciando ressincronização...");
+    setLoading(true);
+    try {
+      const r = await fetch(
+        `/api/waha?path=${encodeURIComponent(`/api/${SESSION}/chats`)}&limit=100`,
+        { headers: { "X-Internal-Key": ikey() } }
+      );
+      if (!r.ok) return;
+      const raw = await r.json();
+      if (!Array.isArray(raw)) return;
+
+      // Normaliza e aplica R2 se disponível
+      const r2Res = await fetch("/api/r2-data?type=chats", { headers: { "X-Internal-Key": ikey() } })
+        .then(r => r.ok ? r.json() : []).catch(() => []);
+      const r2Map = Array.isArray(r2Res) ? Object.fromEntries(r2Res.map(c => [c.id, c])) : {};
+
+      const normalized = raw.map(c => {
+        const n  = normalizeChat(c);
+        const r2 = r2Map[n.id];
+        if (r2?.lastTs) {
+          const r2Ts = r2.lastTs;
+          const nTs  = n.lastTs ? new Date(n.lastTs).getTime() : 0;
+          if (r2Ts > nTs) return { ...n, lastMsg: r2.lastMsg || n.lastMsg, lastTs: new Date(r2Ts).toISOString() };
+        }
+        return n;
+      });
+
+      setChats(prev => {
+        const prevMap = Object.fromEntries(prev.map(c => [c.id, c]));
+        const merged  = normalized.map(n => {
+          const local = prevMap[n.id];
+          if (!local) return n;
+          return { ...local, lastMsg: n.lastMsg || local.lastMsg, lastTs: n.lastTs || local.lastTs };
+        });
+        // Preserva chats locais que não vieram do WAHA
+        const wahaIds = new Set(normalized.map(c => c.id));
+        for (const c of prev) {
+          if (!wahaIds.has(c.id)) merged.push(c);
+        }
+        persistChats(merged);
+        return merged;
+      });
+      console.log(`[resync] ${normalized.length} chats atualizados`);
+
+      // Busca últimas 3 mensagens de cada chat em lotes
+      const BATCH = 5;
+      for (let i = 0; i < normalized.length; i += BATCH) {
+        const batch = normalized.slice(i, i + BATCH);
+        await Promise.allSettled(batch.map(async (chat) => {
+          try {
+            const id = encodeURIComponent(chat.id);
+            const r  = await fetch(
+              `/api/waha?path=/api/${SESSION}/chats/${id}/messages&limit=3&downloadMedia=false`,
+              { headers: { "X-Internal-Key": ikey() } }
+            );
+            if (!r.ok) return;
+            const msgs = await r.json();
+            if (!Array.isArray(msgs) || !msgs.length) return;
+            const last = normalizeMessage(msgs[msgs.length - 1]);
+            if (!last?.text && !last?.media && !last?.location) return;
+            const lastMsgText = last.text || (last.location ? "📍 Localização" : last.media ? "📎 Mídia" : "");
+            setChats(prev => {
+              const updated = prev.map(c => c.id !== chat.id ? c : {
+                ...c,
+                lastMsg:  lastMsgText || c.lastMsg,
+                lastTime: last.time   || c.lastTime,
+                lastTs:   last.ts     || c.lastTs,
+              });
+              persistChats(updated);
+              return updated;
+            });
+          } catch {}
+        }));
+        if (i + BATCH < normalized.length) await new Promise(r => setTimeout(r, 300));
+      }
+      console.log("[resync] concluído");
+    } catch (e) {
+      console.error("[resync]", e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
 }
 
 // Persiste metadata de chat no MongoDB (fire-and-forget)
