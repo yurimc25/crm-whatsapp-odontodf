@@ -11,8 +11,9 @@ export default async function handler(req, res) {
 
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  const key = req.headers["x-internal-key"];
-  if (key !== process.env.INTERNAL_API_KEY) return res.status(401).json({ error: "Unauthorized" });
+  const key     = req.headers["x-internal-key"];
+  const validKey = process.env.INTERNAL_API_KEY || process.env.VITE_INTERNAL_API_KEY;
+  if (key !== validKey) return res.status(401).json({ error: "Unauthorized" });
 
   const { base64, mime } = req.body || {};
   if (!base64) return res.status(400).json({ error: "base64 required" });

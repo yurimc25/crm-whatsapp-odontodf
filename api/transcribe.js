@@ -46,8 +46,14 @@ export default async function handler(req, res) {
 
     const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
+    // Groq precisa do nome com extensão correta para identificar o tipo
+    const rawMime = (file.mimetype || "audio/ogg").split(";")[0].trim();
+    const ext     = rawMime.split("/")[1] || "ogg";
+    const buf     = fs.readFileSync(filepath);
+    const audioFile = new File([buf], `audio.${ext}`, { type: rawMime });
+
     const transcription = await groq.audio.transcriptions.create({
-      file:            fs.createReadStream(filepath),
+      file:            audioFile,
       model:           MODEL,
       language:        "pt",
       response_format: "json",

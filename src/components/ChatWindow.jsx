@@ -1470,11 +1470,18 @@ function ImageLightbox({ src, fullUrl, downloadUrl, iKey, msgId, onClose }) {
         headers: { "Content-Type": "application/json", "X-Internal-Key": iKey || "" },
         body: JSON.stringify({ base64, mime }),
       });
-      if (!res.ok) { setOcrLoading(false); return; }
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        console.error("[ocr] erro:", res.status, err);
+        setOcrResult("Erro ao analisar imagem: " + (err.error || res.status));
+        setOcrLoading(false);
+        return;
+      }
       const data = await res.json();
-      setOcrResult(data.text || null);
+      setOcrResult(data.text || "Nenhum dado encontrado");
     } catch (e) {
       console.error("[ocr] error:", e?.message || e);
+      setOcrResult("Erro: " + e.message);
     }
     setOcrLoading(false);
   }
