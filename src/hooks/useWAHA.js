@@ -674,9 +674,9 @@ export function useWAHA(operator) {
           lastPatientTs: isPatient && !autoRes && !isMuted ? msg.ts
                        : !isPatient || autoRes           ? null
                        : c.lastPatientTs,
-          // patient normal → +1 unread; operador → zera unread
+          // patient normal → +1 unread; despedida ou operador → zera unread
           unread:        isPatient && !autoRes && !isMuted ? (c.unread || 0) + 1
-                       : !isPatient                       ? 0
+                       : !isPatient || autoRes            ? 0
                        : c.unread,
           status:        isPatient && !autoRes && !isMuted && c.status === "resolved" ? "open" : c.status,
         });
