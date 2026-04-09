@@ -36,6 +36,7 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
   const [search, setSearch]             = useState("");
   const [showNewChat, setShowNewChat]   = useState(false);
   const [newChatPhone, setNewChatPhone] = useState(null);
+  const [resyncKey, setResyncKey]       = useState(0);
 
   const { displayName } = useContactsCtx();
 
@@ -127,7 +128,7 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
 
         {/* Botão ressincronizar */}
         <button
-          onClick={resyncChats}
+          onClick={() => resyncChats().then(() => setResyncKey(k => k + 1))}
           disabled={loading}
           title="Ressincronizar chats (últimos 100 + 3 mensagens)"
           style={{
@@ -267,6 +268,7 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
             loading={loading}
             operator={operator}
             searchMessages={searchMessages}
+            resyncKey={resyncKey}
             onStartNewChat={phone => {
               const digits = phone.replace(/\D/g, "");
               const chatId = digits.startsWith("55") ? `${digits}@c.us` : `55${digits}@c.us`;

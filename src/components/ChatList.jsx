@@ -33,7 +33,8 @@ function formatTimeSince(ts) {
 
 export default function ChatList({
   chats, activeId, search, onSearch, onSelect,
-  onForward, onMarkRead, onMarkUnread, loading, onStartNewChat, searchMessages, operator
+  onForward, onMarkRead, onMarkUnread, loading, onStartNewChat, searchMessages, operator,
+  resyncKey,
 }) {
   const PAGE = 30; // itens iniciais
   const MORE = 20; // itens por scroll
@@ -143,8 +144,8 @@ export default function ChatList({
     return () => { cancelled = true; };
   }, [search, chats, ikey]);
 
-  // Reset paginação quando filtro/busca muda
-  useEffect(() => { setVisibleCount(PAGE); }, [search, chats.length]);
+  // Reset paginação quando filtro/busca muda ou resync ocorre
+  useEffect(() => { setVisibleCount(PAGE); }, [search, chats.length, resyncKey]);
 
   // IntersectionObserver — carrega mais ao chegar no sentinel
   useEffect(() => {

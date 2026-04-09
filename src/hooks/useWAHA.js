@@ -1123,51 +1123,36 @@ export function useWAHA(operator) {
   async function resyncChats() {
     if (USE_MOCK) return;
     const SESSION = import.meta.env.VITE_WAHA_SESSION || "default";
-    console.log("[resync] iniciando ressincronização...");
-    setLoading(true);
+    console.log("[resync] iniciando...");
+
     try {
+      // 1. Busca lista de chats do WAHA
       const r = await fetch(
         `/api/waha?path=${encodeURIComponent(`/api/${SESSION}/chats`)}&limit=100`,
         { headers: { "X-Internal-Key": ikey() } }
       );
-      if (!r.ok) return;
+      if (!r.ok) { console.warn("[resync] falha ao buscar chats:", r.status); return; }
       const raw = await r.json();
       if (!Array.isArray(raw)) return;
+      console.log(`[resync] ${raw.length} chats recebidos do WAHA`);
 
-      // Normaliza e aplica R2 se disponível
-      const r2Res = await fetch("/api/r2-data?type=chats", { headers: { "X-Internal-Key": ikey() } })
-        .then(r => r.ok ? r.json() : []).catch(() => []);
-      const r2Map = Array.isArray(r2Res) ? Object.fromEntries(r2Res.map(c => [c.id, c])) : {};
-
-      const normalized = raw.map(c => {
-        const n  = normalizeChat(c);
-        const r2 = r2Map[n.id];
-        if (r2?.lastTs) {
-          const r2Ts = r2.lastTs;
-          const nTs  = n.lastTs ? new Date(n.lastTs).getTime() : 0;
-          if (r2Ts > nTs) return { ...n, lastMsg: r2.lastMsg || n.lastMsg, lastTs: new Date(r2Ts).toISOString() };
-        }
-        return n;
-      });
-
+      // 2. Adiciona chats novos ao estado (preserva dados locais dos existentes)
+      const normalized = raw.map(c => normalizeChat(c));
       setChats(prev => {
         const prevMap = Object.fromEntries(prev.map(c => [c.id, c]));
         const merged  = normalized.map(n => {
           const local = prevMap[n.id];
-          if (!local) return n;
-          return { ...local, lastMsg: n.lastMsg || local.lastMsg, lastTs: n.lastTs || local.lastTs };
+          if (!local) return n; // chat novo
+          // Preserva campos locais mas atualiza unread com valor do WAHA
+          return { ...local, unread: Math.max(local.unread || 0, n.unread || 0) };
         });
-        // Preserva chats locais que não vieram do WAHA
         const wahaIds = new Set(normalized.map(c => c.id));
-        for (const c of prev) {
-          if (!wahaIds.has(c.id)) merged.push(c);
-        }
+        for (const c of prev) if (!wahaIds.has(c.id)) merged.push(c);
         persistChats(merged);
         return merged;
       });
-      console.log(`[resync] ${normalized.length} chats atualizados`);
 
-      // Busca últimas 3 mensagens de cada chat em lotes
+      // 3. Busca últimas 3 mensagens de cada chat → atualiza lastMsg, lastTs, unread
       const BATCH = 5;
       for (let i = 0; i < normalized.length; i += BATCH) {
         const batch = normalized.slice(i, i + BATCH);
@@ -1181,28 +1166,35 @@ export function useWAHA(operator) {
             if (!r.ok) return;
             const msgs = await r.json();
             if (!Array.isArray(msgs) || !msgs.length) return;
-            const last = normalizeMessage(msgs[msgs.length - 1]);
-            if (!last?.text && !last?.media && !last?.location) return;
-            const lastMsgText = last.text || (last.location ? "📍 Localização" : last.media ? "📎 Mídia" : "");
+
+            // Ordena por timestamp e pega a mais recente
+            const allNorm  = msgs.map(normalizeMessage).filter(Boolean);
+            const lastMsg  = allNorm.sort((a, b) => tsToNum(b.ts) - tsToNum(a.ts))[0];
+            if (!lastMsg) return;
+
+            const preview = lastMsg.text
+              || (lastMsg.location ? "📍 Localização" : lastMsg.media ? "📎 Mídia" : "");
+
             setChats(prev => {
-              const updated = prev.map(c => c.id !== chat.id ? c : {
-                ...c,
-                lastMsg:  lastMsgText || c.lastMsg,
-                lastTime: last.time   || c.lastTime,
-                lastTs:   last.ts     || c.lastTs,
-              });
+              const idx = prev.findIndex(c => c.id === chat.id);
+              if (idx === -1) return prev;
+              const c   = prev[idx];
+              // Só atualiza se a mensagem encontrada é mais recente que o estado atual
+              const localTs = tsToNum(c.lastTs);
+              const newTs   = tsToNum(lastMsg.ts);
+              if (newTs && newTs < localTs) return prev; // estado já é mais recente
+              const updated = [...prev];
+              updated[idx] = { ...c, lastMsg: preview || c.lastMsg, lastTs: lastMsg.ts || c.lastTs, lastTime: lastMsg.time || c.lastTime };
               persistChats(updated);
               return updated;
             });
           } catch {}
         }));
-        if (i + BATCH < normalized.length) await new Promise(r => setTimeout(r, 300));
+        if (i + BATCH < normalized.length) await new Promise(r => setTimeout(r, 200));
       }
       console.log("[resync] concluído");
     } catch (e) {
       console.error("[resync]", e.message);
-    } finally {
-      setLoading(false);
     }
   }
 }
