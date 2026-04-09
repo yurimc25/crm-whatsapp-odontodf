@@ -308,7 +308,7 @@ export default function ChatWindow({
         // WAHA NOWEB não suporta sendFile — faz upload pro R2 e envia URL
         const rawBase64 = b64.includes(",") ? b64.split(",")[1] : b64;
         const ikey = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
-        const upRes = await fetch("/api/upload", {
+        const upRes = await fetch("/api/r2-data?type=upload", {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-Internal-Key": ikey },
           body: JSON.stringify({ filename: file.name, mimetype: file.type, data: rawBase64 }),

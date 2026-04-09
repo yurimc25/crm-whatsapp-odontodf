@@ -1,18 +1,101 @@
 // api/doctoralia.js — Integração com Doctoralia/DocPlanner API
-// Token Bearer de longa duração — salvo como DOCTORALIA_TOKEN no Vercel
-// Se expirar, retorna 401 com mensagem clara para renovar
+// Token Bearer com auto-refresh via credenciais quando expira.
+// Env vars necessárias:
+//   DOCTORALIA_TOKEN   — token inicial (fallback caso R2 ainda não tenha)
+//   DOCTORALIA_EMAIL   — email de login da clínica no Doctoralia
+//   DOCTORALIA_PASSWORD— senha de login
+
+import { r2Get, r2Put } from "./_r2.js";
 
 const BASE_URL    = "https://docplanner.doctoralia.com.br";
 const FACILITY_ID = 311940;
+const TOKEN_R2_KEY = "doctoralia-token.json";
 
-// Cache em memória dos IDs de convênio (dura enquanto a lambda está quente)
+// Cache em memória (dura enquanto a lambda está quente)
 let _insuranceCache = null;
+let _tokenCache     = null; // { token, fetchedAt }
 
-function docHeaders() {
+// ── Gerenciamento de token ────────────────────────────────────────
+
+async function getToken() {
+  // 1. Cache em memória (mais rápido)
+  if (_tokenCache?.token) return _tokenCache.token;
+
+  // 2. R2 (token salvo após último refresh)
+  try {
+    const r2 = await r2Get(TOKEN_R2_KEY);
+    if (r2) {
+      const { token } = JSON.parse(r2.buf.toString("utf8"));
+      if (token) {
+        _tokenCache = { token };
+        return token;
+      }
+    }
+  } catch {}
+
+  // 3. Fallback: env var do Vercel
+  return process.env.DOCTORALIA_TOKEN || "";
+}
+
+async function saveToken(token) {
+  _tokenCache = { token };
+  try {
+    await r2Put(TOKEN_R2_KEY, Buffer.from(JSON.stringify({ token, savedAt: new Date().toISOString() })), "application/json");
+  } catch (e) {
+    console.warn("[doctoralia] Erro ao salvar token no R2:", e.message);
+  }
+}
+
+async function loginAndRefreshToken() {
+  const email    = process.env.DOCTORALIA_EMAIL;
+  const password = process.env.DOCTORALIA_PASSWORD;
+  if (!email || !password) {
+    throw new Error("DOCTORALIA_EMAIL e DOCTORALIA_PASSWORD não configurados no Vercel");
+  }
+
+  console.log("[doctoralia] Token expirado — fazendo login para renovar...");
+
+  const r = await fetch(`${BASE_URL}/api/auth`, {
+    method:  "POST",
+    headers: {
+      "accept":          "application/json, text/plain, */*",
+      "accept-language": "pt-BR,pt;q=0.9",
+      "content-type":    "application/json",
+      "origin":          BASE_URL,
+      "referer":         `${BASE_URL}/`,
+      "x-country-id":    "BR",
+      "x-user-type":     "medicalcenter",
+      "user-agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
+    },
+    body: JSON.stringify({ login: email, password }),
+  });
+
+  if (!r.ok) {
+    const txt = await r.text().catch(() => "");
+    throw new Error(`Login Doctoralia falhou (${r.status}): ${txt.slice(0, 200)}`);
+  }
+
+  const data = await r.json();
+  // O token pode vir em data.token, data.access_token ou header Authorization
+  const newToken = data.token || data.access_token || data.authToken || data.bearer;
+  if (!newToken) {
+    console.warn("[doctoralia] Resposta do login:", JSON.stringify(data).slice(0, 300));
+    throw new Error("Login OK mas token não encontrado na resposta — verifique o campo retornado");
+  }
+
+  await saveToken(newToken);
+  console.log("[doctoralia] Token renovado com sucesso.");
+  return newToken;
+}
+
+// ── Headers com token atual ───────────────────────────────────────
+
+async function docHeaders() {
+  const token = await getToken();
   return {
     "accept":          "application/json, text/plain, */*",
     "accept-language": "pt-BR,pt;q=0.9",
-    "authorization":   `bearer ${process.env.DOCTORALIA_TOKEN || ""}`,
+    "authorization":   `bearer ${token}`,
     "content-type":    "application/json",
     "origin":          BASE_URL,
     "referer":         `${BASE_URL}/`,
@@ -21,6 +104,23 @@ function docHeaders() {
     "x-user-type":     "medicalcenter",
     "user-agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
   };
+}
+
+// ── Fetch com auto-retry após refresh de token ────────────────────
+
+async function docFetch(url, options = {}, retried = false) {
+  const headers = await docHeaders();
+  const r = await fetch(url, { ...options, headers: { ...headers, ...(options.headers || {}) } });
+
+  if ((r.status === 401 || r.status === 403) && !retried) {
+    // Limpa cache e tenta renovar token
+    _tokenCache = null;
+    const newToken = await loginAndRefreshToken();
+    // Retry com novo token
+    return docFetch(url, options, true);
+  }
+
+  return r;
 }
 
 // Normaliza string para comparação fuzzy
@@ -49,21 +149,10 @@ const EVENT_TYPE = {
 // Faz POST /api/calendarevents para um intervalo de datas
 // schedules: [] = todos os dentistas
 async function fetchCalendarEvents(dateFrom, dateTo, schedules = []) {
-  const r = await fetch(`${BASE_URL}/api/calendarevents`, {
-    method:  "POST",
-    headers: docHeaders(),
-    body:    JSON.stringify({
-      from:      dateFrom,
-      to:        `${dateTo}T23:59:59`,
-      schedules: schedules,
-    }),
+  const r = await docFetch(`${BASE_URL}/api/calendarevents`, {
+    method: "POST",
+    body:   JSON.stringify({ from: dateFrom, to: `${dateTo}T23:59:59`, schedules }),
   });
-
-  if (r.status === 401 || r.status === 403) {
-    const err = new Error("TOKEN_EXPIRED");
-    err.status = r.status;
-    throw err;
-  }
 
   if (!r.ok) {
     const text = await r.text().catch(() => "");
@@ -79,9 +168,7 @@ async function fetchCalendarEvents(dateFrom, dateTo, schedules = []) {
 async function fetchInsurances() {
   if (_insuranceCache) return _insuranceCache;
   try {
-    const r = await fetch(`${BASE_URL}/api/insurances?facilityId=${FACILITY_ID}`, {
-      headers: docHeaders(),
-    });
+    const r = await docFetch(`${BASE_URL}/api/insurances?facilityId=${FACILITY_ID}`);
     if (!r.ok) return [];
     const data = await r.json();
     const list = Array.isArray(data) ? data : (data.data || data.items || []);
@@ -214,26 +301,13 @@ export default async function handler(req, res) {
     return res.status(401).json({ error: "Unauthorized" });
   }
 
-  if (!process.env.DOCTORALIA_TOKEN) {
-    return res.status(503).json({
-      error: "Token Doctoralia não configurado",
-      hint: "Adicione DOCTORALIA_TOKEN nas variáveis de ambiente do Vercel"
-    });
-  }
-
   const { action } = req.query;
 
-  // ── Verificar token ──────────────────────────────────────────────
+  // ── Verificar/renovar token ──────────────────────────────────────
   if (action === "check") {
     try {
-      const r = await fetch(`${BASE_URL}/api/insurances?facilityId=${FACILITY_ID}&limit=1`, {
-        headers: docHeaders(),
-      });
-      if (r.status === 401 || r.status === 403) {
-        return res.json({ valid: false, status: r.status,
-          message: "Token Doctoralia expirado. Renove o token e atualize DOCTORALIA_TOKEN no Vercel." });
-      }
-      return res.json({ valid: true, status: r.status });
+      const r = await docFetch(`${BASE_URL}/api/insurances?facilityId=${FACILITY_ID}&limit=1`);
+      return res.json({ valid: r.ok, status: r.status });
     } catch (e) {
       return res.status(500).json({ error: e.message });
     }
@@ -290,13 +364,7 @@ export default async function handler(req, res) {
       console.log(`[doctoralia/doctors_by_date] date=${date} → ${doctors.length} dentistas`);
       return res.json({ date, doctors });
     } catch (e) {
-      if (e.message === "TOKEN_EXPIRED") {
-        return res.status(401).json({
-          error: "Token Doctoralia expirado",
-          message: "Renove o token Bearer e atualize DOCTORALIA_TOKEN no Vercel.",
-          tokenExpired: true,
-        });
-      }
+      if (false) { /* TOKEN_EXPIRED handled automatically via docFetch retry */ }
       console.error("[doctoralia/doctors_by_date]", e.message);
       return res.status(e.status || 500).json({ error: e.message });
     }
@@ -366,13 +434,7 @@ export default async function handler(req, res) {
         appointments,
       });
     } catch (e) {
-      if (e.message === "TOKEN_EXPIRED") {
-        return res.status(401).json({
-          error: "Token Doctoralia expirado",
-          message: "Renove o token Bearer e atualize DOCTORALIA_TOKEN no Vercel.",
-          tokenExpired: true,
-        });
-      }
+      if (false) { /* TOKEN_EXPIRED handled automatically via docFetch retry */ }
       console.error("[doctoralia/agenda]", e.message);
       return res.status(e.status || 500).json({ error: e.message });
     }
@@ -412,19 +474,10 @@ export default async function handler(req, res) {
     console.log("[doctoralia/create]", JSON.stringify({ firstName, lastName, phone, insuranceId }));
 
     try {
-      const r = await fetch(`${BASE_URL}/api/patients`, {
-        method:  "POST",
-        headers: docHeaders(),
-        body:    JSON.stringify(payload),
+      const r = await docFetch(`${BASE_URL}/api/patients`, {
+        method: "POST",
+        body:   JSON.stringify(payload),
       });
-
-      if (r.status === 401 || r.status === 403) {
-        return res.status(401).json({
-          error: "Token Doctoralia expirado",
-          message: "Renove o token Bearer e atualize DOCTORALIA_TOKEN no Vercel.",
-          tokenExpired: true,
-        });
-      }
 
       if (r.status === 201 || r.status === 200) {
         const location  = r.headers.get("location") || "";
