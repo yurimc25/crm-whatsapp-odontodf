@@ -43,7 +43,7 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
   const {
     chats, messages, loadMessages, loadOlderMessages, send, deleteMsg, editMsg,
     forwardChat, resolveChat, markRead, markUnread, searchMessages,
-    resyncChats, loading, error, wsStatus,
+    resyncChats, mutedChats, muteChat, unmuteChat, loading, error, wsStatus,
   } = useWAHA(operator);
 
   const perms = ROLE_PERMISSIONS[operator.role] || {};
@@ -269,6 +269,9 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
             operator={operator}
             searchMessages={searchMessages}
             resyncKey={resyncKey}
+            mutedChats={mutedChats}
+            onMute={muteChat}
+            onUnmute={unmuteChat}
             onStartNewChat={phone => {
               const digits = phone.replace(/\D/g, "");
               const chatId = digits.startsWith("55") ? `${digits}@c.us` : `55${digits}@c.us`;

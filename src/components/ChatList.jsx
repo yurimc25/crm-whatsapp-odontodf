@@ -19,9 +19,9 @@ const T = {
   menu:     "#252525",
 };
 
-function formatTimeSince(ts) {
+function formatTimeSince(ts, now = Date.now()) {
   if (!ts) return null;
-  const diff = Date.now() - new Date(ts).getTime();
+  const diff = now - new Date(ts).getTime();
   const mins  = Math.floor(diff / 60000);
   const hours = Math.floor(mins / 60);
   const days  = Math.floor(hours / 24);
@@ -34,13 +34,20 @@ function formatTimeSince(ts) {
 export default function ChatList({
   chats, activeId, search, onSearch, onSelect,
   onForward, onMarkRead, onMarkUnread, loading, onStartNewChat, searchMessages, operator,
-  resyncKey,
+  resyncKey, mutedChats, onMute, onUnmute,
 }) {
   const PAGE = 30; // itens iniciais
   const MORE = 20; // itens por scroll
 
   const [ctxMenu, setCtxMenu]       = useState(null);
   const [agendaOpen, setAgendaOpen] = useState(false);
+  const [now, setNow]               = useState(Date.now());
+
+  // Atualiza o timer "tempo sem resposta" a cada 30s
+  useEffect(() => {
+    const iv = setInterval(() => setNow(Date.now()), 30000);
+    return () => clearInterval(iv);
+  }, []);
   const [codentalHits, setCodentalHits] = useState([]);
   const [visibleCount, setVisibleCount] = useState(PAGE);
   const sentinelRef = useRef(null);
@@ -68,8 +75,11 @@ export default function ChatList({
       }
 
       // Abertos/aguardando: quem tem lastPatientTs mais ANTIGO fica no topo (esperando há mais tempo)
-      const tsA = a.lastPatientTs ? new Date(a.lastPatientTs).getTime() : 0;
-      const tsB = b.lastPatientTs ? new Date(b.lastPatientTs).getTime() : 0;
+      // Chats silenciados não entram na fila de pendentes
+      const aMuted = mutedChats?.has(a.id);
+      const bMuted = mutedChats?.has(b.id);
+      const tsA = !aMuted && a.lastPatientTs ? new Date(a.lastPatientTs).getTime() : 0;
+      const tsB = !bMuted && b.lastPatientTs ? new Date(b.lastPatientTs).getTime() : 0;
       if (tsA && tsB) return tsA - tsB;   // mais antigo no topo
       if (tsA) return -1;                  // tem pendência → sobe
       if (tsB) return 1;                   // tem pendência → sobe
@@ -246,6 +256,8 @@ export default function ChatList({
             key={chat.id}
             chat={chat}
             active={chat.id === activeId}
+            isMuted={mutedChats?.has(chat.id)}
+            now={now}
             onClick={() => onSelect(chat)}
             onOpenMenu={(e) => openMenu(e, chat)}
           />
@@ -378,23 +390,26 @@ export default function ChatList({
           x={ctxMenu.x}
           y={ctxMenu.y}
           chat={ctxMenu.chat}
+          isMuted={mutedChats?.has(ctxMenu.chat.id)}
           onClose={() => setCtxMenu(null)}
           onForward={onForward}
           onMarkRead={onMarkRead}
           onMarkUnread={onMarkUnread}
+          onMute={onMute}
+          onUnmute={onUnmute}
         />
       )}
     </div>
   );
 }
 
-function ChatItem({ chat, active, onClick, onOpenMenu }) {
+function ChatItem({ chat, active, onClick, onOpenMenu, isMuted, now }) {
   const { displayInfo } = useContactsCtx();
   const info = displayInfo(chat.id, chat.name, chat.pushname);
-  const hasUnread = !active && (chat.unread > 0);
+  const hasUnread = !active && !isMuted && (chat.unread > 0);
 
-  const timeSince = chat.lastPatientTs ? formatTimeSince(chat.lastPatientTs) : null;
-  const waitMs    = chat.lastPatientTs ? Date.now() - new Date(chat.lastPatientTs).getTime() : 0;
+  const timeSince = !isMuted && chat.lastPatientTs ? formatTimeSince(chat.lastPatientTs, now) : null;
+  const waitMs    = !isMuted && chat.lastPatientTs ? (now || Date.now()) - new Date(chat.lastPatientTs).getTime() : 0;
   const urgColor  = waitMs > 4*3600000 ? T.red : waitMs > 3600000 ? T.yellow : T.green;
 
   const initials = info.hasContact
@@ -468,9 +483,12 @@ function ChatItem({ chat, active, onClick, onOpenMenu }) {
             {initials}
           </div>
         )}
-        <div style={{ position:"absolute", bottom:1, right:1,
-          width:11, height:11, borderRadius:"50%",
-          background:T.green, border:`2px solid ${T.bg}` }} />
+        {isMuted
+          ? <div style={{ position:"absolute", bottom:0, right:-2, fontSize:11, lineHeight:1 }}>🔕</div>
+          : <div style={{ position:"absolute", bottom:1, right:1,
+              width:11, height:11, borderRadius:"50%",
+              background:T.green, border:`2px solid ${T.bg}` }} />
+        }
       </div>
 
       {/* Conteúdo */}
@@ -527,7 +545,7 @@ function ChatItem({ chat, active, onClick, onOpenMenu }) {
   );
 }
 
-function ContextMenu({ x, y, chat, onClose, onForward, onMarkRead, onMarkUnread }) {
+function ContextMenu({ x, y, chat, isMuted, onClose, onForward, onMarkRead, onMarkUnread, onMute, onUnmute }) {
   const menuRef = useRef(null);
 
   useEffect(() => {
@@ -581,6 +599,13 @@ function ContextMenu({ x, y, chat, onClose, onForward, onMarkRead, onMarkUnread 
       {chat.unread > 0
         ? menuItem("✓  Marcar como lido",      () => onMarkRead?.(chat.id))
         : menuItem("●  Marcar como não lido",   () => onMarkUnread?.(chat.id))
+      }
+
+      <div style={{ height:1, background:T.border, margin:"4px 0" }} />
+
+      {isMuted
+        ? menuItem("🔔  Ativar notificações",  () => onUnmute?.(chat.id))
+        : menuItem("🔕  Silenciar",             () => onMute?.(chat.id))
       }
     </div>
   );

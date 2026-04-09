@@ -117,17 +117,23 @@ export function useWAHA(operator) {
     } catch {}
     return [];
   });
-  const [messages, setMessages] = useState({});
-  const [loading,  setLoading]  = useState(false);
-  const [error,    setError]    = useState(null);
-  const [wsStatus, setWsStatus] = useState("disconnected");
-  const [sessionOk, setSessionOk] = useState(false);
+  const [messages,    setMessages]    = useState({});
+  const [loading,     setLoading]     = useState(false);
+  const [error,       setError]       = useState(null);
+  const [wsStatus,    setWsStatus]    = useState("disconnected");
+  const [sessionOk,   setSessionOk]   = useState(false);
+  const [mutedChats,  setMutedChats]  = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem("crm_muted") || "[]")); }
+    catch { return new Set(); }
+  });
 
   const activeChatRef   = useRef(null);
   const socketRef       = useRef(null);
   const wsConnected     = useRef(false);
   const handleMsgRef    = useRef(null);   // compartilhado entre PartyKit e polling
   const seenMsgIds      = useRef({});     // chatId → Set<id> — dedup fora de state updater
+  const mutedChatsRef   = useRef(mutedChats);
+  useEffect(() => { mutedChatsRef.current = mutedChats; }, [mutedChats]);
   const { lookupPhone, lookupPhonePriority, searchByName, addLocalContact, resolveName } = useContactsCtx();
 
   const perms = { verTodos: operator?.role === "gerente" || operator?.role === "admin" };
@@ -584,15 +590,18 @@ export function useWAHA(operator) {
     function handleMsg(msg) {
       const msgChatId = msg.chatId;
       if (!msgChatId) return;
+      const isMuted = mutedChatsRef.current.has(msgChatId);
 
-      if (msg.from === "patient" && document.hidden) {
+      if (msg.from === "patient" && document.hidden && !isMuted) {
         try {
-          navigator.serviceWorker?.controller?.postMessage({
-            type: "SHOW_NOTIFICATION",
-            title: msg.chatId?.replace(/@.*$/, "") || "Paciente",
-            body: msg.text?.slice(0, 100) || "Nova mensagem",
-            chatId: msgChatId,
-          });
+          navigator.serviceWorker?.ready.then(reg => {
+            reg.active?.postMessage({
+              type: "SHOW_NOTIFICATION",
+              title: msgChatId.replace(/@.*$/, "") || "Paciente",
+              body: msg.text?.slice(0, 100) || "Nova mensagem",
+              chatId: msgChatId,
+            });
+          }).catch(() => {});
         } catch {}
       }
 
@@ -624,11 +633,9 @@ export function useWAHA(operator) {
           lastMsg,
           lastTime:      msg.time,
           lastTs:        msg.ts,
-          lastPatientTs: isPatient && !autoRes ? msg.ts : c.lastPatientTs,
-          // Sempre incrementa unread para mensagens do paciente — só zera ao enviar resposta
-          unread:        isPatient && !autoRes ? (c.unread || 0) + 1 : c.unread,
-          // Reabre chat resolvido se paciente mandou mensagem nova
-          status:        isPatient && !autoRes && c.status === "resolved" ? "open" : c.status,
+          lastPatientTs: isPatient && !autoRes && !isMuted ? msg.ts : c.lastPatientTs,
+          unread:        isPatient && !autoRes && !isMuted ? (c.unread || 0) + 1 : c.unread,
+          status:        isPatient && !autoRes && !isMuted && c.status === "resolved" ? "open" : c.status,
         });
         // Persiste reabertura no MongoDB em background
         const reopened = updated.find(c => c.id === target.id);
@@ -1114,6 +1121,30 @@ export function useWAHA(operator) {
     });
   }, []);
 
+  const muteChat = useCallback((chatId) => {
+    setMutedChats(prev => {
+      const next = new Set(prev);
+      next.add(chatId);
+      try { localStorage.setItem("crm_muted", JSON.stringify([...next])); } catch {}
+      return next;
+    });
+    // Zera unread e lastPatientTs do chat silenciado
+    setChats(prev => {
+      const updated = prev.map(c => c.id === chatId ? { ...c, unread: 0, lastPatientTs: null } : c);
+      persistChats(updated);
+      return updated;
+    });
+  }, []);
+
+  const unmuteChat = useCallback((chatId) => {
+    setMutedChats(prev => {
+      const next = new Set(prev);
+      next.delete(chatId);
+      try { localStorage.setItem("crm_muted", JSON.stringify([...next])); } catch {}
+      return next;
+    });
+  }, []);
+
   // ── Pesquisa em conteúdo de mensagens (cache local) ─────────────
   const searchMessages = useCallback((query) => {
     if (!query || query.length < 3) return [];
@@ -1159,6 +1190,9 @@ export function useWAHA(operator) {
     markUnread,
     searchMessages,
     resyncChats,
+    mutedChats,
+    muteChat,
+    unmuteChat,
     loading,
     error,
     wsStatus,
