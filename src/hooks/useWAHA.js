@@ -110,17 +110,25 @@ function isFarewell(text) {
 }
 
 // Calcula lastPatientTs a partir do histórico de mensagens (ordem cronológica)
-// null = operador respondeu por último (ou despedida) → sem timer
+// null = operador respondeu por último, ou despedida nas últimas 2 msgs do paciente
 // ts   = último paciente que precisa de resposta
 function computeLastPatientTs(msgs) {
+  const patientMsgs = [];
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i];
-    if (m.from === "operator") return null;
+    if (m.from === "operator") {
+      if (patientMsgs.length === 0) return null; // operador respondeu por último
+      break;
+    }
     if (m.from === "patient") {
-      return isFarewell(m.text) ? null : m.ts;
+      patientMsgs.push(m);
+      if (patientMsgs.length >= 2) break;
     }
   }
-  return null;
+  if (patientMsgs.length === 0) return null;
+  // Se qualquer uma das últimas 2 mensagens do paciente for despedida → sem timer
+  if (patientMsgs.some(m => isFarewell(m.text))) return null;
+  return patientMsgs[0].ts; // ts da msg mais recente do paciente
 }
 
 function detectAutoResolve(msgs) {

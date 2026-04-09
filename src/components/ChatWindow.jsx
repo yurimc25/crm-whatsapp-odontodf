@@ -1287,7 +1287,7 @@ function MediaContent({ media, msgId, chatId, chatSession }) {
               </button>
             )}
             {transcript && (
-              <div style={{ color:T.sub, fontSize:11, marginTop:4, fontStyle:"italic",
+              <div style={{ color:T.sub, fontSize:13, marginTop:4, fontStyle:"italic",
                 borderLeft:`2px solid ${T.accent}`, paddingLeft:6 }}>
                 {transcript}
               </div>
@@ -1514,7 +1514,7 @@ function ImageLightbox({ src, fullUrl, downloadUrl, iKey, msgId, onClose }) {
             userSelect:"none", pointerEvents:"none" }} />
       </div>
       {/* Controles */}
-      <div style={{ position:"fixed", top:16, right:16, display:"flex", gap:8 }}>
+      <div onClick={e => e.stopPropagation()} style={{ position:"fixed", top:16, right:16, display:"flex", gap:8 }}>
         <button onClick={() => setZoom(z => Math.min(5, z+0.5))} style={btnStyle}>🔍+</button>
         <button onClick={() => { setZoom(1); setPos({x:0,y:0}); }} style={btnStyle}>↺</button>
         <button onClick={() => setZoom(z => Math.max(1, z-0.5))} style={btnStyle}>🔍−</button>
