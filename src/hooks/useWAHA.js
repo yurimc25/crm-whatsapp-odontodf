@@ -1280,9 +1280,10 @@ export function useWAHA(operator) {
           const localTsMs = local?.lastTs ? new Date(local.lastTs).getTime() : 0;
           const bestTsMs  = Math.max(wahaTsMs, r2TsMs, localTsMs);
 
-          const lastMsg = (r2TsMs >= wahaTsMs && r2TsMs >= localTsMs && r2?.lastMsg)
-            ? r2.lastMsg
-            : (n.lastMsg || local?.lastMsg || "");
+          // Usa a fonte mais recente para lastMsg
+          const lastMsg = r2TsMs > wahaTsMs && r2TsMs > localTsMs && r2?.lastMsg ? r2.lastMsg
+            : wahaTsMs >= r2TsMs && wahaTsMs >= localTsMs && n.lastMsg           ? n.lastMsg
+            : local?.lastMsg || n.lastMsg || r2?.lastMsg || "";
 
           const lastTs = bestTsMs ? new Date(bestTsMs).toISOString() : (n.lastTs || local?.lastTs);
 
