@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import PatientCardDetected from "./modules/PatientCardDetected";
 import { QuickMessages } from "./modules/QuickMessages";
 import { useContactsCtx } from "../App";
-import { normalizeMessage, sendImage, sendFile, sendVoice, fileToBase64, sendReaction, sendLocation } from "../services/waha";
+import { sendImage, sendFile, sendVideo, sendVoice, uploadToR2, sendReaction, sendLocation } from "../services/waha";
 import { ContactLookupModal } from "./ContactLookupModal";
 
 // Emojis frequentes para o picker rápido
@@ -68,22 +68,27 @@ const _mediaBlobCache = new Map(); // msgId → blobUrl
 function getMediaBlobInMemory(msgId)       { return _mediaBlobCache.get(msgId) || null; }
 function setMediaBlobInMemory(msgId, url)  { _mediaBlobCache.set(msgId, url); }
 
-// Nível 2: flags no localStorage
-function isMediaCached(msgId) {
+// Nível 2: base64 no localStorage (imagens ≤ 300KB — sobrevive F5)
+const MEDIA_B64_MAX = 300 * 1024; // 300KB em bytes antes de base64
+function getMediaFromStorage(msgId) {
   try {
     const raw = localStorage.getItem(MEDIA_CACHE_PREFIX + msgId);
-    if (!raw) return false;
-    const { expires } = JSON.parse(raw);
-    if (Date.now() > expires) { localStorage.removeItem(MEDIA_CACHE_PREFIX + msgId); return false; }
-    return true;
-  } catch { return false; }
+    if (!raw) return null;
+    const { data, expires } = JSON.parse(raw);
+    if (Date.now() > expires) { localStorage.removeItem(MEDIA_CACHE_PREFIX + msgId); return null; }
+    return data || null; // data-uri
+  } catch { return null; }
 }
-function markMediaCached(msgId) {
+function saveMediaToStorage(msgId, dataUri, byteLength) {
+  if (byteLength > MEDIA_B64_MAX) return; // não salva arquivos grandes
   try {
     localStorage.setItem(MEDIA_CACHE_PREFIX + msgId, JSON.stringify({
-      expires: Date.now() + MEDIA_CACHE_TTL,
+      data: dataUri, expires: Date.now() + MEDIA_CACHE_TTL,
     }));
-  } catch {}
+  } catch {} // quota exceeded — ignora silenciosamente
+}
+function isMediaCached(msgId) {
+  return getMediaFromStorage(msgId) !== null;
 }
 
 // Falha permanente: 404 → não re-tenta por 24h
@@ -203,21 +208,44 @@ export default function ChatWindow({
   const recChunksRef  = useRef([]);
   const recTimerRef   = useRef(null);
   const fileInputRef  = useRef(null);
-  // Mensagens sintéticas (PatientCards gerados por OCR de imagem)
-  const [extraMessages, setExtraMessages] = useState([]);
+  // Mensagens sintéticas (PatientCards/transcrições) — persistidas no localStorage por chatId
+  const EXTRA_KEY = `crm_extra_${chat.id}`;
+  const [extraMessages, setExtraMessages] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(EXTRA_KEY) || "[]"); } catch { return []; }
+  });
+
+  function persistExtra(msgs) {
+    try { localStorage.setItem(EXTRA_KEY, JSON.stringify(msgs)); } catch {}
+  }
+
+  function addExtraMessage(msg) {
+    setExtraMessages(prev => {
+      const next = [...prev, msg];
+      persistExtra(next);
+      return next;
+    });
+  }
+
+  // Recarrega extras quando muda de chat
+  useEffect(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(`crm_extra_${chat.id}`) || "[]");
+      setExtraMessages(stored);
+    } catch { setExtraMessages([]); }
+  }, [chat.id]);
+
   // Auto-refresh a cada 5s
   const [lastRefresh, setLastRefresh] = useState(Date.now());
 
   function handleOcrResult(text) {
-    const syntheticMsg = {
-      id:            `ocr-${Date.now()}`,
+    addExtraMessage({
+      id:             `ocr-${Date.now()}`,
       hasPatientCard: true,
       text,
-      from:          "operator",
-      time:          new Date().toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" }),
-      ts:            new Date().toISOString(),
-    };
-    setExtraMessages(prev => [...prev, syntheticMsg]);
+      from:           "operator",
+      time:           new Date().toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" }),
+      ts:             new Date().toISOString(),
+    });
   }
 
   const bottomRef   = useRef(null);
@@ -288,9 +316,13 @@ export default function ChatWindow({
       mr.onstop = async () => {
         stream.getTracks().forEach(t => t.stop());
         const blob = new Blob(recChunksRef.current, { type: "audio/webm" });
-        const b64 = await fileToBase64(blob);
+        const audioFile = new File([blob], "audio.ogg", { type: "audio/ogg; codecs=opus" });
         setSending(true);
-        try { await sendVoice(chat.id, b64); }
+        try {
+          const ikey = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
+          const url = await uploadToR2(audioFile, ikey);
+          await sendVoice(chat.id, url);
+        }
         catch (e) { alert("Erro ao enviar áudio: " + e.message); }
         finally { setSending(false); }
       };
@@ -313,27 +345,17 @@ export default function ChatWindow({
     const file = e.target.files?.[0];
     if (!file) return;
     e.target.value = "";
-    const b64 = await fileToBase64(file);
     setSending(true);
+    const ikey = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
     try {
+      const url = await uploadToR2(file, ikey);
+      const caption = text.trim() || "";
       if (file.type.startsWith("image/")) {
-        await sendImage(chat.id, b64, text.trim() || "");
+        await sendImage(chat.id, url, caption, file.type, file.name);
+      } else if (file.type.startsWith("video/")) {
+        await sendVideo(chat.id, url, file.name, caption);
       } else {
-        // WAHA NOWEB não suporta sendFile — faz upload pro R2 e envia URL
-        const rawBase64 = b64.includes(",") ? b64.split(",")[1] : b64;
-        const ikey = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
-        const upRes = await fetch("/api/r2-data?type=upload", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Internal-Key": ikey },
-          body: JSON.stringify({ filename: file.name, mimetype: file.type, data: rawBase64 }),
-        });
-        if (!upRes.ok) {
-          const e = await upRes.json().catch(() => ({}));
-          throw new Error(e.error || `Upload falhou: ${upRes.status}`);
-        }
-        const { url } = await upRes.json();
-        const caption = text.trim() ? `${text.trim()}\n${url}` : url;
-        await import("../services/waha").then(m => m.sendText(chat.id, caption));
+        await sendFile(chat.id, url, file.name, file.type, caption);
       }
       setText("");
     } catch (err) { alert("Erro ao enviar arquivo: " + err.message); }
@@ -911,6 +933,25 @@ function MessageBubble({ msg, currentOperator, onContextMenu, onOcrResult }) {
             {dateStr || msg.time}
           </div>
         </div>
+
+        {/* Reações */}
+        {msg.reactions && Object.keys(msg.reactions).length > 0 && (
+          <div style={{ display:"flex", gap:4, marginTop:3, flexWrap:"wrap",
+            justifyContent: isPatient ? "flex-start" : "flex-end" }}>
+            {Object.entries(msg.reactions).map(([emoji, users]) =>
+              users?.length > 0 ? (
+                <span key={emoji} style={{
+                  background:"#2d2d2d", border:"1px solid #444",
+                  borderRadius:12, padding:"1px 6px", fontSize:13,
+                  display:"flex", alignItems:"center", gap:3,
+                }}>
+                  {emoji}
+                  {users.length > 1 && <span style={{ fontSize:10, color:T.sub }}>{users.length}</span>}
+                </span>
+              ) : null
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1088,7 +1129,16 @@ function MediaContent({ media, msgId, chatId, chatSession, onOcrResult }) {
     // 1. Memória (blob ainda vivo — zero request)
     const mem = getMediaBlobInMemory(msgId);
     if (mem) { setFullUrl(mem); blobUrlRef.current = mem; return; }
-    // 2. Falha permanente registrada — não re-tenta
+    // 2. localStorage (base64 salvo — sobrevive F5, zero request)
+    const stored = getMediaFromStorage(msgId);
+    if (stored) {
+      const url = stored; // data-uri direto
+      blobUrlRef.current = url;
+      setMediaBlobInMemory(msgId, url);
+      if (!onCancelled?.()) setFullUrl(url);
+      return;
+    }
+    // 3. Falha permanente registrada — não re-tenta
     if (isMediaFailed(msgId)) { return; }
 
     setDownload(true);
@@ -1109,10 +1159,15 @@ function MediaContent({ media, msgId, chatId, chatSession, onOcrResult }) {
         }
         if (!result.buf || result.buf.byteLength === 0) { setError(true); setDownload(false); return; }
         const blob = new Blob([result.buf], { type: result.ct });
+        // Salva base64 no localStorage para imagens pequenas (zero request no próximo F5)
+        if (isImage) {
+          const reader = new FileReader();
+          reader.onload = () => saveMediaToStorage(msgId, reader.result, result.buf.byteLength);
+          reader.readAsDataURL(blob);
+        }
         const url  = URL.createObjectURL(blob);
         blobUrlRef.current = url;
         setMediaBlobInMemory(msgId, url);
-        markMediaCached(msgId);
         if (!onCancelled?.()) setFullUrl(url);
       });
     } catch (e) {

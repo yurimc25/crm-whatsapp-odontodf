@@ -344,8 +344,14 @@ export function normalizeMessage(wahaMsg) {
       : null),
   } : null;
 
+  // Reações: { [emoji]: [{ id, fromMe }] }
+  const reactionsRaw = wahaMsg.reactions || wahaMsg._data?.reactions || null;
+  const reactions = reactionsRaw && typeof reactionsRaw === "object" && !Array.isArray(reactionsRaw)
+    ? reactionsRaw
+    : null;
+
   return {
-    id:       wahaMsg.id || `tmp-${tsMs}`,  // ID direto do WAHA já é único
+    id:       wahaMsg.id || `tmp-${tsMs}`,
     from:     wahaMsg.fromMe ? "operator" : "patient",
     text:     body,
     time:     tsMs ? new Date(tsMs).toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" }) : "",
@@ -354,6 +360,7 @@ export function normalizeMessage(wahaMsg) {
     type,
     media,
     location,
+    reactions,
     operator: wahaMsg.fromMe ? (wahaMsg.senderName || wahaMsg._data?.pushName || "Você") : null,
     hasPatientCard: !hasMedia && !location && detectPatientCard(body),
   };
@@ -489,13 +496,30 @@ export function fileToBase64(file) {
   });
 }
 
-export async function sendImage(chatId, base64DataUri, caption = "") {
+// Faz upload de um File/Blob para o R2 e retorna a URL pública
+export async function uploadToR2(file, ikey) {
+  const form = new FormData();
+  form.append("file", file, file.name || "file");
+  const res = await fetch("/api/r2-data?type=upload-binary", {
+    method: "POST",
+    headers: { "X-Internal-Key": ikey },
+    body: form,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Upload R2 falhou: ${res.status}`);
+  }
+  const { url } = await res.json();
+  return url;
+}
+
+export async function sendImage(chatId, url, caption = "", mimetype = "image/jpeg", filename = "image.jpg") {
   const r = await fetch(`${WAHA_URL}/api/sendImage`, {
     method: "POST",
     headers: headers(),
     body: JSON.stringify({
       session: SESSION, chatId,
-      file: { data: base64DataUri },
+      file: { url, mimetype, filename },
       caption,
     }),
   });
@@ -503,14 +527,13 @@ export async function sendImage(chatId, base64DataUri, caption = "") {
   return r.json();
 }
 
-export async function sendFile(chatId, base64DataUri, filename, mimetype, caption = "") {
-  const rawBase64 = base64DataUri.includes(",") ? base64DataUri.split(",")[1] : base64DataUri;
+export async function sendFile(chatId, url, filename, mimetype, caption = "") {
   const r = await fetch(`${WAHA_URL}/api/sendFile`, {
     method: "POST",
     headers: headers(),
     body: JSON.stringify({
       session: SESSION, chatId,
-      file: { data: rawBase64, filename, mimetype },
+      file: { url, filename, mimetype },
       caption,
     }),
   });
@@ -521,13 +544,29 @@ export async function sendFile(chatId, base64DataUri, filename, mimetype, captio
   return r.json();
 }
 
-export async function sendVoice(chatId, base64DataUri) {
+export async function sendVideo(chatId, url, filename, caption = "") {
+  const r = await fetch(`${WAHA_URL}/api/sendVideo`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({
+      session: SESSION, chatId,
+      caption,
+      file: { url, mimetype: "video/mp4", filename },
+      convert: false,
+    }),
+  });
+  if (!r.ok) throw new Error(`WAHA sendVideo: ${r.status}`);
+  return r.json();
+}
+
+export async function sendVoice(chatId, url) {
   const r = await fetch(`${WAHA_URL}/api/sendVoice`, {
     method: "POST",
     headers: headers(),
     body: JSON.stringify({
       session: SESSION, chatId,
-      file: { data: base64DataUri, mimetype: "audio/ogg; codecs=opus" },
+      file: { url, mimetype: "audio/ogg; codecs=opus" },
+      convert: false,
     }),
   });
   if (!r.ok) throw new Error(`WAHA sendVoice: ${r.status}`);

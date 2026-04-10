@@ -1,10 +1,14 @@
 // api/r2-data.js
 // GET /api/r2-data?type=chats              → chats.json
 // GET /api/r2-data?type=msgs&chatId=...    → msgs/{chatId}.json
-// POST /api/r2-data?type=upload            → faz upload de arquivo e retorna URL pública
-//   Body: { filename, mimetype, data }  (data = base64 sem prefixo)
+// POST /api/r2-data?type=upload            → upload via JSON base64 (arquivos < 4MB)
+// POST /api/r2-data?type=upload-binary     → upload via FormData (arquivos grandes)
 
 import { r2Get, r2Put } from "./_r2.js";
+import { formidable } from "formidable";
+import fs from "fs";
+
+export const config = { api: { bodyParser: false } };
 
 function chatKey(chatId) {
   return "msgs/" + chatId.replace(/[^a-zA-Z0-9_-]/g, "_") + ".json";
@@ -30,7 +34,14 @@ export default async function handler(req, res) {
 
     let body;
     try {
-      body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
+      // bodyParser desabilitado — lê raw body manualmente
+      const raw = await new Promise((resolve, reject) => {
+        let data = "";
+        req.on("data", chunk => data += chunk);
+        req.on("end", () => resolve(data));
+        req.on("error", reject);
+      });
+      body = JSON.parse(raw);
     } catch {
       return res.status(400).json({ error: "JSON inválido" });
     }
@@ -49,6 +60,38 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true, url });
     } catch (e) {
       return res.status(500).json({ error: e.message });
+    }
+  }
+
+  // ── POST: upload binário via FormData (arquivos grandes, sem limite base64) ──
+  if (req.method === "POST" && type === "upload-binary") {
+    const publicUrl = process.env.R2_PUBLIC_URL;
+    if (!publicUrl) return res.status(500).json({ error: "R2_PUBLIC_URL não configurado" });
+
+    let filepath, mimetype, filename;
+    try {
+      const form = formidable({ maxFileSize: 100 * 1024 * 1024 }); // 100MB
+      const [fields, files] = await form.parse(req);
+      const file = Array.isArray(files.file) ? files.file[0] : files.file;
+      if (!file) return res.status(400).json({ error: "Arquivo não enviado" });
+      filepath = file.filepath;
+      mimetype = file.mimetype || "application/octet-stream";
+      filename = file.originalFilename || "file";
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
+
+    try {
+      const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, "_");
+      const r2Key = `uploads/${Date.now()}-${safeFilename}`;
+      const buf = fs.readFileSync(filepath);
+      await r2Put(r2Key, buf, mimetype);
+      const url = `${publicUrl.replace(/\/$/, "")}/${r2Key}`;
+      return res.status(200).json({ ok: true, url });
+    } catch (e) {
+      return res.status(500).json({ error: e.message });
+    } finally {
+      if (filepath) try { fs.unlinkSync(filepath); } catch {}
     }
   }
 
