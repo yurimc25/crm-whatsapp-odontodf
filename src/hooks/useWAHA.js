@@ -60,7 +60,7 @@ function markRun(key) {
 }
 const CHATS_KEY      = "waha_chats";
 const MSGS_PREFIX    = "waha_msgs_";
-const CHATS_TTL      = 7  * 24 * 60 * 60 * 1000; // 7 dias
+const CHATS_TTL      = 30 * 24 * 60 * 60 * 1000; // 30 dias
 const MSGS_TTL       = 30 * 24 * 60 * 60 * 1000; // 30 dias
 const LAST_SYNC_KEY  = "waha_last_sync_ts";       // timestamp da última sync bem-sucedida
 const ikey           = () => import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
@@ -77,11 +77,23 @@ function markLastSync() {
 function persistChats(chats) {
   cache.set(CHATS_KEY, chats, CHATS_TTL);
   try {
-    localStorage.setItem("crm_" + CHATS_KEY, JSON.stringify({
-      value:   chats,
-      expires: Date.now() + CHATS_TTL,
-    }));
-  } catch {}
+    const payload = JSON.stringify({ value: chats, expires: Date.now() + CHATS_TTL });
+    localStorage.setItem("crm_" + CHATS_KEY, payload);
+  } catch (e) {
+    // localStorage cheio — salva apenas campos essenciais (status, unread, lastPatientTs, tags)
+    try {
+      const slim = chats.map(c => ({
+        id: c.id, pushname: c.pushname, lastMsg: c.lastMsg,
+        lastTs: c.lastTs, lastPatientTs: c.lastPatientTs,
+        unread: c.unread, status: c.status,
+        assignedTo: c.assignedTo, tags: c.tags,
+        photoUrl: c.photoUrl,
+      }));
+      localStorage.setItem("crm_" + CHATS_KEY, JSON.stringify({
+        value: slim, expires: Date.now() + CHATS_TTL,
+      }));
+    } catch {}
+  }
 }
 
 // Padrões de despedida: correspondem somente a mensagens curtas sem pedidos
@@ -359,55 +371,72 @@ export function useWAHA(operator) {
       setChats(prev => {
         const prevMap = Object.fromEntries(prev.map(c => [c.id, c]));
         const merged  = normalized.map(n => {
-          const local = prevMap[n.id];
-          // Chat novo sem histórico local — usa dados do WAHA + R2
+          const local   = prevMap[n.id];
+          const r2      = r2Map[n.id];
+          const isMuted = mutedChatsRef.current.has(n.id);
+
+          // Seleciona melhor lastTs / lastMsg entre WAHA, R2 e local
+          const wahaTsMs  = n.lastTs     ? new Date(n.lastTs).getTime()     : 0;
+          const r2TsMs    = r2?.lastTs   || 0;
+          const localTsMs = local?.lastTs ? new Date(local.lastTs).getTime() : 0;
+          const bestTsMs  = Math.max(wahaTsMs, r2TsMs, localTsMs);
+          const bestLastTs = bestTsMs ? new Date(bestTsMs).toISOString() : (n.lastTs || local?.lastTs);
+          const bestLastMsg = r2TsMs > wahaTsMs && r2TsMs > localTsMs && r2?.lastMsg ? r2.lastMsg
+            : wahaTsMs >= r2TsMs && n.lastMsg ? n.lastMsg
+            : local?.lastMsg || n.lastMsg || r2?.lastMsg || "";
+
+          // Chat novo sem histórico local — usa WAHA + R2 (inclui unread/lastPatientTs do R2)
           if (!local) {
-            const r2   = r2Map[n.id];
-            const r2Ts = r2?.lastTs || 0;
-            const nTs  = n.lastTs ? new Date(n.lastTs).getTime() : 0;
-            const withR2 = r2Ts > nTs
-              ? { ...n, lastMsg: r2.lastMsg || n.lastMsg, lastTs: new Date(r2Ts).toISOString() }
-              : n;
-            const lpt = withR2.lastPatientTs ? new Date(withR2.lastPatientTs).getTime() : 0;
-            if (lpt && agora - lpt > TRINTA_DIAS && withR2.status !== "resolved") {
-              toAutoResolveIds.add(withR2.id);
-              return { ...withR2, status: "resolved", unread: 0, lastPatientTs: null };
+            const r2Lpt = r2?.lastPatientTs ? new Date(r2.lastPatientTs).toISOString() : null;
+            const lpt   = isMuted ? null : r2Lpt;
+            const unread = isMuted || !lpt ? 0 : r2?.unread || 0;
+            const entry = { ...n, lastMsg: bestLastMsg, lastTs: bestLastTs, lastPatientTs: lpt, unread };
+            if (lpt && agora - new Date(lpt).getTime() > TRINTA_DIAS && entry.status !== "resolved") {
+              toAutoResolveIds.add(entry.id);
+              return { ...entry, status: "resolved", unread: 0, lastPatientTs: null };
             }
-            return withR2;
+            return entry;
           }
-          // Chat existente — preserva estado local
+
+          // Chat existente — preserva estado local, atualiza lastMsg/lastTs/lpt com fontes mais recentes
           const resolvedLocally = local.status === "resolved";
-          const lpt = resolvedLocally ? null
-            : (local.lastPatientTs ?? n.lastPatientTs);
-          // Auto-resolve: aberto + lastPatientTs > 30 dias
+          const r2Lpt    = r2?.lastPatientTs !== undefined
+            ? (r2?.lastPatientTs ? new Date(r2.lastPatientTs).getTime() : null) : undefined;
+          const localLpt = local.lastPatientTs ? new Date(local.lastPatientTs).getTime() : null;
+          // null explícito no R2 significa "operador respondeu" — respeita isso
+          const lpt = isMuted || resolvedLocally ? null
+            : r2Lpt !== undefined
+              ? (r2Lpt ? new Date(Math.max(r2Lpt, localLpt || 0)).toISOString() : null)
+              : (local.lastPatientTs ?? null);
           const shouldAutoResolve = !resolvedLocally && lpt &&
             agora - new Date(lpt).getTime() > TRINTA_DIAS;
           if (shouldAutoResolve) toAutoResolveIds.add(n.id);
+
+          const unread = isMuted || shouldAutoResolve || !lpt ? 0
+            : r2?.unread !== undefined
+              ? Math.max(r2.unread || 0, local.unread || 0)
+              : (local.unread ?? n.unread ?? 0);
+
           return {
             ...n,
+            lastMsg:       bestLastMsg,
+            lastTs:        bestLastTs,
+            lastPatientTs: (resolvedLocally || shouldAutoResolve) ? null : lpt,
+            unread,
             status:        shouldAutoResolve ? "resolved" : (local.status ?? n.status),
             assignedTo:    local.assignedTo  ?? n.assignedTo,
-            unread:        shouldAutoResolve ? 0 : (local.unread ?? n.unread),
-            lastPatientTs: (resolvedLocally || shouldAutoResolve) ? null : lpt,
-            lastMsg:       (() => {
-              const r2    = r2Map[n.id];
-              const r2Ts  = r2?.lastTs || 0;
-              const nTs   = n.lastTs   ? new Date(n.lastTs).getTime()   : 0;
-              const locTs = local.lastTs ? new Date(local.lastTs).getTime() : 0;
-              if (r2Ts > nTs && r2Ts > locTs) return r2.lastMsg || n.lastMsg || local.lastMsg || "";
-              return n.lastMsg || local.lastMsg || "";
-            })(),
-            lastTs:        (() => {
-              const r2   = r2Map[n.id];
-              const r2Ts = r2?.lastTs || 0;
-              const nTs  = n.lastTs ? new Date(n.lastTs).getTime() : 0;
-              if (r2Ts > nTs) return new Date(r2Ts).toISOString();
-              return n.lastTs || local.lastTs;
-            })(),
-            photoUrl:      local.photoUrl ?? null,
-            tags:          local.tags    ?? n.tags,
+            photoUrl:      local.photoUrl    ?? null,
+            tags:          local.tags        ?? n.tags,
+            pushname:      n.pushname || local.pushname || r2?.pushname,
           };
         });
+
+        // ── CRÍTICO: preserva chats locais que o WAHA não retornou (mais antigos que fromTs)
+        const wahaIds = new Set(normalized.map(c => c.id));
+        for (const c of prev) {
+          if (!wahaIds.has(c.id)) merged.push(c); // preserva sem modificar
+        }
+
         persistChats(merged);
         // Persiste auto-resolves no MongoDB em background
         if (toAutoResolveIds.size > 0) {
