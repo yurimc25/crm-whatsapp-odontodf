@@ -272,16 +272,20 @@ export function useWAHA(operator) {
     return () => clearInterval(iv);
   }, [sessionOk]);
 
-  // Auto-resync a cada 5 minutos — e imediatamente ao abrir a página
+  // Auto-resync leve a cada 5 minutos (sem reset de lastSync)
   useEffect(() => {
     if (!sessionOk || USE_MOCK) return;
-    resyncChats();
-    const iv = setInterval(resyncChats, 5 * 60 * 1000);
+    const iv = setInterval(_lightResync, 5 * 60 * 1000);
     return () => clearInterval(iv);
   }, [sessionOk]);
 
-  async function loadChats() {
+  async function loadChats(forceFullSync = false) {
     setLoading(true);
+    // Força sincronização completa: ignora lastSync, busca 100 dias
+    if (forceFullSync) {
+      try { localStorage.removeItem(LAST_SYNC_KEY); } catch {}
+      console.log("[waha] force full sync: buscando 100 dias de histórico");
+    }
     try {
       // ── 1. localStorage: exibe imediatamente enquanto carrega ────
       let cachedChats = cache.get(CHATS_KEY) || [];
@@ -1299,15 +1303,11 @@ export function useWAHA(operator) {
     wsStatus,
   };
 
-  // ── Força ressincronização: chats do WAHA + dados enriquecidos do R2 ──
-  // Não faz mais chamadas por chat — lê lastPatientTs/unread/lastMsg do R2 (webhook já computa)
-  async function resyncChats() {
+  // ── Resync leve (automático, a cada 5 min): limit=200 via proxy, sem reset de lastSync ──
+  async function _lightResync() {
     if (USE_MOCK) return;
     const SESSION = import.meta.env.VITE_WAHA_SESSION || "default";
-    console.log("[resync] iniciando...");
-
     try {
-      // 1. Busca lista de chats (WAHA) + dados enriquecidos (R2) em paralelo
       const [wahaRes, r2Res] = await Promise.all([
         fetch(
           `/api/waha?path=${encodeURIComponent(`/api/${SESSION}/chats`)}&limit=200`,
@@ -1316,13 +1316,9 @@ export function useWAHA(operator) {
         fetch("/api/r2-data?type=chats", { headers: { "X-Internal-Key": ikey() } })
           .then(r => r.ok ? r.json() : []).catch(() => []),
       ]);
-
       if (!Array.isArray(wahaRes)) return;
-      console.log(`[resync] ${wahaRes.length} chats do WAHA, ${r2Res.length} do R2`);
 
-      // R2 tem lastMsg, lastTs, lastPatientTs, unread pré-computados pelo webhook
-      const r2Map = Object.fromEntries((Array.isArray(r2Res) ? r2Res : []).map(c => [c.id, c]));
-
+      const r2Map    = Object.fromEntries((Array.isArray(r2Res) ? r2Res : []).map(c => [c.id, c]));
       const normalized = wahaRes.map(c => normalizeChat(c));
 
       setChats(prev => {
@@ -1332,29 +1328,24 @@ export function useWAHA(operator) {
           const r2      = r2Map[n.id];
           const isMuted = mutedChatsRef.current.has(n.id);
 
-          // Escolhe o lastTs mais recente entre WAHA, R2 e local
           const wahaTsMs  = n.lastTs   ? new Date(n.lastTs).getTime()   : 0;
           const r2TsMs    = r2?.lastTs || 0;
           const localTsMs = local?.lastTs ? new Date(local.lastTs).getTime() : 0;
           const bestTsMs  = Math.max(wahaTsMs, r2TsMs, localTsMs);
 
-          // Usa a fonte mais recente para lastMsg
           const lastMsg = r2TsMs > wahaTsMs && r2TsMs > localTsMs && r2?.lastMsg ? r2.lastMsg
             : wahaTsMs >= r2TsMs && wahaTsMs >= localTsMs && n.lastMsg           ? n.lastMsg
             : local?.lastMsg || n.lastMsg || r2?.lastMsg || "";
 
           const lastTs = bestTsMs ? new Date(bestTsMs).toISOString() : (n.lastTs || local?.lastTs);
 
-          // lastPatientTs: R2 tem o valor mais preciso (computado pelo webhook em tempo real)
-          const r2Lpt = r2?.lastPatientTs ? new Date(r2.lastPatientTs).getTime() : null;
+          const r2Lpt   = r2?.lastPatientTs ? new Date(r2.lastPatientTs).getTime() : null;
           const localLpt = local?.lastPatientTs ? new Date(local.lastPatientTs).getTime() : null;
-          // Usa o maior (mais recente) entre R2 e local, respeitando null (operador respondeu)
           const lpt = isMuted ? null
             : r2?.lastPatientTs !== undefined
               ? (r2Lpt ? new Date(Math.max(r2Lpt, localLpt || 0)).toISOString() : null)
               : (local?.lastPatientTs ?? null);
 
-          // Invariante: sem timer pendente → sem não-lidos
           const unread = isMuted || !lpt ? 0
             : r2?.unread !== undefined
               ? Math.max(r2.unread || 0, local?.unread || 0)
@@ -1362,30 +1353,30 @@ export function useWAHA(operator) {
 
           return {
             ...(local || n),
-            lastMsg,
-            lastTs,
-            unread,
-            lastPatientTs: lpt,
-            // preserva status/assignedTo/tags do local
+            lastMsg, lastTs, unread, lastPatientTs: lpt,
             status:     local?.status     ?? n.status,
             assignedTo: local?.assignedTo ?? n.assignedTo,
             tags:       local?.tags       ?? n.tags,
             pushname:   n.pushname || local?.pushname || r2?.pushname,
           };
         });
-
-        // Preserva chats locais não retornados pelo WAHA
         const wahaIds = new Set(normalized.map(c => c.id));
         for (const c of prev) if (!wahaIds.has(c.id)) merged.push(c);
-
         persistChats(merged);
         return merged;
       });
-
-      console.log("[resync] concluído");
     } catch (e) {
-      console.error("[resync]", e.message);
+      console.error("[light-resync]", e.message);
     }
+  }
+
+  // ── Resync completo (botão manual): busca todos os chats paginados + reset de histórico ──
+  async function resyncChats() {
+    if (USE_MOCK) return;
+    console.log("[resync] sincronização completa iniciando...");
+    await loadChats(true);         // reset lastSync → busca 100 dias, paginado
+    await applyR2Chats();          // aplica unread/lastPatientTs do R2 por cima
+    console.log("[resync] concluído");
   }
 }
 

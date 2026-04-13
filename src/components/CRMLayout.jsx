@@ -89,6 +89,7 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
       background: T.bg, fontFamily:"'DM Sans', sans-serif", overflow:"hidden",
       color: T.text,
     }}>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,400&family=DM+Mono:wght@400;500&display=swap');
         *{box-sizing:border-box;margin:0;padding:0}
@@ -126,11 +127,11 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
           <span style={{ color:T.sub, fontSize:11 }}>{WS_LABEL[wsStatus] || wsStatus}</span>
         </div>
 
-        {/* Botão ressincronizar */}
+        {/* Botão ressincronizar — sincronização completa (100 dias, paginado) */}
         <button
           onClick={() => resyncChats().then(() => setResyncKey(k => k + 1))}
           disabled={loading}
-          title="Ressincronizar chats (últimos 100 + 3 mensagens)"
+          title="Sincronização completa: busca todos os chats dos últimos 100 dias"
           style={{
             background:"#252525", border:`1px solid ${T.border}`,
             borderRadius:20, padding:"3px 10px", cursor: loading ? "wait" : "pointer",
@@ -138,7 +139,8 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
             opacity: loading ? 0.5 : 1,
           }}
         >
-          <span style={{ fontSize:13, lineHeight:1 }}>⟳</span>
+          <span style={{ fontSize:13, lineHeight:1, display:"inline-block",
+            animation: loading ? "spin 1s linear infinite" : "none" }}>⟳</span>
           {loading ? "Sincronizando..." : "Resync"}
         </button>
 
