@@ -212,6 +212,7 @@ export function useWAHA(operator) {
       setChats(prev => {
         const base = prev.length ? prev : fallbackChats;
         if (!base.length) return prev; // sem base, aguarda WAHA carregar
+        const localIds = new Set(base.map(c => c.id));
         let changed = false;
         const updated = base.map(c => {
           const r2 = r2Map[c.id];
@@ -220,8 +221,40 @@ export function useWAHA(operator) {
           const localTs = c.lastTs ? new Date(c.lastTs).getTime() : 0;
           if (r2TsMs <= localTs) return c;
           changed = true;
-          return { ...c, lastMsg: r2.lastMsg || c.lastMsg, lastTs: new Date(r2TsMs).toISOString() };
+          const isMuted = mutedChatsRef.current.has(c.id);
+          const lpt = isMuted ? null
+            : (r2.lastPatientTs ? new Date(r2.lastPatientTs).toISOString() : null);
+          const unread = isMuted || !lpt ? 0
+            : Math.max(r2.unread || 0, c.unread || 0);
+          return {
+            ...c,
+            lastMsg:       r2.lastMsg || c.lastMsg,
+            lastTs:        new Date(r2TsMs).toISOString(),
+            lastPatientTs: lpt,
+            unread,
+            pushname:      r2.pushname || c.pushname,
+          };
         });
+        // Adiciona chats novos do R2 que não estão na lista local
+        for (const r2 of r2Chats) {
+          if (localIds.has(r2.id)) continue;
+          const isMuted = mutedChatsRef.current.has(r2.id);
+          const lpt = isMuted ? null
+            : (r2.lastPatientTs ? new Date(r2.lastPatientTs).toISOString() : null);
+          updated.push({
+            id:            r2.id,
+            pushname:      r2.pushname || "",
+            lastMsg:       r2.lastMsg  || "",
+            lastTs:        r2.lastTs   ? new Date(r2.lastTs).toISOString() : null,
+            lastPatientTs: lpt,
+            unread:        isMuted || !lpt ? 0 : r2.unread || 0,
+            status:        "open",
+            assignedTo:    null,
+            tags:          [],
+            photoUrl:      null,
+          });
+          changed = true;
+        }
         if (!changed) return prev;
         persistChats(updated);
         return updated;
@@ -232,10 +265,10 @@ export function useWAHA(operator) {
     }
   }
 
-  // Polling R2 a cada 30s para capturar mensagens que chegaram via webhook
+  // Polling R2 a cada 10s para capturar mensagens que chegaram via webhook
   useEffect(() => {
     if (!sessionOk || USE_MOCK) return;
-    const iv = setInterval(() => applyR2Chats(), 30000);
+    const iv = setInterval(() => applyR2Chats(), 10000);
     return () => clearInterval(iv);
   }, [sessionOk]);
 
@@ -663,7 +696,27 @@ export function useWAHA(operator) {
             const t = c.id.replace(/\D/g, "").slice(-10);
             return t.length >= 8 && t === msgTail;
           });
-        if (!target) return prev;
+
+        // Chat ainda não na lista (número novo) — adiciona ao topo
+        if (!target) {
+          const lpt = isPatient && !autoRes && !isMuted ? msg.ts : null;
+          const newChat = {
+            id:            msgChatId,
+            pushname:      msg.pushname || "",
+            lastMsg,
+            lastTime:      msg.time,
+            lastTs:        msg.ts,
+            lastPatientTs: lpt,
+            unread:        lpt ? 1 : 0,
+            status:        "open",
+            assignedTo:    null,
+            tags:          [],
+            photoUrl:      null,
+          };
+          const updated = [newChat, ...prev];
+          persistChats(updated);
+          return updated;
+        }
 
         const updated = prev.map(c => c.id !== target.id ? c : {
           ...c,
@@ -708,19 +761,24 @@ export function useWAHA(operator) {
       if (!payload) return;
       if (event === "message" || event === "message.any") {
         const msg = normalizeMessage(payload);
-        // Normaliza chatId: remove sufixo de device ":N" ou ":N@lid" que o WAHA inclui em webhooks
-        // Ex: "556198...@c.us:3" → "556198...@c.us"
-        if (msg.chatId) {
-          msg.chatId = msg.chatId.replace(/:\d+(@\S+)?$/, "");
-        } else if (payload.from) {
-          msg.chatId = payload.from.replace(/:\d+(@\S+)?$/, "");
+        // Garante chatId válido (normalizeMessage já prioriza chatId/key.remoteJid/to/from)
+        // Fallback extra: payload.chatId ou payload.from direto
+        if (!msg.chatId) {
+          msg.chatId = (payload.chatId || payload.from || "")
+            .replace(/:\d+(@\S+)?$/, "");
         }
+        // Enriquece pushname com notifyName do WAHA (não incluído no normalizeMessage)
+        if (!msg.pushname) {
+          msg.pushname = payload.notifyName || payload._data?.notifyName || "";
+        }
+        if (!msg.chatId) return; // sem chatId válido, ignora
         handleMsg(msg);
       } else if (event === "chat.new") {
         handleChatNew(payload);
       } else if (event === "message.revoked") {
         const msgId = payload.id || payload._data?.id?.id;
-        const chatId = payload.from || payload.chatId;
+        const chatId = (payload.chatId || payload.key?.remoteJid || payload.from || "")
+          .replace(/:\d+(@\S+)?$/, "");
         if (msgId && chatId) {
           setMessages(prev => {
             const cur = prev[chatId];

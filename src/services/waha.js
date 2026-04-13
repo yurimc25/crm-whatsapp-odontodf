@@ -232,12 +232,16 @@ export function normalizeMessage(wahaMsg) {
   const tsMs  = tsRaw ? (tsRaw > 1e12 ? tsRaw : tsRaw * 1000) : 0;
   const ts    = tsMs ? new Date(tsMs).toISOString() : null;
 
-  // chatId é o sender (from) — pode ser do payload direto ou precisa extrair do formato
-  // Resposta padrão WAHA: "from": "11111111111@c.us" ou similar
-  const chatId = wahaMsg.from
-    || wahaMsg.chatId
-    || wahaMsg.from?.replace(/:.*@/, "@")
-    || null;
+  // chatId = ID da conversa (sempre o contato, independente de direção)
+  // Para msgs enviadas (fromMe=true): "from" é o operador — usar chatId/to/key.remoteJid
+  // Para msgs recebidas (fromMe=false): "from" é o contato — correto
+  const chatId = (
+    wahaMsg.chatId
+    || wahaMsg.key?.remoteJid
+    || (wahaMsg.fromMe ? wahaMsg.to : wahaMsg.from)
+    || wahaMsg.from
+    || null
+  )?.replace(/:\d+(@\S+)?$/, ""); // remove device suffix ":3@lid"
 
   // ── Detecção de mídia (NOWEB engine) ────────────────────────────
   // NOWEB: hasMedia=true, media=null, type="image", _data.message.imageMessage={...}
@@ -361,6 +365,7 @@ export function normalizeMessage(wahaMsg) {
     media,
     location,
     reactions,
+    pushname: wahaMsg.notifyName || wahaMsg._data?.notifyName || "",
     operator: wahaMsg.fromMe ? (wahaMsg.senderName || wahaMsg._data?.pushName || "Você") : null,
     hasPatientCard: !hasMedia && !location && detectPatientCard(body),
   };
