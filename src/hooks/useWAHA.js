@@ -14,7 +14,6 @@ import {
   deleteMessage as wahaDeleteMessage, editMessage as wahaEditMessage,
 } from "../services/waha";
 import { MOCK_CHATS, MOCK_MESSAGES } from "../data/mock";
-import { cache } from "../utils/cache";
 
 // Ordena mensagens — estável por timestamp real, nunca usa índice de array como critério primário
 function tsToNum(ts) {
@@ -59,9 +58,20 @@ function markRun(key) {
   try { localStorage.setItem(key, String(Date.now())); } catch {}
 }
 const CHATS_KEY      = "waha_chats";
-const MSGS_PREFIX    = "waha_msgs_";
 const CHATS_TTL      = 30 * 24 * 60 * 60 * 1000; // 30 dias
-const MSGS_TTL       = 30 * 24 * 60 * 60 * 1000; // 30 dias
+
+// Cache de mensagens apenas em memória — não usar localStorage (muito grande, quota exceeded)
+// Sobrevive re-renders mas NÃO sobrevive F5 (ok — carrega do WAHA ao abrir o chat)
+const _sessionMsgs = new Map(); // chatId → Message[]
+
+// Limpeza única na inicialização: remove chaves antigas de mensagens/imagens do localStorage
+// (versões anteriores gravavam msgs lá; agora só usamos memória → libera espaço para os chats)
+try {
+  Object.keys(localStorage)
+    .filter(k => k.startsWith("crm_waha_msgs_") || k.startsWith("crm_img_"))
+    .forEach(k => localStorage.removeItem(k));
+} catch {}
+
 const LAST_SYNC_KEY  = "waha_last_sync_ts";       // timestamp da última sync bem-sucedida
 const ikey           = () => import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
 
@@ -72,23 +82,39 @@ function markLastSync() {
   try { localStorage.setItem(LAST_SYNC_KEY, String(Date.now())); } catch {}
 }
 
-// Persiste chats no cache utility E no localStorage diretamente
-// Garante que F5 sempre lê o estado correto
+// Cache em memória para a sessão atual (sobrevive re-renders, não sobrevive F5)
+const _sessionChats = { value: null, expires: 0 };
+
+// Persiste chats no localStorage usando apenas campos essenciais (slim)
+// Evita quota exceeded — mensagens ficam só na memória (React state)
 function persistChats(chats) {
-  cache.set(CHATS_KEY, chats, CHATS_TTL);
+  // 1. Sessão: guarda objetos completos para acesso rápido sem F5
+  _sessionChats.value = chats;
+  _sessionChats.expires = Date.now() + CHATS_TTL;
+
+  // 2. localStorage: slim — só o necessário para remontar o chatlist após F5
+  const slim = chats.map(c => ({
+    id:            c.id,
+    pushname:      c.pushname      || "",
+    lastMsg:       c.lastMsg       || "",
+    lastTs:        c.lastTs        || null,
+    lastPatientTs: c.lastPatientTs || null,
+    unread:        c.unread        || 0,
+    status:        c.status        || "open",
+    assignedTo:    c.assignedTo    || null,
+    tags:          c.tags          || [],
+    photoUrl:      c.photoUrl      || null,
+  }));
   try {
-    const payload = JSON.stringify({ value: chats, expires: Date.now() + CHATS_TTL });
-    localStorage.setItem("crm_" + CHATS_KEY, payload);
-  } catch (e) {
-    // localStorage cheio — salva apenas campos essenciais (status, unread, lastPatientTs, tags)
+    localStorage.setItem("crm_" + CHATS_KEY, JSON.stringify({
+      value: slim, expires: Date.now() + CHATS_TTL,
+    }));
+  } catch {
+    // Quota exceeded mesmo com slim — libera mensagens antigas e tenta novamente
     try {
-      const slim = chats.map(c => ({
-        id: c.id, pushname: c.pushname, lastMsg: c.lastMsg,
-        lastTs: c.lastTs, lastPatientTs: c.lastPatientTs,
-        unread: c.unread, status: c.status,
-        assignedTo: c.assignedTo, tags: c.tags,
-        photoUrl: c.photoUrl,
-      }));
+      Object.keys(localStorage)
+        .filter(k => k.startsWith("crm_waha_msgs_") || k.startsWith("crm_img_"))
+        .forEach(k => { try { localStorage.removeItem(k); } catch {} });
       localStorage.setItem("crm_" + CHATS_KEY, JSON.stringify({
         value: slim, expires: Date.now() + CHATS_TTL,
       }));
@@ -152,9 +178,11 @@ function detectAutoResolve(msgs) {
 
 export function useWAHA(operator) {
   const [chats,    setChats]    = useState(() => {
-    // Tenta cache utility primeiro, depois localStorage direto como fallback
-    const fromCache = cache.get(CHATS_KEY);
-    if (fromCache?.length) return fromCache;
+    // 1. Sessão atual (re-render sem F5) — objetos completos
+    if (_sessionChats.value?.length && Date.now() < _sessionChats.expires) {
+      return _sessionChats.value;
+    }
+    // 2. localStorage — versão slim (suficiente para exibir o chatlist imediatamente)
     try {
       const raw = localStorage.getItem("crm_" + CHATS_KEY);
       if (raw) {
@@ -299,8 +327,9 @@ export function useWAHA(operator) {
       console.log("[waha] force full sync: buscando 100 dias de histórico");
     }
     try {
-      // ── 1. localStorage: exibe imediatamente enquanto carrega ────
-      let cachedChats = cache.get(CHATS_KEY) || [];
+      // ── 1. Exibe imediatamente enquanto carrega (sessão → localStorage slim) ──
+      let cachedChats = (_sessionChats.value?.length && Date.now() < _sessionChats.expires)
+        ? _sessionChats.value : [];
       if (!cachedChats.length) {
         try {
           const raw = localStorage.getItem("crm_" + CHATS_KEY);
@@ -713,7 +742,7 @@ export function useWAHA(operator) {
         if (existing.find(m => m.id === msg.id)) return prev;
         const semTmp  = removeTmp(existing, [msg]);
         const updated = sortMsgs([...semTmp, msg]);
-        cache.set(MSGS_PREFIX + msgChatId, updated, MSGS_TTL);
+        _sessionMsgs.set(msgChatId, updated);
         return { ...prev, [msgChatId]: updated };
       });
 
@@ -901,8 +930,8 @@ export function useWAHA(operator) {
     } catch {}
     // Não zera unread ao abrir — só zera quando o operador enviar uma resposta
 
-    // ── Cache local: exibe imediatamente ────────────────────────
-    const cached = cache.get(MSGS_PREFIX + chatId);
+    // ── Cache em memória: exibe imediatamente se já carregou antes ──
+    const cached = _sessionMsgs.get(chatId);
     if (cached?.length) {
       setMessages(prev => ({ ...prev, [chatId]: cached }));
     }
@@ -943,7 +972,7 @@ export function useWAHA(operator) {
 
         const wsExtras = existing.filter(m => !ids.has(m.id) && !m.id.startsWith("tmp-"));
         const merged   = sortMsgs([...normalized, ...r2Extras, ...wsExtras]);
-        cache.set(MSGS_PREFIX + chatId, merged, MSGS_TTL);
+        _sessionMsgs.set(chatId, merged);
         return { ...prev, [chatId]: merged };
       });
 
@@ -1021,7 +1050,7 @@ export function useWAHA(operator) {
         const toAdd   = novas.filter(m => !ids.has(m.id));
         if (!toAdd.length) return prev;
         const updated = sortMsgs([...toAdd, ...current]);
-        cache.set(MSGS_PREFIX + chatId, updated, MSGS_TTL);
+        _sessionMsgs.set(chatId, updated);
         return { ...prev, [chatId]: updated };
       });
 
@@ -1065,7 +1094,7 @@ export function useWAHA(operator) {
           if (!toAdd.length) return prev;
           const semTmp  = removeTmp(current, toAdd);
           const updated = sortMsgs([...semTmp, ...toAdd]);
-          cache.set(MSGS_PREFIX + chatId, updated, MSGS_TTL);
+          _sessionMsgs.set(chatId, updated);
           return { ...prev, [chatId]: updated };
         });
 
@@ -1158,7 +1187,7 @@ export function useWAHA(operator) {
     };
     setMessages(prev => {
       const updated = sortMsgs([...(prev[chatId] || []), tmpMsg]);
-      cache.set(MSGS_PREFIX + chatId, updated, MSGS_TTL);
+      _sessionMsgs.set(chatId, updated);
       return { ...prev, [chatId]: updated };
     });
     setChats(prev => {
@@ -1185,7 +1214,7 @@ export function useWAHA(operator) {
     try { await wahaDeleteMessage(chatId, msgId); } catch {}
     setMessages(prev => {
       const updated = (prev[chatId] || []).filter(m => m.id !== msgId);
-      cache.set(MSGS_PREFIX + chatId, updated, MSGS_TTL);
+      _sessionMsgs.set(chatId, updated);
       return { ...prev, [chatId]: updated };
     });
   }, []);
@@ -1196,7 +1225,7 @@ export function useWAHA(operator) {
       const updated = (prev[chatId] || []).map(m =>
         m.id === msgId ? { ...m, text: newText, edited: true } : m
       );
-      cache.set(MSGS_PREFIX + chatId, updated, MSGS_TTL);
+      _sessionMsgs.set(chatId, updated);
       return { ...prev, [chatId]: updated };
     });
   }, []);
