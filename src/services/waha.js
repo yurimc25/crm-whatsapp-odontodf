@@ -233,15 +233,14 @@ export function normalizeMessage(wahaMsg) {
   const ts    = tsMs ? new Date(tsMs).toISOString() : null;
 
   // chatId = ID da conversa (sempre o contato, independente de direção)
-  // Para msgs enviadas (fromMe=true): "from" é o operador — usar chatId/to/key.remoteJid
-  // Para msgs recebidas (fromMe=false): "from" é o contato — correto
-  const chatId = (
-    wahaMsg.chatId
-    || wahaMsg.key?.remoteJid
+  // Nunca usar @lid (Linked ID interno do WhatsApp — não é número de telefone real)
+  // nem @s.whatsapp.net (servidor). Preferir sempre @c.us.
+  const _rawJid = wahaMsg.chatId
+    || (wahaMsg.key?.remoteJid?.includes("@lid") ? null : wahaMsg.key?.remoteJid)
     || (wahaMsg.fromMe ? wahaMsg.to : wahaMsg.from)
     || wahaMsg.from
-    || null
-  )?.replace(/:\d+(@\S+)?$/, ""); // remove device suffix ":3@lid"
+    || null;
+  const chatId = _rawJid?.replace(/:\d+(@\S+)?$/, ""); // remove device suffix ":3"
 
   // ── Detecção de mídia (NOWEB engine) ────────────────────────────
   // NOWEB: hasMedia=true, media=null, type="image", _data.message.imageMessage={...}

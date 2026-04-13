@@ -64,6 +64,14 @@ const CHATS_TTL      = 30 * 24 * 60 * 60 * 1000; // 30 dias
 // Sobrevive re-renders mas NÃO sobrevive F5 (ok — carrega do WAHA ao abrir o chat)
 const _sessionMsgs = new Map(); // chatId → Message[]
 
+// Dedup global de handleMsg — evita duplo incremento de unread quando
+// PartyKit + polling processam a mesma mensagem
+const _handledMsgIds = new Set();
+
+// Cache de resolução LID → JID (@c.us) — sobrevive re-renders, não sobrevive F5
+// Quando WhatsApp usa @lid (Linked ID), precisamos mapear para o número real
+const _lidToJid = new Map(); // lid@lid → 55...@c.us
+
 // Limpeza única na inicialização: remove chaves antigas de mensagens/imagens do localStorage
 // (versões anteriores gravavam msgs lá; agora só usamos memória → libera espaço para os chats)
 try {
@@ -74,6 +82,38 @@ try {
 
 const LAST_SYNC_KEY  = "waha_last_sync_ts";       // timestamp da última sync bem-sucedida
 const ikey           = () => import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
+
+// Resolve um @lid para o JID @c.us real via API de contatos do WAHA.
+// Chats de contas migradas pelo WhatsApp usam LID (Linked ID) internamente —
+// precisamos do número de telefone (@c.us) para rotear para o chat correto.
+// Resultado é cacheado em _lidToJid para evitar chamadas repetidas.
+async function resolveLid(lid) {
+  if (_lidToJid.has(lid)) return _lidToJid.get(lid);
+  try {
+    const SESSION = import.meta.env.VITE_WAHA_SESSION || "default";
+    const encodedLid = encodeURIComponent(lid);
+    // Tenta o endpoint de contatos do WAHA (retorna { id, displayName, phone })
+    const r = await fetch(
+      `/api/waha?path=${encodeURIComponent(`/api/${SESSION}/contacts?contactId=${encodedLid}`)}`,
+      { headers: { "X-Internal-Key": ikey() } }
+    );
+    if (r.ok) {
+      const data = await r.json();
+      // data pode ser objeto único ou array — pega o primeiro resultado
+      const contact = Array.isArray(data) ? data[0] : data;
+      const jid = contact?.id || contact?.phone || null;
+      if (jid && !jid.endsWith("@lid") && !jid.endsWith("@s.whatsapp.net")) {
+        _lidToJid.set(lid, jid);
+        console.log(`[lid] resolvido: ${lid} → ${jid}`);
+        return jid;
+      }
+    }
+  } catch (e) {
+    console.warn("[lid] erro ao resolver:", lid, e?.message);
+  }
+  // Não armazena falha — tenta de novo na próxima mensagem
+  return null;
+}
 
 function getLastSyncTs() {
   try { return parseInt(localStorage.getItem(LAST_SYNC_KEY) || "0"); } catch { return 0; }
@@ -368,17 +408,23 @@ export function useWAHA(operator) {
       ]);
 
       if (!Array.isArray(raw)) return;
+      console.log(`[waha] ${raw.length} chats recebidos do WAHA`);
 
-      const filtered = fromTs
-        ? raw.filter(c => {
-            const lm = c.lastMessage;
-            const ts = lm?.timestamp || lm?.t || 0;
-            return ts === 0 || ts >= fromTs;
-          })
-        : raw;
+      // forceFullSync: sem filtro de data — pega TUDO que o WAHA tem
+      // Carga normal: filtra por fromTs para não reprocessar chats muito antigos
+      const filtered = forceFullSync
+        ? raw
+        : (fromTs
+          ? raw.filter(c => {
+              const lm = c.lastMessage;
+              const ts = lm?.timestamp || lm?.t || 0;
+              return ts === 0 || ts >= fromTs;
+            })
+          : raw);
+      console.log(`[waha] ${filtered.length} chats após filtro de data`);
 
       const dbMeta = dbRes?.chats || {};
-      // R2: mapa de id → { lastMsg, lastTs } — fonte mais recente (atualizado por webhook)
+      // R2: mapa de id → { lastMsg, lastTs, lastPatientTs, unread } — webhook pré-computa
       const r2Map  = Array.isArray(r2Res)
         ? Object.fromEntries(r2Res.map(c => [c.id, c]))
         : {};
@@ -722,6 +768,22 @@ export function useWAHA(operator) {
     function handleMsg(msg) {
       const msgChatId = msg.chatId;
       if (!msgChatId) return;
+
+      // Rejeita IDs em formato @lid (Linked ID interno do WhatsApp — não é número de telefone)
+      // e @s.whatsapp.net (servidor). Criaria chats duplicados sem nome/foto.
+      if (msgChatId.endsWith("@lid") || msgChatId.endsWith("@s.whatsapp.net")) return;
+
+      // Dedup global: evita duplo incremento de unread se PartyKit + polling
+      // processam a mesma mensagem simultaneamente
+      if (msg.id && _handledMsgIds.has(msg.id)) return;
+      if (msg.id) {
+        _handledMsgIds.add(msg.id);
+        if (_handledMsgIds.size > 500) {
+          const oldest = [..._handledMsgIds].slice(0, 250);
+          oldest.forEach(id => _handledMsgIds.delete(id));
+        }
+      }
+
       const isMuted = mutedChatsRef.current.has(msgChatId);
 
       if (msg.from === "patient" && document.hidden && !isMuted) {
@@ -760,6 +822,8 @@ export function useWAHA(operator) {
           });
 
         // Chat ainda não na lista (número novo) — adiciona ao topo
+        // Nunca criar chats para IDs @lid/@s.whatsapp.net (já filtrado antes, mas por segurança)
+        if (!target && (msgChatId.endsWith("@lid") || msgChatId.endsWith("@s.whatsapp.net"))) return prev;
         if (!target) {
           const lpt = isPatient && !autoRes && !isMuted ? msg.ts : null;
           const newChat = {
@@ -823,17 +887,36 @@ export function useWAHA(operator) {
       if (!payload) return;
       if (event === "message" || event === "message.any") {
         const msg = normalizeMessage(payload);
-        // Garante chatId válido (normalizeMessage já prioriza chatId/key.remoteJid/to/from)
-        // Fallback extra: payload.chatId ou payload.from direto
-        if (!msg.chatId) {
-          msg.chatId = (payload.chatId || payload.from || "")
-            .replace(/:\d+(@\S+)?$/, "");
-        }
-        // Enriquece pushname com notifyName do WAHA (não incluído no normalizeMessage)
+
+        // Enriquece pushname com notifyName do WAHA
         if (!msg.pushname) {
           msg.pushname = payload.notifyName || payload._data?.notifyName || "";
         }
-        if (!msg.chatId) return; // sem chatId válido, ignora
+
+        // Se chatId ainda está em @lid, tenta recuperar de payload.from (costuma ser @c.us)
+        if (!msg.chatId || msg.chatId.endsWith("@lid")) {
+          const rawFallback = (payload.from || payload.chatId || "")
+            .replace(/:\d+(@\S+)?$/, "");
+          if (rawFallback && !rawFallback.endsWith("@lid") && !rawFallback.endsWith("@s.whatsapp.net")) {
+            // payload.from já tem o @c.us — resolve imediatamente
+            msg.chatId = rawFallback;
+            handleMsg(msg);
+          } else {
+            // Conta totalmente migrada para LID — chama API do WAHA para resolver
+            const lid = msg.chatId || rawFallback;
+            if (!lid) return;
+            resolveLid(lid).then(jid => {
+              if (jid) {
+                msg.chatId = jid;
+                handleMsg(msg);
+              } else {
+                console.warn("[lid] não foi possível resolver para @c.us, mensagem descartada:", lid);
+              }
+            }).catch(() => {});
+          }
+          return;
+        }
+
         handleMsg(msg);
       } else if (event === "chat.new") {
         handleChatNew(payload);
@@ -1059,10 +1142,12 @@ export function useWAHA(operator) {
     } catch { return { hasMore: false }; }
   }, []);
 
-  // ── Polling mensagens do chat ativo (sempre ativo como fallback) ──
+  // ── Polling mensagens do chat ativo — APENAS como fallback quando WS offline ──
   useEffect(() => {
     if (!sessionOk || USE_MOCK) return;
     const iv = setInterval(async () => {
+      // Só faz polling quando PartyKit está desconectado
+      if (wsConnected.current) return;
       const chatId = activeChatRef.current;
       if (!chatId) return;
       try {
@@ -1428,12 +1513,15 @@ export function useWAHA(operator) {
     }
   }
 
-  // ── Resync completo (botão manual): busca todos os chats paginados + reset de histórico ──
+  // ── Resync completo (botão manual) ──────────────────────────────────────────
+  // Busca TODOS os chats do WAHA (sem filtro de data), sem depender do R2 para quantidade
+  // R2 só enriquece com unread/lastPatientTs — não limita o resultado
   async function resyncChats() {
     if (USE_MOCK) return;
     console.log("[resync] sincronização completa iniciando...");
-    await loadChats(true);         // reset lastSync → busca 100 dias, paginado
-    await applyR2Chats();          // aplica unread/lastPatientTs do R2 por cima
+    // loadChats(true): reset lastSync + forceFullSync=true → sem filtro de data
+    // R2 já é aplicado internamente — não precisa de applyR2Chats() extra
+    await loadChats(true);
     console.log("[resync] concluído");
   }
 }

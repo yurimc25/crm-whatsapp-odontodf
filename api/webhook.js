@@ -51,20 +51,62 @@ function computeUnread(msgs) {
   return count;
 }
 
-// Normaliza payload WAHA para objeto enxuto
+// Normaliza payload WAHA para objeto enxuto.
+// Prefere @c.us em vez de @lid — @lid é ID interno do WhatsApp, não é número de telefone.
 function normalizeMsg(payload) {
   const tsRaw = payload.timestamp || payload._data?.t || 0;
   const tsMs  = tsRaw ? (tsRaw > 1e12 ? tsRaw : tsRaw * 1000) : Date.now();
-  const chatId = (payload.from || payload.chatId || payload.key?.remoteJid || "")
-    .replace(/:.*@/, "@"); // remove device suffix
-  const id     = payload.id || payload.key?.id || `msg-${tsMs}`;
-  const fromMe = payload.fromMe ?? payload._data?.fromMe ?? false;
-  const body   = payload.body || payload._data?.body
+
+  // Coleta candidatos e remove sufixo de dispositivo (":3@...")
+  const candidates = [payload.chatId, payload.from, payload.key?.remoteJid]
+    .filter(Boolean)
+    .map(s => s.replace(/:\d+(@\S+)?$/, ""));
+
+  // Prefere candidato @c.us; fallback para o primeiro disponível (pode ser @lid)
+  const chatId = candidates.find(s => s.endsWith("@c.us") || s.endsWith("@g.us"))
+    || candidates.find(s => !s.endsWith("@s.whatsapp.net"))
+    || candidates[0]
+    || "";
+
+  const id       = payload.id || payload.key?.id || `msg-${tsMs}`;
+  const fromMe   = payload.fromMe ?? payload._data?.fromMe ?? false;
+  const body     = payload.body || payload._data?.body
     || payload.caption || payload._data?.caption || "";
-  const type   = payload.type || payload._data?.type || "chat";
+  const type     = payload.type || payload._data?.type || "chat";
   const pushname = payload.notifyName || payload._data?.notifyName || "";
 
   return { id, chatId, ts: tsMs, fromMe, body, type, pushname };
+}
+
+// Resolve @lid → JID @c.us real via API de contatos do WAHA (server-side).
+// Necessário para contas WhatsApp totalmente migradas para LID (Linked ID).
+async function resolveLidToJid(lid, session) {
+  const wahaUrl = process.env.WAHA_URL;
+  if (!wahaUrl) return null;
+  try {
+    const encodedLid = encodeURIComponent(lid);
+    const r = await fetch(
+      `${wahaUrl}/api/${session}/contacts?contactId=${encodedLid}`,
+      {
+        headers: {
+          "X-Api-Key": process.env.WAHA_API_KEY || "",
+          "Content-Type": "application/json",
+        },
+        signal: AbortSignal.timeout(3000),
+      }
+    );
+    if (!r.ok) return null;
+    const data = await r.json();
+    const contact = Array.isArray(data) ? data[0] : data;
+    const jid = contact?.id || contact?.phone || null;
+    if (jid && !jid.endsWith("@lid") && !jid.endsWith("@s.whatsapp.net")) {
+      console.log(`[webhook/lid] resolvido: ${lid} → ${jid}`);
+      return jid;
+    }
+  } catch (e) {
+    console.warn("[webhook/lid] erro ao resolver:", lid, e?.message);
+  }
+  return null;
 }
 
 // Lê JSON do R2 ou retorna default
@@ -139,20 +181,39 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true, skipped: event || "empty" });
     }
 
+    // ── Resolve @lid → @c.us (se necessário) ─────────────────────────────
+    // @lid (Linked ID) é um ID interno do WhatsApp — não é número de telefone.
+    // Contas migradas enviam mensagens com @lid em vez de @c.us.
+    // Precisamos resolver antes de persistir no R2 e encaminhar ao PartyKit,
+    // para que o frontend roteie a mensagem para o chat @c.us correto.
+    let resolvedPayload = payload;
+    if (event === "message" || event === "message.any") {
+      const rawMsg = normalizeMsg(payload);
+      if (rawMsg.chatId && rawMsg.chatId.endsWith("@lid")) {
+        const jid = await resolveLidToJid(rawMsg.chatId, session || "default");
+        if (jid) {
+          // Injeta chatId resolvido no payload para R2 e PartyKit receberem @c.us
+          resolvedPayload = { ...payload, chatId: jid, from: jid };
+          console.log(`[webhook] @lid resolvido no payload: ${rawMsg.chatId} → ${jid}`);
+        }
+      }
+    }
+
     // ── Persiste no R2 (fire-and-forget — não bloqueia resposta) ──────────
     const r2Enabled = !!(process.env.R2_ACCOUNT_ID && process.env.R2_ACCESS_KEY_ID && process.env.R2_BUCKET_NAME);
     if (r2Enabled) {
       if (event === "message" || event === "message.any") {
-        const msg = normalizeMsg(payload);
-        if (msg.chatId) {
-          // Salva mensagem primeiro, depois atualiza índice com msgs atualizadas
+        const msg = normalizeMsg(resolvedPayload);
+        // Não persiste mensagens com chatId ainda em @lid (não é número real)
+        if (msg.chatId && !msg.chatId.endsWith("@lid") && !msg.chatId.endsWith("@s.whatsapp.net")) {
           saveMessage(msg)
             .then(msgs => updateChatsIndex(msg, msgs))
             .catch(e => console.warn("[r2] save/updateChats:", e.message));
         }
       } else if (event === "chat.new") {
         // Garante que o chat existe no índice mesmo sem mensagem ainda
-        const chatId = (payload.id || payload.chatId || "").replace(/:.*@/, "@");
+        const rawId = (payload.id || payload.chatId || "").replace(/:\d+(@\S+)?$/, "");
+        const chatId = rawId.endsWith("@lid") ? null : rawId; // ignora @lid
         if (chatId) {
           r2Json("chats.json", []).then(chats => {
             if (!chats.find(c => c.id === chatId)) {
@@ -178,7 +239,8 @@ export default async function handler(req, res) {
         "Content-Type": "application/json",
         "x-internal-key": process.env.INTERNAL_API_KEY || "@Deuse10",
       },
-      body: JSON.stringify({ event, payload, session: session || "default" }),
+      // Encaminha payload com @lid já resolvido (se aplicável)
+      body: JSON.stringify({ event, payload: resolvedPayload, session: session || "default" }),
     });
 
     if (!r.ok) {
