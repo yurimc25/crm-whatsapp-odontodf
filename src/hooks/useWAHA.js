@@ -72,6 +72,7 @@ const _handledMsgIds = new Set();
 // Quando WhatsApp usa @lid (Linked ID), precisamos mapear para o número real
 const _lidToJid  = new Map(); // lid@lid → 55...@c.us
 const _lidFailed = new Set(); // LIDs onde resolução falhou esta sessão (não tenta de novo)
+const _lidNames  = new Map(); // lid@lid → nome do contato (null = não encontrado)
 
 // Chats apagados pelo operador — persiste em localStorage
 // Só volta a aparecer se chegar nova mensagem
@@ -108,7 +109,7 @@ function _isValidNewChatId(id) {
 }
 
 // Deduplica lista de chats por tail-8 de telefone, filtrando apagados e IDs inválidos
-// Mesma lógica usada em loadChats — centralizada aqui para reutilização
+// @lid não participa do tail-8 — os dígitos são IDs internos, não telefones
 function _dedupeChats(chats) {
   const deduped = [];
   const seen8   = new Map(); // tail-8 → índice em deduped
@@ -117,7 +118,8 @@ function _dedupeChats(chats) {
     if (_deletedChats.has(chat.id)) { _skipDel++; continue; }
     if (!_isValidChatId(chat.id))   { _skipInv++; continue; }
     const digits = chat.id.replace(/\D/g, "");
-    const tail8  = digits.length >= 8 ? digits.slice(-8) : null;
+    // @lid: não dedup por tail-8 (dígitos @lid não são telefone → causaria mesclagens erradas)
+    const tail8  = !chat.id.endsWith("@lid") && digits.length >= 8 ? digits.slice(-8) : null;
     if (!tail8) { deduped.push(chat); continue; }
     const existIdx = seen8.get(tail8);
     if (existIdx === undefined) {
@@ -177,6 +179,9 @@ async function resolveLid(lid, pushname) {
       if (r.ok) {
         const data = await r.json();
         const contact = Array.isArray(data) ? data[0] : data;
+        // Cacheia o nome sempre que a API responder (mesmo que JID não resolva)
+        const name = contact?.name || contact?.pushname || contact?.notify || null;
+        if (name && !_lidNames.has(lid)) _lidNames.set(lid, name);
         const jid = contact?.id || contact?.phone || null;
         if (jid && !jid.endsWith("@lid") && !jid.endsWith("@s.whatsapp.net")) {
           _lidToJid.set(lid, jid);
@@ -585,7 +590,9 @@ export function useWAHA(operator) {
           if (!local) {
             const r2Lpt = r2?.lastPatientTs ? new Date(r2.lastPatientTs).toISOString() : null;
             const lpt   = isMuted ? null : r2Lpt;
-            const unread = isMuted || !lpt ? 0 : r2?.unread || 0;
+            // Se há dados R2: usa r2.unread (só conta se há lastPatientTs).
+            // Se não há R2 (ex: contatos @lid nunca vistos antes): usa WAHA diretamente.
+            const unread = isMuted ? 0 : r2 ? (lpt ? r2.unread || 0 : 0) : (n.unread || 0);
             const entry = { ...n, lastMsg: bestLastMsg, lastTs: bestLastTs, lastPatientTs: lpt, unread };
             if (lpt && agora - new Date(lpt).getTime() > TRINTA_DIAS && entry.status !== "resolved") {
               toAutoResolveIds.add(entry.id);
@@ -678,6 +685,13 @@ export function useWAHA(operator) {
         setTimeout(() => loadLastMessages(semMsg), 1000);
       }
 
+      // Resolve nomes dos contatos @lid sem pushname (background, após 2s para não competir com o carregamento inicial)
+      const lidSemNome = normalized.filter(c => c.id.endsWith("@lid") && !c.pushname && !_lidNames.has(c.id));
+      if (lidSemNome.length > 0) {
+        console.log(`[lid] resolving names for ${lidSemNome.length} @lid contacts`);
+        setTimeout(() => loadLidNames(lidSemNome), 2000);
+      }
+
     } catch (e) {
       console.error("[waha] loadChats:", e.message);
       setError("Erro ao carregar conversas");
@@ -749,6 +763,44 @@ export function useWAHA(operator) {
         persistChats(updated);
         return updated;
       });
+    }
+  }
+
+  // ── Resolve nomes dos contatos @lid via API do WAHA (background, lotes de 5) ──
+  // WAHA não inclui pushname nos chats @lid da listagem — busca individualmente
+  async function loadLidNames(lidChats) {
+    const SESSION = import.meta.env.VITE_WAHA_SESSION || "default";
+    const toResolve = lidChats.filter(c => !_lidNames.has(c.id));
+    if (!toResolve.length) return;
+    const BATCH = 5;
+    for (let i = 0; i < toResolve.length; i += BATCH) {
+      const batch = toResolve.slice(i, i + BATCH);
+      await Promise.allSettled(batch.map(async chat => {
+        try {
+          const encodedId = encodeURIComponent(chat.id);
+          const r = await fetch(
+            `/api/waha?path=${encodeURIComponent(`/api/${SESSION}/contacts?contactId=${encodedId}`)}`,
+            { headers: { "X-Internal-Key": ikey() } }
+          );
+          if (!r.ok) { _lidNames.set(chat.id, null); return; }
+          const data = await r.json();
+          const contact = Array.isArray(data) ? data[0] : data;
+          const name = contact?.name || contact?.pushname || contact?.notify || null;
+          _lidNames.set(chat.id, name);
+          if (name) {
+            setChats(prev => {
+              const updated = prev.map(c =>
+                c.id === chat.id && !c.pushname
+                  ? { ...c, pushname: name, name, avatar: name.slice(0, 2).toUpperCase() }
+                  : c
+              );
+              persistChats(updated);
+              return updated;
+            });
+          }
+        } catch { _lidNames.set(chat.id, null); }
+      }));
+      if (i + BATCH < toResolve.length) await new Promise(r => setTimeout(r, 300));
     }
   }
 
