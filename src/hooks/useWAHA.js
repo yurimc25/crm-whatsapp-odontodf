@@ -659,7 +659,9 @@ export function useWAHA(operator) {
 
       markLastSync();
 
-      const chatIds = normalized.map(c => c.id);
+      // Enriquece todos os chats via overview (nome, foto, última mensagem, @lid→@c.us)
+      // Usa normalized (pré-dedup) — IDs não encontrados no state serão ignorados no apply
+      setTimeout(() => enrichViaOverview(normalized), 500);
 
       // Carrega última mensagem dos chats sem lastMsg (resolve "Sem mensagens recentes")
       // Limita aos 15 mais recentes — em lotes de 3 com 500ms intervalo
