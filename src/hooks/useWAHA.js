@@ -84,13 +84,20 @@ function persistDeletedChats() {
   try { localStorage.setItem("crm_deleted", JSON.stringify([..._deletedChats])); } catch {}
 }
 
-// Valida se um chatId é utilizável no chatlist
-// Rejeita @lid, @s.whatsapp.net e IDs numéricos com mais de 13 dígitos
-// (estes últimos são IDs de LID resolvidos incorretamente pela API do WAHA)
+// Valida se um chatId é utilizável no chatlist (para filtrar saída de APIs externas)
+// Rejeita @lid e @s.whatsapp.net — nunca devem aparecer no chatlist
+// IDs com >13 dígitos (LID resolvido incorretamente) só são filtrados ao ADICIONAR chats novos
 function _isValidChatId(id) {
   if (!id) return false;
   if (id.endsWith("@lid")) return false;
   if (id.endsWith("@s.whatsapp.net")) return false;
+  return true;
+}
+
+// Retorna true se o ID parece um número de telefone válido (para chats NOVOS de fontes externas)
+// IDs derivados de @lid incorretamente resolvidos costumam ter >13 dígitos
+function _isValidNewChatId(id) {
+  if (!_isValidChatId(id)) return false;
   if (!id.endsWith("@g.us")) {
     const digits = id.replace(/\D/g, "");
     if (digits.length > 13) return false;
@@ -175,7 +182,7 @@ async function resolveLid(lid, pushname) {
     } catch {}
   }
 
-  // Fallback: busca pelo pushname no chatlist atual
+  // Fallback 1: busca pelo pushname no chatlist atual
   if (pushname && _sessionChats.value?.length) {
     const pn = pushname.trim().toLowerCase();
     const match = _sessionChats.value.find(c =>
@@ -186,6 +193,19 @@ async function resolveLid(lid, pushname) {
       _lidToJid.set(lid, match.id);
       _lidFailed.delete(lid);
       return match.id;
+    }
+  }
+
+  // Fallback 2: LID pode ter sido armazenado como @c.us com os mesmos dígitos (phantom antigo)
+  // Ex: 267769870340186@lid → 267769870340186@c.us já existente no chatlist
+  if (_sessionChats.value?.length) {
+    const lidDigits = lid.replace(/\D/g, "");
+    const phantom = _sessionChats.value.find(c => c.id.replace(/\D/g, "") === lidDigits);
+    if (phantom) {
+      console.log(`[lid] resolvido por phantom ID: ${lid} → ${phantom.id}`);
+      _lidToJid.set(lid, phantom.id);
+      _lidFailed.delete(lid);
+      return phantom.id;
     }
   }
 
@@ -403,10 +423,10 @@ export function useWAHA(operator) {
           };
         });
         // Adiciona chats novos do R2 que não estão na lista local
-        // Filtra IDs inválidos (@lid, >13 dígitos) e verifica dedup por tail-8
+        // Filtra IDs inválidos (@lid, @s.whatsapp.net, >13 dígitos) e verifica dedup por tail-8
         for (const r2 of r2Chats) {
           if (localIds.has(r2.id)) continue;
-          if (!_isValidChatId(r2.id)) continue;
+          if (!_isValidNewChatId(r2.id)) continue;
           const rDigits = r2.id.replace(/\D/g, "");
           const rTail8  = rDigits.length >= 8 ? rDigits.slice(-8) : null;
           if (rTail8 && updated.some(c => {
@@ -1364,11 +1384,11 @@ export function useWAHA(operator) {
               unread:   newUnread,
             };
           });
-          // Chats novos — filtra IDs inválidos e dedup por tail-8
+          // Chats novos — filtra IDs inválidos (@lid, >13 dígitos) e dedup por tail-8
           const ids = new Set(prev.map(c => c.id));
           for (const n of normalized) {
             if (ids.has(n.id)) continue;
-            if (!_isValidChatId(n.id)) continue;
+            if (!_isValidNewChatId(n.id)) continue;
             const nDigits = n.id.replace(/\D/g, "");
             const nTail8  = nDigits.length >= 8 ? nDigits.slice(-8) : null;
             if (nTail8 && updated.some(c => {
@@ -1656,9 +1676,8 @@ export function useWAHA(operator) {
         });
         const wahaIds = new Set(normalized.map(c => c.id));
         for (const c of prev) if (!wahaIds.has(c.id)) merged.push(c);
-        const deduped = _dedupeChats(merged);
-        persistChats(deduped);
-        return deduped;
+        persistChats(merged);
+        return merged;
       });
     } catch (e) {
       console.error("[light-resync]", e.message);
