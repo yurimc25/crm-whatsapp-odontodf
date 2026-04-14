@@ -79,6 +79,7 @@ const _deletedChats = new Set();
 try {
   const raw = localStorage.getItem("crm_deleted");
   if (raw) JSON.parse(raw).forEach(id => _deletedChats.add(id));
+  console.log(`[init] _deletedChats: ${_deletedChats.size} IDs apagados`);
 } catch {}
 function persistDeletedChats() {
   try { localStorage.setItem("crm_deleted", JSON.stringify([..._deletedChats])); } catch {}
@@ -110,9 +111,10 @@ function _isValidNewChatId(id) {
 function _dedupeChats(chats) {
   const deduped = [];
   const seen8   = new Map(); // tail-8 → índice em deduped
+  let _skipDel = 0, _skipInv = 0, _skipMerge = 0;
   for (const chat of chats) {
-    if (_deletedChats.has(chat.id)) continue;
-    if (!_isValidChatId(chat.id)) continue;
+    if (_deletedChats.has(chat.id)) { _skipDel++; continue; }
+    if (!_isValidChatId(chat.id))   { _skipInv++; continue; }
     const digits = chat.id.replace(/\D/g, "");
     const tail8  = digits.length >= 8 ? digits.slice(-8) : null;
     if (!tail8) { deduped.push(chat); continue; }
@@ -121,6 +123,7 @@ function _dedupeChats(chats) {
       seen8.set(tail8, deduped.length);
       deduped.push(chat);
     } else {
+      _skipMerge++;
       const ex    = deduped[existIdx];
       const exTs  = ex.lastTs  ? new Date(ex.lastTs).getTime()   : 0;
       const newTs = chat.lastTs ? new Date(chat.lastTs).getTime() : 0;
@@ -135,6 +138,7 @@ function _dedupeChats(chats) {
       };
     }
   }
+  console.log(`[dedup] entrada=${chats.length} saída=${deduped.length} apagados=${_skipDel} inválidos=${_skipInv} mesclados=${_skipMerge}`);
   return deduped;
 }
 
@@ -398,7 +402,8 @@ export function useWAHA(operator) {
       const r2Map = Object.fromEntries(r2Chats.map(c => [c.id, c]));
       setChats(prev => {
         const base = prev.length ? prev : fallbackChats;
-        if (!base.length) return prev; // sem base, aguarda WAHA carregar
+        if (!base.length) { console.log("[r2] applyR2Chats: sem base, aguardando WAHA"); return prev; }
+        console.log(`[r2] applyR2Chats: prev=${prev.length} base=${base.length}`);
         const localIds = new Set(base.map(c => c.id));
         let changed = false;
         const updated = base.map(c => {
@@ -630,6 +635,7 @@ export function useWAHA(operator) {
         // ── Deduplica por tail-8 de telefone (cobre @lid resolvido, formato antigo/novo BR)
         // e filtra chats apagados pelo operador + IDs inválidos (@lid, >13 dígitos)
         const deduped = _dedupeChats(merged);
+        console.log(`[waha] loadChats setChats: prev=${prev.length} merged=${merged.length} deduped=${deduped.length}`);
 
         persistChats(deduped);
         // Persiste auto-resolves no MongoDB em background
