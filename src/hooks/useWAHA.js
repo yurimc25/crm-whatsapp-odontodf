@@ -84,6 +84,53 @@ function persistDeletedChats() {
   try { localStorage.setItem("crm_deleted", JSON.stringify([..._deletedChats])); } catch {}
 }
 
+// Valida se um chatId é utilizável no chatlist
+// Rejeita @lid, @s.whatsapp.net e IDs numéricos com mais de 13 dígitos
+// (estes últimos são IDs de LID resolvidos incorretamente pela API do WAHA)
+function _isValidChatId(id) {
+  if (!id) return false;
+  if (id.endsWith("@lid")) return false;
+  if (id.endsWith("@s.whatsapp.net")) return false;
+  if (!id.endsWith("@g.us")) {
+    const digits = id.replace(/\D/g, "");
+    if (digits.length > 13) return false;
+  }
+  return true;
+}
+
+// Deduplica lista de chats por tail-8 de telefone, filtrando apagados e IDs inválidos
+// Mesma lógica usada em loadChats — centralizada aqui para reutilização
+function _dedupeChats(chats) {
+  const deduped = [];
+  const seen8   = new Map(); // tail-8 → índice em deduped
+  for (const chat of chats) {
+    if (_deletedChats.has(chat.id)) continue;
+    if (!_isValidChatId(chat.id)) continue;
+    const digits = chat.id.replace(/\D/g, "");
+    const tail8  = digits.length >= 8 ? digits.slice(-8) : null;
+    if (!tail8) { deduped.push(chat); continue; }
+    const existIdx = seen8.get(tail8);
+    if (existIdx === undefined) {
+      seen8.set(tail8, deduped.length);
+      deduped.push(chat);
+    } else {
+      const ex    = deduped[existIdx];
+      const exTs  = ex.lastTs  ? new Date(ex.lastTs).getTime()   : 0;
+      const newTs = chat.lastTs ? new Date(chat.lastTs).getTime() : 0;
+      deduped[existIdx] = {
+        ...(newTs > exTs ? chat : ex),
+        id:            ex.id.endsWith("@c.us") ? ex.id : (chat.id.endsWith("@c.us") ? chat.id : ex.id),
+        photoUrl:      ex.photoUrl   || chat.photoUrl,
+        unread:        Math.max(ex.unread || 0, chat.unread || 0),
+        lastPatientTs: ex.lastPatientTs || chat.lastPatientTs,
+        pushname:      ex.pushname   || chat.pushname,
+        status:        ex.status !== "resolved" ? ex.status : chat.status,
+      };
+    }
+  }
+  return deduped;
+}
+
 // Limpeza única na inicialização: remove chaves antigas de mensagens/imagens do localStorage
 // (versões anteriores gravavam msgs lá; agora só usamos memória → libera espaço para os chats)
 try {
@@ -356,8 +403,16 @@ export function useWAHA(operator) {
           };
         });
         // Adiciona chats novos do R2 que não estão na lista local
+        // Filtra IDs inválidos (@lid, >13 dígitos) e verifica dedup por tail-8
         for (const r2 of r2Chats) {
           if (localIds.has(r2.id)) continue;
+          if (!_isValidChatId(r2.id)) continue;
+          const rDigits = r2.id.replace(/\D/g, "");
+          const rTail8  = rDigits.length >= 8 ? rDigits.slice(-8) : null;
+          if (rTail8 && updated.some(c => {
+            const t = c.id.replace(/\D/g, "").slice(-8);
+            return t.length >= 8 && t === rTail8;
+          })) continue;
           const isMuted = mutedChatsRef.current.has(r2.id);
           const lpt = isMuted ? null
             : (r2.lastPatientTs ? new Date(r2.lastPatientTs).toISOString() : null);
@@ -553,35 +608,8 @@ export function useWAHA(operator) {
         }
 
         // ── Deduplica por tail-8 de telefone (cobre @lid resolvido, formato antigo/novo BR)
-        // e filtra chats apagados pelo operador + IDs @lid que escaparam
-        const deduped  = [];
-        const seen8    = new Map(); // tail-8 → índice em deduped
-        for (const chat of merged) {
-          if (_deletedChats.has(chat.id)) continue; // apagado — não exibe
-          if (chat.id.endsWith("@lid")) continue;   // nunca exibe @lid no chatlist
-          const digits = chat.id.replace(/\D/g, "");
-          const tail8  = digits.length >= 8 ? digits.slice(-8) : null;
-          if (!tail8) { deduped.push(chat); continue; }
-          const existIdx = seen8.get(tail8);
-          if (existIdx === undefined) {
-            seen8.set(tail8, deduped.length);
-            deduped.push(chat);
-          } else {
-            // Mescla: prefere @c.us, foto, unread máximo, lastTs mais recente
-            const ex    = deduped[existIdx];
-            const exTs  = ex.lastTs  ? new Date(ex.lastTs).getTime()   : 0;
-            const newTs = chat.lastTs ? new Date(chat.lastTs).getTime() : 0;
-            deduped[existIdx] = {
-              ...(newTs > exTs ? chat : ex),           // base do mais recente
-              id:            ex.id.endsWith("@c.us") ? ex.id : (chat.id.endsWith("@c.us") ? chat.id : ex.id),
-              photoUrl:      ex.photoUrl   || chat.photoUrl,
-              unread:        Math.max(ex.unread || 0, chat.unread || 0),
-              lastPatientTs: ex.lastPatientTs || chat.lastPatientTs,
-              pushname:      ex.pushname   || chat.pushname,
-              status:        ex.status !== "resolved" ? ex.status : chat.status,
-            };
-          }
-        }
+        // e filtra chats apagados pelo operador + IDs inválidos (@lid, >13 dígitos)
+        const deduped = _dedupeChats(merged);
 
         persistChats(deduped);
         // Persiste auto-resolves no MongoDB em background
@@ -1336,10 +1364,18 @@ export function useWAHA(operator) {
               unread:   newUnread,
             };
           });
-          // Chats novos
+          // Chats novos — filtra IDs inválidos e dedup por tail-8
           const ids = new Set(prev.map(c => c.id));
           for (const n of normalized) {
-            if (!ids.has(n.id)) { updated.push(n); changed = true; precisamMsg.push(n.id); }
+            if (ids.has(n.id)) continue;
+            if (!_isValidChatId(n.id)) continue;
+            const nDigits = n.id.replace(/\D/g, "");
+            const nTail8  = nDigits.length >= 8 ? nDigits.slice(-8) : null;
+            if (nTail8 && updated.some(c => {
+              const t = c.id.replace(/\D/g, "").slice(-8);
+              return t.length >= 8 && t === nTail8;
+            })) continue;
+            updated.push(n); changed = true; precisamMsg.push(n.id);
           }
           if (!changed) return prev;
           persistChats(updated);
@@ -1620,8 +1656,9 @@ export function useWAHA(operator) {
         });
         const wahaIds = new Set(normalized.map(c => c.id));
         for (const c of prev) if (!wahaIds.has(c.id)) merged.push(c);
-        persistChats(merged);
-        return merged;
+        const deduped = _dedupeChats(merged);
+        persistChats(deduped);
+        return deduped;
       });
     } catch (e) {
       console.error("[light-resync]", e.message);
