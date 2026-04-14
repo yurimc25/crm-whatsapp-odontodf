@@ -33,14 +33,27 @@ function formatTimeSince(ts, now = Date.now()) {
 
 export default function ChatList({
   chats, activeId, search, onSearch, onSelect,
-  onForward, onMarkRead, onMarkUnread, loading, onStartNewChat, searchMessages, operator,
+  onForward, onMarkRead, onMarkUnread, onDelete, loading, onStartNewChat, searchMessages, operator,
   resyncKey, mutedChats, onMute, onUnmute,
+  agendaOpen: agendaOpenProp, onAgendaToggle,
 }) {
   const PAGE = 30; // itens iniciais
   const MORE = 20; // itens por scroll
 
+  // agendaOpen pode ser controlado pelo pai (mobile) ou internamente (desktop sem prop)
+  const [agendaOpenLocal, setAgendaOpenLocal] = useState(false);
+  const agendaOpen = agendaOpenProp !== undefined ? agendaOpenProp : agendaOpenLocal;
+  const toggleAgenda = onAgendaToggle || (() => setAgendaOpenLocal(v => !v));
+
+  // Busca com debounce: input local → prop onSearch após 350ms de pausa
+  const [inputValue, setInputValue] = useState(search || "");
+  useEffect(() => { setInputValue(search || ""); }, [search]);
+  useEffect(() => {
+    const t = setTimeout(() => onSearch(inputValue), 350);
+    return () => clearTimeout(t);
+  }, [inputValue]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const [ctxMenu, setCtxMenu]       = useState(null);
-  const [agendaOpen, setAgendaOpen] = useState(false);
   const [now, setNow]               = useState(Date.now());
 
   // Atualiza o timer "tempo sem resposta" a cada 30s
@@ -203,15 +216,24 @@ export default function ChatList({
           <div style={{ flex:1, position:"relative" }}>
             <span style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)",
               color:T.sub, fontSize:13, pointerEvents:"none" }}>🔍</span>
-            <input value={search} onChange={e => onSearch(e.target.value)}
+            <input value={inputValue} onChange={e => setInputValue(e.target.value)}
               placeholder="Buscar paciente ou número..."
               style={{ width:"100%", background:T.inputBg, border:`1px solid ${T.border}`,
-                borderRadius:8, padding:"8px 12px 8px 32px", color:T.text,
+                borderRadius:8, padding:"8px 32px 8px 32px", color:T.text,
                 fontSize:13, outline:"none", boxSizing:"border-box" }} />
+            {inputValue && (
+              <button
+                onClick={() => { setInputValue(""); onSearch(""); }}
+                style={{ position:"absolute", right:8, top:"50%", transform:"translateY(-50%)",
+                  background:"none", border:"none", color:T.sub, fontSize:15,
+                  cursor:"pointer", padding:"0 2px", lineHeight:1 }}>
+                ×
+              </button>
+            )}
           </div>
           {/* Botão filtro por agenda */}
           <button
-            onClick={() => setAgendaOpen(v => !v)}
+            onClick={toggleAgenda}
             title={agendaOpen ? "Fechar agenda" : "Filtrar por agenda Doctoralia"}
             style={{
               flexShrink:0, width:34, height:34,
@@ -397,6 +419,7 @@ export default function ChatList({
           onMarkUnread={onMarkUnread}
           onMute={onMute}
           onUnmute={onUnmute}
+          onDelete={onDelete}
         />
       )}
     </div>
@@ -545,7 +568,7 @@ function ChatItem({ chat, active, onClick, onOpenMenu, isMuted, now }) {
   );
 }
 
-function ContextMenu({ x, y, chat, isMuted, onClose, onForward, onMarkRead, onMarkUnread, onMute, onUnmute }) {
+function ContextMenu({ x, y, chat, isMuted, onClose, onForward, onMarkRead, onMarkUnread, onMute, onUnmute, onDelete }) {
   const menuRef = useRef(null);
 
   useEffect(() => {
@@ -607,6 +630,14 @@ function ContextMenu({ x, y, chat, isMuted, onClose, onForward, onMarkRead, onMa
         ? menuItem("🔔  Ativar notificações",  () => onUnmute?.(chat.id))
         : menuItem("🔕  Silenciar",             () => onMute?.(chat.id))
       }
+
+      <div style={{ height:1, background:T.border, margin:"4px 0" }} />
+
+      {menuItem("🗑️  Apagar conversa", () => {
+        if (window.confirm(`Apagar conversa com ${chat.name || chat.phone || chat.id}?\n\nO histórico será removido. A conversa só volta a aparecer se chegarem novas mensagens.`)) {
+          onDelete?.(chat.id);
+        }
+      }, T.red)}
     </div>
   );
 }

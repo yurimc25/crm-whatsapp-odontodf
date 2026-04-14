@@ -37,13 +37,14 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
   const [showNewChat, setShowNewChat]   = useState(false);
   const [newChatPhone, setNewChatPhone] = useState(null);
   const [resyncKey, setResyncKey]       = useState(0);
+  const [agendaOpen, setAgendaOpen]     = useState(false);
 
   const { displayName } = useContactsCtx();
 
   const {
     chats, messages, loadMessages, loadOlderMessages, send, deleteMsg, editMsg,
-    forwardChat, resolveChat, markRead, markUnread, searchMessages,
-    resyncChats, mutedChats, muteChat, unmuteChat, loading, error, wsStatus,
+    deleteChat, forwardChat, resolveChat, markRead, markUnread, searchMessages,
+    resyncChats, mutedChats, muteChat, unmuteChat, loading, error, wsStatus, myJid,
   } = useWAHA(operator);
 
   const perms = ROLE_PERMISSIONS[operator.role] || {};
@@ -56,6 +57,7 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
   }
 
   const enrichedChats = chats
+    .filter(c => !myJid || c.id !== myJid)
     .filter(canSeeChat)
     .filter(c => filter === "all" || c.status === filter)
     .map(c => ({
@@ -267,6 +269,7 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
             onForward={(chatId, toRole) => forwardChat(chatId, toRole)}
             onMarkRead={markRead}
             onMarkUnread={markUnread}
+            onDelete={deleteChat}
             loading={loading}
             operator={operator}
             searchMessages={searchMessages}
@@ -274,6 +277,8 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
             mutedChats={mutedChats}
             onMute={muteChat}
             onUnmute={unmuteChat}
+            agendaOpen={agendaOpen}
+            onAgendaToggle={() => setAgendaOpen(v => !v)}
             onStartNewChat={phone => {
               const digits = phone.replace(/\D/g, "");
               const chatId = digits.startsWith("55") ? `${digits}@c.us` : `55${digits}@c.us`;

@@ -70,7 +70,19 @@ const _handledMsgIds = new Set();
 
 // Cache de resolução LID → JID (@c.us) — sobrevive re-renders, não sobrevive F5
 // Quando WhatsApp usa @lid (Linked ID), precisamos mapear para o número real
-const _lidToJid = new Map(); // lid@lid → 55...@c.us
+const _lidToJid  = new Map(); // lid@lid → 55...@c.us
+const _lidFailed = new Set(); // LIDs onde resolução falhou esta sessão (não tenta de novo)
+
+// Chats apagados pelo operador — persiste em localStorage
+// Só volta a aparecer se chegar nova mensagem
+const _deletedChats = new Set();
+try {
+  const raw = localStorage.getItem("crm_deleted");
+  if (raw) JSON.parse(raw).forEach(id => _deletedChats.add(id));
+} catch {}
+function persistDeletedChats() {
+  try { localStorage.setItem("crm_deleted", JSON.stringify([..._deletedChats])); } catch {}
+}
 
 // Limpeza única na inicialização: remove chaves antigas de mensagens/imagens do localStorage
 // (versões anteriores gravavam msgs lá; agora só usamos memória → libera espaço para os chats)
@@ -83,35 +95,56 @@ try {
 const LAST_SYNC_KEY  = "waha_last_sync_ts";       // timestamp da última sync bem-sucedida
 const ikey           = () => import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
 
-// Resolve um @lid para o JID @c.us real via API de contatos do WAHA.
-// Chats de contas migradas pelo WhatsApp usam LID (Linked ID) internamente —
-// precisamos do número de telefone (@c.us) para rotear para o chat correto.
-// Resultado é cacheado em _lidToJid para evitar chamadas repetidas.
-async function resolveLid(lid) {
+// Resolve um @lid para o JID @c.us real.
+// Estratégia (em ordem):
+//   1. Cache (_lidToJid) — resultado anterior
+//   2. API de contatos do WAHA
+//   3. Busca por pushname no chatlist atual (_sessionChats)
+// Falhas ficam em _lidFailed para evitar chamadas repetidas.
+async function resolveLid(lid, pushname) {
   if (_lidToJid.has(lid)) return _lidToJid.get(lid);
-  try {
-    const SESSION = import.meta.env.VITE_WAHA_SESSION || "default";
-    const encodedLid = encodeURIComponent(lid);
-    // Tenta o endpoint de contatos do WAHA (retorna { id, displayName, phone })
-    const r = await fetch(
-      `/api/waha?path=${encodeURIComponent(`/api/${SESSION}/contacts?contactId=${encodedLid}`)}`,
-      { headers: { "X-Internal-Key": ikey() } }
-    );
-    if (r.ok) {
-      const data = await r.json();
-      // data pode ser objeto único ou array — pega o primeiro resultado
-      const contact = Array.isArray(data) ? data[0] : data;
-      const jid = contact?.id || contact?.phone || null;
-      if (jid && !jid.endsWith("@lid") && !jid.endsWith("@s.whatsapp.net")) {
-        _lidToJid.set(lid, jid);
-        console.log(`[lid] resolvido: ${lid} → ${jid}`);
-        return jid;
+  if (_lidFailed.has(lid)) {
+    // Se agora temos pushname, tenta match mesmo assim
+    if (!pushname) return null;
+  } else {
+    // Tenta API de contatos do WAHA
+    try {
+      const SESSION = import.meta.env.VITE_WAHA_SESSION || "default";
+      const encodedLid = encodeURIComponent(lid);
+      const r = await fetch(
+        `/api/waha?path=${encodeURIComponent(`/api/${SESSION}/contacts?contactId=${encodedLid}`)}`,
+        { headers: { "X-Internal-Key": ikey() } }
+      );
+      if (r.ok) {
+        const data = await r.json();
+        const contact = Array.isArray(data) ? data[0] : data;
+        const jid = contact?.id || contact?.phone || null;
+        if (jid && !jid.endsWith("@lid") && !jid.endsWith("@s.whatsapp.net")) {
+          _lidToJid.set(lid, jid);
+          console.log(`[lid] resolvido via API: ${lid} → ${jid}`);
+          return jid;
+        }
       }
-    }
-  } catch (e) {
-    console.warn("[lid] erro ao resolver:", lid, e?.message);
+    } catch {}
   }
-  // Não armazena falha — tenta de novo na próxima mensagem
+
+  // Fallback: busca pelo pushname no chatlist atual
+  if (pushname && _sessionChats.value?.length) {
+    const pn = pushname.trim().toLowerCase();
+    const match = _sessionChats.value.find(c =>
+      c.pushname && c.pushname.trim().toLowerCase() === pn
+    );
+    if (match) {
+      console.log(`[lid] resolvido por pushname "${pushname}": ${lid} → ${match.id}`);
+      _lidToJid.set(lid, match.id);
+      _lidFailed.delete(lid);
+      return match.id;
+    }
+  }
+
+  // Marca como falha para não repetir chamada API (mas permite nova tentativa com pushname)
+  _lidFailed.add(lid);
+  if (_lidFailed.size > 200) _lidFailed.delete([..._lidFailed][0]);
   return null;
 }
 
@@ -241,6 +274,9 @@ export function useWAHA(operator) {
     try { return new Set(JSON.parse(localStorage.getItem("crm_muted") || "[]")); }
     catch { return new Set(); }
   });
+  const [myJid, setMyJid] = useState(() => {
+    try { return localStorage.getItem("crm_my_jid") || null; } catch { return null; }
+  });
 
   const activeChatRef   = useRef(null);
   const socketRef       = useRef(null);
@@ -260,6 +296,10 @@ export function useWAHA(operator) {
       try {
         const s = await getSessionStatus();
         setSessionOk(s.status === "WORKING" || s.status === "CONNECTED");
+        if (s.me?.id) {
+          setMyJid(s.me.id);
+          try { localStorage.setItem("crm_my_jid", s.me.id); } catch {}
+        }
         setError(null);
       } catch {
         setSessionOk(false);
@@ -512,7 +552,38 @@ export function useWAHA(operator) {
           if (!wahaIds.has(c.id)) merged.push(c); // preserva sem modificar
         }
 
-        persistChats(merged);
+        // ── Deduplica por tail-8 de telefone (cobre @lid resolvido, formato antigo/novo BR)
+        // e filtra chats apagados pelo operador + IDs @lid que escaparam
+        const deduped  = [];
+        const seen8    = new Map(); // tail-8 → índice em deduped
+        for (const chat of merged) {
+          if (_deletedChats.has(chat.id)) continue; // apagado — não exibe
+          if (chat.id.endsWith("@lid")) continue;   // nunca exibe @lid no chatlist
+          const digits = chat.id.replace(/\D/g, "");
+          const tail8  = digits.length >= 8 ? digits.slice(-8) : null;
+          if (!tail8) { deduped.push(chat); continue; }
+          const existIdx = seen8.get(tail8);
+          if (existIdx === undefined) {
+            seen8.set(tail8, deduped.length);
+            deduped.push(chat);
+          } else {
+            // Mescla: prefere @c.us, foto, unread máximo, lastTs mais recente
+            const ex    = deduped[existIdx];
+            const exTs  = ex.lastTs  ? new Date(ex.lastTs).getTime()   : 0;
+            const newTs = chat.lastTs ? new Date(chat.lastTs).getTime() : 0;
+            deduped[existIdx] = {
+              ...(newTs > exTs ? chat : ex),           // base do mais recente
+              id:            ex.id.endsWith("@c.us") ? ex.id : (chat.id.endsWith("@c.us") ? chat.id : ex.id),
+              photoUrl:      ex.photoUrl   || chat.photoUrl,
+              unread:        Math.max(ex.unread || 0, chat.unread || 0),
+              lastPatientTs: ex.lastPatientTs || chat.lastPatientTs,
+              pushname:      ex.pushname   || chat.pushname,
+              status:        ex.status !== "resolved" ? ex.status : chat.status,
+            };
+          }
+        }
+
+        persistChats(deduped);
         // Persiste auto-resolves no MongoDB em background
         if (toAutoResolveIds.size > 0) {
           console.log(`[waha] auto-resolve: ${toAutoResolveIds.size} chats com >30 dias`);
@@ -528,7 +599,7 @@ export function useWAHA(operator) {
             }).catch(() => {})
           ));
         }
-        return merged;
+        return deduped;
       });
 
       markLastSync();
@@ -769,9 +840,21 @@ export function useWAHA(operator) {
       const msgChatId = msg.chatId;
       if (!msgChatId) return;
 
-      // Rejeita IDs em formato @lid (Linked ID interno do WhatsApp — não é número de telefone)
-      // e @s.whatsapp.net (servidor). Criaria chats duplicados sem nome/foto.
+      // Rejeita IDs em formato @lid e @s.whatsapp.net — criaria chats duplicados sem nome/foto.
       if (msgChatId.endsWith("@lid") || msgChatId.endsWith("@s.whatsapp.net")) return;
+
+      // Chat apagado pelo operador → restaura ao receber nova mensagem, limpando histórico antigo
+      if (_deletedChats.has(msgChatId)) {
+        _deletedChats.delete(msgChatId);
+        persistDeletedChats();
+        _sessionMsgs.delete(msgChatId);
+        setMessages(prev => {
+          if (!(msgChatId in prev)) return prev;
+          const next = { ...prev };
+          delete next[msgChatId];
+          return next;
+        });
+      }
 
       // Dedup global: evita duplo incremento de unread se PartyKit + polling
       // processam a mesma mensagem simultaneamente
@@ -799,27 +882,33 @@ export function useWAHA(operator) {
         } catch {}
       }
 
+      // Resolve efetivo chatId via _sessionChats (não requer state) para garantir que
+      // setMessages e setChats usem o mesmo ID — cobre variações de formato (com/sem 9 BR)
+      const msgDigits = msgChatId.replace(/\D/g, "");
+      const msgTail10 = msgDigits.slice(-10);
+      const msgTail8  = msgDigits.slice(-8);
+      const _findTarget = (list) => list.find(c => c.id === msgChatId)
+        || list.find(c => { const t = c.id.replace(/\D/g, "").slice(-10); return t.length >= 8 && t === msgTail10; })
+        || (msgTail8.length >= 8 ? list.find(c => { const t = c.id.replace(/\D/g, "").slice(-8); return t.length >= 8 && t === msgTail8; }) : null);
+      const preTarget = _findTarget(_sessionChats.value || []);
+      const effectiveId = preTarget?.id || msgChatId;
+
       setMessages(prev => {
-        const existing = prev[msgChatId] || [];
+        const existing = prev[effectiveId] || [];
         if (existing.find(m => m.id === msg.id)) return prev;
         const semTmp  = removeTmp(existing, [msg]);
         const updated = sortMsgs([...semTmp, msg]);
-        _sessionMsgs.set(msgChatId, updated);
-        return { ...prev, [msgChatId]: updated };
+        _sessionMsgs.set(effectiveId, updated);
+        return { ...prev, [effectiveId]: updated };
       });
 
       setChats(prev => {
         const isPatient = msg.from === "patient";
         const autoRes   = isPatient && isFarewell(msg.text);
         const lastMsg   = msg.text || (msg.location ? "📍 Localização" : msg.media ? "📎 Mídia" : "");
-        const msgTail   = msgChatId.replace(/\D/g, "").slice(-10);
 
-        // Encontra o chat por ID exato ou por tail de telefone (cobre variações com/sem 9, DDI)
-        const target = prev.find(c => c.id === msgChatId)
-          || prev.find(c => {
-            const t = c.id.replace(/\D/g, "").slice(-10);
-            return t.length >= 8 && t === msgTail;
-          });
+        // Encontra o chat por ID exato, depois por tail-10 e tail-8
+        const target = _findTarget(prev);
 
         // Chat ainda não na lista (número novo) — adiciona ao topo
         // Nunca criar chats para IDs @lid/@s.whatsapp.net (já filtrado antes, mas por segurança)
@@ -905,12 +994,12 @@ export function useWAHA(operator) {
             // Conta totalmente migrada para LID — chama API do WAHA para resolver
             const lid = msg.chatId || rawFallback;
             if (!lid) return;
-            resolveLid(lid).then(jid => {
+            resolveLid(lid, msg.pushname).then(jid => {
               if (jid) {
                 msg.chatId = jid;
                 handleMsg(msg);
               } else {
-                console.warn("[lid] não foi possível resolver para @c.us, mensagem descartada:", lid);
+                console.warn("[lid] não resolvido, descartado:", lid, msg.pushname ? `(pushname: ${msg.pushname})` : "");
               }
             }).catch(() => {});
           }
@@ -978,7 +1067,12 @@ export function useWAHA(operator) {
           setWsStatus("reconnecting");
         };
 
-        socketRef.current = { close: () => ps.close() };
+        // Heartbeat a cada 25s — mantém WS vivo em browsers que suspendem conexões ociosas
+        const heartbeat = setInterval(() => {
+          try { if (ps.readyState === 1) ps.send(JSON.stringify({ type: "ping" })); } catch {}
+        }, 25000);
+
+        socketRef.current = { close: () => { clearInterval(heartbeat); ps.close(); } };
       });
 
       return () => {
@@ -1424,6 +1518,25 @@ export function useWAHA(operator) {
     return results.slice(0, 20);
   }, [messages, chats]);
 
+  // ── Apagar conversa ──────────────────────────────────────────
+  // Remove da lista local e do histórico. Só volta se chegar nova mensagem.
+  const deleteChat = useCallback((chatId) => {
+    _deletedChats.add(chatId);
+    persistDeletedChats();
+    _sessionMsgs.delete(chatId);
+    setMessages(prev => {
+      if (!(chatId in prev)) return prev;
+      const next = { ...prev };
+      delete next[chatId];
+      return next;
+    });
+    setChats(prev => {
+      const updated = prev.filter(c => c.id !== chatId);
+      persistChats(updated);
+      return updated;
+    });
+  }, []);
+
   return {
     chats, setChats,
     messages,
@@ -1432,6 +1545,7 @@ export function useWAHA(operator) {
     send,
     deleteMsg,
     editMsg,
+    deleteChat,
     forwardChat,
     resolveChat,
     markRead,
@@ -1444,6 +1558,7 @@ export function useWAHA(operator) {
     loading,
     error,
     wsStatus,
+    myJid,
   };
 
   // ── Resync leve (automático, a cada 5 min): limit=200 via proxy, sem reset de lastSync ──

@@ -43,6 +43,12 @@ function findChatByPhone(phone, chats) {
   return null;
 }
 
+function shiftDate(dateStr, delta) {
+  const d = new Date(dateStr + "T12:00:00");
+  d.setDate(d.getDate() + delta);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+}
+
 export default function AgendaFilter({ chats, onSelectChat, onStartNewChat }) {
   const [date, setDate]           = useState(todayStr());
   const [doctors, setDoctors]     = useState([]);
@@ -109,23 +115,45 @@ export default function AgendaFilter({ chats, onSelectChat, onStartNewChat }) {
   return (
     <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
 
-      {/* Seletor de data */}
+      {/* Seletor de data com navegação */}
       <div style={{ padding:"10px 12px 8px", flexShrink:0 }}>
         <label style={{ color:T.sub, fontSize:10, fontWeight:600,
           textTransform:"uppercase", letterSpacing:.5, display:"block", marginBottom:4 }}>
           Data
         </label>
-        <input
-          type="date"
-          value={date}
-          onChange={e => setDate(e.target.value)}
-          style={{ width:"100%", background:T.inputBg, border:`1px solid ${T.border}`,
-            borderRadius:8, padding:"7px 10px", color:T.text,
-            fontSize:13, outline:"none", boxSizing:"border-box",
-            colorScheme:"dark" }}
-          onFocus={e => e.target.style.borderColor=T.accent}
-          onBlur={e => e.target.style.borderColor=T.border}
-        />
+        <div style={{ display:"flex", gap:4, alignItems:"center" }}>
+          <button
+            onClick={() => setDate(d => shiftDate(d, -1))}
+            style={{ flexShrink:0, width:30, height:32, background:T.inputBg,
+              border:`1px solid ${T.border}`, borderRadius:6, cursor:"pointer",
+              color:T.sub, fontSize:16, display:"flex", alignItems:"center",
+              justifyContent:"center", transition:"all .15s" }}
+            onMouseEnter={e => { e.currentTarget.style.background=T.hover; e.currentTarget.style.color=T.text; }}
+            onMouseLeave={e => { e.currentTarget.style.background=T.inputBg; e.currentTarget.style.color=T.sub; }}>
+            ‹
+          </button>
+          <input
+            type="date"
+            value={date}
+            onChange={e => setDate(e.target.value)}
+            style={{ flex:1, background:T.inputBg, border:`1px solid ${T.border}`,
+              borderRadius:8, padding:"7px 10px", color:T.text,
+              fontSize:13, outline:"none", boxSizing:"border-box",
+              colorScheme:"dark" }}
+            onFocus={e => e.target.style.borderColor=T.accent}
+            onBlur={e => e.target.style.borderColor=T.border}
+          />
+          <button
+            onClick={() => setDate(d => shiftDate(d, 1))}
+            style={{ flexShrink:0, width:30, height:32, background:T.inputBg,
+              border:`1px solid ${T.border}`, borderRadius:6, cursor:"pointer",
+              color:T.sub, fontSize:16, display:"flex", alignItems:"center",
+              justifyContent:"center", transition:"all .15s" }}
+            onMouseEnter={e => { e.currentTarget.style.background=T.hover; e.currentTarget.style.color=T.text; }}
+            onMouseLeave={e => { e.currentTarget.style.background=T.inputBg; e.currentTarget.style.color=T.sub; }}>
+            ›
+          </button>
+        </div>
       </div>
 
       {/* Lista de dentistas */}
