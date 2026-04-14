@@ -27,7 +27,6 @@ function markBulkFetched() {
 }
 
 export function wahaIdToPhone(wahaId) {
-  if ((wahaId || "").endsWith("@lid")) return ""; // @lid é ID interno, não telefone
   return (wahaId || "").replace(/@.*$/, "").replace(/\D/g, "");
 }
 

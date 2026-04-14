@@ -126,9 +126,7 @@ function isValidPhoneId(id) {
 // Tenta extrair número BR válido de IDs malformados
 // Ex: "5561999611055@c.us" → "5561999611055" (ok)
 // Ex: "276016157200564@c.us" → provavelmente grupo, retorna null
-// Ex: "28862297694324@lid"  → null (@lid é ID interno, não telefone)
 function extractPhone(rawId) {
-  if (rawId.endsWith("@lid")) return null; // @lid = Linked ID interno do WhatsApp, nunca telefone
   const cleanId = rawId.replace(/@.*$/, "").replace(/\D/g, "");
   if (!isValidPhoneId(cleanId)) return null;
   return cleanId;
@@ -154,9 +152,7 @@ export function normalizeChat(wahaChat) {
   const phone    = extractPhone(wahaChat.id);
 
   // pushname = nome público que o contato definiu no WhatsApp
-  // Baileys pode usar 'notify' ou 'notifyName' em vez de 'pushname' para contatos @lid
-  const pushname = wahaChat.name || wahaChat.pushname || wahaChat.notify
-    || wahaChat.notifyName || wahaChat._data?.pushname || wahaChat._data?.notify || null;
+  const pushname = wahaChat.name || wahaChat.pushname || wahaChat._data?.pushname || null;
 
   return {
     id:          wahaChat.id,
