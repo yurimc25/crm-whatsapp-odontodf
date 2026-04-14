@@ -660,7 +660,7 @@ export function useWAHA(operator) {
       markLastSync();
 
       // Enriquece todos os chats via overview (nome, foto, última mensagem, @lid→@c.us)
-      // Usa normalized (pré-dedup) — IDs não encontrados no state serão ignorados no apply
+      // Roda em background após 500ms para não bloquear a renderização inicial
       setTimeout(() => enrichViaOverview(normalized), 500);
 
       // Carrega última mensagem dos chats sem lastMsg (resolve "Sem mensagens recentes")
