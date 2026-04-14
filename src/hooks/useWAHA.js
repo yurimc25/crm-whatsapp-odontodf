@@ -85,20 +85,21 @@ function persistDeletedChats() {
   try { localStorage.setItem("crm_deleted", JSON.stringify([..._deletedChats])); } catch {}
 }
 
-// Valida se um chatId é utilizável no chatlist (para filtrar saída de APIs externas)
-// Rejeita @lid e @s.whatsapp.net — nunca devem aparecer no chatlist
-// IDs com >13 dígitos (LID resolvido incorretamente) só são filtrados ao ADICIONAR chats novos
+// Valida se um chatId pode aparecer no chatlist
+// @s.whatsapp.net = servidor WhatsApp, nunca um contato real
+// @lid = Linked ID — pode ser o ÚNICO identificador válido para contatos migrados → aceitar
 function _isValidChatId(id) {
   if (!id) return false;
-  if (id.endsWith("@lid")) return false;
   if (id.endsWith("@s.whatsapp.net")) return false;
   return true;
 }
 
-// Retorna true se o ID parece um número de telefone válido (para chats NOVOS de fontes externas)
-// IDs derivados de @lid incorretamente resolvidos costumam ter >13 dígitos
+// Versão mais estrita para NOVOS chats adicionados por fontes externas (R2, polling)
+// Ainda rejeita @lid e >13 dígitos @c.us (phantom de resolução incorreta)
 function _isValidNewChatId(id) {
-  if (!_isValidChatId(id)) return false;
+  if (!id) return false;
+  if (id.endsWith("@s.whatsapp.net")) return false;
+  if (id.endsWith("@lid")) return false;
   if (!id.endsWith("@g.us")) {
     const digits = id.replace(/\D/g, "");
     if (digits.length > 13) return false;
@@ -894,8 +895,9 @@ export function useWAHA(operator) {
       const msgChatId = msg.chatId;
       if (!msgChatId) return;
 
-      // Rejeita IDs em formato @lid e @s.whatsapp.net — criaria chats duplicados sem nome/foto.
-      if (msgChatId.endsWith("@lid") || msgChatId.endsWith("@s.whatsapp.net")) return;
+      // Rejeita apenas @s.whatsapp.net — é o servidor, nunca um contato real.
+      // @lid é válido: a maioria dos contatos desta clínica usa @lid como único identificador.
+      if (msgChatId.endsWith("@s.whatsapp.net")) return;
 
       // Chat apagado pelo operador → restaura ao receber nova mensagem, limpando histórico antigo
       if (_deletedChats.has(msgChatId)) {
@@ -965,8 +967,8 @@ export function useWAHA(operator) {
         const target = _findTarget(prev);
 
         // Chat ainda não na lista (número novo) — adiciona ao topo
-        // Nunca criar chats para IDs @lid/@s.whatsapp.net (já filtrado antes, mas por segurança)
-        if (!target && (msgChatId.endsWith("@lid") || msgChatId.endsWith("@s.whatsapp.net"))) return prev;
+        // Nunca criar chats para @s.whatsapp.net; @lid é permitido (contato migrado)
+        if (!target && msgChatId.endsWith("@s.whatsapp.net")) return prev;
         if (!target) {
           const lpt = isPatient && !autoRes && !isMuted ? msg.ts : null;
           const newChat = {
@@ -1049,13 +1051,11 @@ export function useWAHA(operator) {
             const lid = msg.chatId || rawFallback;
             if (!lid) return;
             resolveLid(lid, msg.pushname).then(jid => {
-              if (jid) {
-                msg.chatId = jid;
-                handleMsg(msg);
-              } else {
-                console.warn("[lid] não resolvido, descartado:", lid, msg.pushname ? `(pushname: ${msg.pushname})` : "");
-              }
-            }).catch(() => {});
+              if (jid) msg.chatId = jid;
+              // Resolvido → rota para @c.us; não resolvido → rota para o próprio @lid (válido agora)
+              else console.log(`[lid] não resolvido, roteando para @lid: ${lid}`, msg.pushname ? `(pushname: ${msg.pushname})` : "");
+              handleMsg(msg);
+            }).catch(() => { handleMsg(msg); });
           }
           return;
         }
