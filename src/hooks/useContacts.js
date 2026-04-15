@@ -138,6 +138,11 @@ export function useContacts() {
   const pendingSync = useRef(false);
   // LIDs em processo de resolução (evita chamadas duplicadas)
   const resolvingLids = useRef(new Set());
+  // LIDs que já tentamos resolver e falharam (404/sem phone/sem pushName) — não retenta
+  const failedLids = useRef(new Set());
+  // Ref ao lidPhoneMap atual para uso em callbacks sem criar nova referência a cada mudança
+  const lidPhoneMapRef = useRef(lidPhoneMap);
+  useEffect(() => { lidPhoneMapRef.current = lidPhoneMap; }, [lidPhoneMap]);
 
   // ── Merge seguro no estado + localStorage ─────────────────────
   const mergeMap = useCallback((incoming, source = "") => {
@@ -487,7 +492,9 @@ export function useContacts() {
   const resolveLidAsync = useCallback((lid) => {
     const lidOnly = lid.replace(/@lid$/, "");
     if (resolvingLids.current.has(lidOnly)) return;
-    const cached = lidPhoneMap[lidOnly];
+    // Já tentou e falhou (WAHA não conhece este LID) — não repete a request
+    if (failedLids.current.has(lidOnly)) return;
+    const cached = lidPhoneMapRef.current[lidOnly];
     // Já tem phone: garante lookup de nome pelo telefone resolvido
     if (cached?.phone) {
       const cur = readLocalMap();
@@ -526,11 +533,17 @@ export function useContacts() {
             writeLidCache(updated);
             return updated;
           });
+        } else {
+          // WAHA não conhece este LID — marca como falha para não repetir
+          failedLids.current.add(lidOnly);
         }
-      } catch {}
+      } catch {
+        // Erro de rede ou 404 — marca como falha para não repetir nesta sessão
+        failedLids.current.add(lidOnly);
+      }
       resolvingLids.current.delete(lidOnly);
     })();
-  }, [lidPhoneMap, findInMap, lookupPhone]);
+  }, [findInMap, lookupPhone]);
 
   // ── Resolvers ─────────────────────────────────────────────────
   const resolveName = useCallback((wahaId, pushname) => {

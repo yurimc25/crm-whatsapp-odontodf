@@ -1927,14 +1927,22 @@ export function useWAHA(operator) {
           const ovResolved = ov?.resolvedAt && r2LptMs <= ov.resolvedAt;
           const ovRead = ov?.readAt && r2LptMs <= ov.readAt;
 
-          const r2Lpt   = r2?.lastPatientTs ? new Date(r2.lastPatientTs).getTime() : null;
+          const r2Lpt    = r2?.lastPatientTs ? new Date(r2.lastPatientTs).getTime() : null;
           const localLpt = local?.lastPatientTs ? new Date(local.lastPatientTs).getTime() : null;
+          // Se local está "open" com lastPatientTs definido, R2 pode estar desatualizado —
+          // preserva o estado local para não apagar o timer de espera prematuramente.
+          const localIsOpen = local?.status === "open" && !!local?.lastPatientTs;
           const lpt = isMuted || ovRead || ovResolved ? null
-            : r2?.lastPatientTs !== undefined
-              ? (r2Lpt ? new Date(Math.max(r2Lpt, localLpt || 0)).toISOString() : null)
-              : (local?.lastPatientTs ?? null);
+            : localIsOpen
+              ? local.lastPatientTs  // confia no estado local (WebSocket/handleMsg já atualizou)
+              : r2?.lastPatientTs !== undefined
+                ? (r2Lpt ? new Date(Math.max(r2Lpt, localLpt || 0)).toISOString() : null)
+                : (local?.lastPatientTs ?? null);
 
-          const isResolved = local?.status === "resolved" || ovResolved || lastMsgIsClosing(lastMsg);
+          // Chat é resolvido se: override ativo, lastMsg de fechamento, ou foi resolvido
+          // manualmente (status==="resolved") E não foi reaberto localmente pelo paciente.
+          const localReopened = local?.status === "open" && localLpt && localLpt > (r2LptMs || 0);
+          const isResolved = (!localReopened && local?.status === "resolved") || ovResolved || lastMsgIsClosing(lastMsg);
           const unread = isMuted || isResolved || !lpt || ovRead ? 0
             : r2?.unread !== undefined
               ? Math.max(r2.unread || 0, local?.unread || 0)
