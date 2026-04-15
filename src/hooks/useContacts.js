@@ -566,8 +566,33 @@ export function useContacts() {
     });
   }, [findInMap, lookupPhone]);
 
+  // ── resolveGroupAsync — busca nome do grupo via WAHA (getContactInfo) ──
+  // Grupos @g.us não têm telefone; o nome vem do endpoint /api/contacts?contactId=
+  const resolvingGroups = useRef(new Set());
+  const resolveGroupAsync = useCallback((groupId) => {
+    if (!groupId?.endsWith("@g.us")) return;
+    if (resolvingGroups.current.has(groupId)) return;
+    // Já tem no mapa de contatos?
+    const existing = contactMap[groupId];
+    if (existing) return;
+    resolvingGroups.current.add(groupId);
+    getContactInfo(groupId).then(data => {
+      const name = data?.name || data?.pushname || data?.pushName || null;
+      if (name) {
+        mergeMap({ [groupId]: name }, "local");
+        console.log(`[contacts/group] ${groupId} → ${name}`);
+      }
+    }).catch(() => {}).finally(() => {
+      resolvingGroups.current.delete(groupId);
+    });
+  }, [contactMap, mergeMap]);
+
   // ── Resolvers ─────────────────────────────────────────────────
   const resolveName = useCallback((wahaId, pushname) => {
+    // Grupos: nome vem do contactMap (pelo groupId completo) ou pushname
+    if (wahaId?.endsWith("@g.us")) {
+      return contactMap[wahaId] || pushname || null;
+    }
     const isLid = wahaId?.endsWith("@lid");
     let phone;
     if (isLid) {
@@ -584,6 +609,10 @@ export function useContacts() {
   }, [contactMap, findInMap, lidPhoneMap]);
 
   const displayName = useCallback((wahaId, fallback, pushname) => {
+    // Grupos: retorna direto sem tentar extrair telefone
+    if (wahaId?.endsWith("@g.us")) {
+      return contactMap[wahaId] || pushname || fallback || null;
+    }
     const resolved = resolveName(wahaId, pushname);
     if (resolved) return resolved;
     if (wahaId?.endsWith("@lid")) {
@@ -598,9 +627,19 @@ export function useContacts() {
       return isRawNumber ? formatPhone(fallback.replace(/\D/g,"")) : fallback;
     }
     return formatPhone(wahaIdToPhone(wahaId));
-  }, [resolveName, lidPhoneMap]);
+  }, [resolveName, contactMap, lidPhoneMap]);
 
   const displayInfo = useCallback((wahaId, fallbackName, pushname) => {
+    // Grupos: sem telefone, nome vem do contactMap ou pushname
+    if (wahaId?.endsWith("@g.us")) {
+      const groupName = contactMap[wahaId] || pushname || fallbackName || null;
+      return {
+        hasContact: !!contactMap[wahaId],
+        name:  groupName || "Grupo",
+        line1: groupName || "Grupo",
+        phone: null,
+      };
+    }
     const isLid = wahaId?.endsWith("@lid");
     let phone;
     if (isLid) {
@@ -631,10 +670,10 @@ export function useContacts() {
     // Fallback: pushname do chat > telefone formatado > fallbackName
     const displayLabel = pushname || (fmtPhone !== "—" ? fmtPhone : null) || fallbackName || wahaId || "Desconhecido";
     return { hasContact: false, name: displayLabel, line1: displayLabel, phone: fmtPhone };
-  }, [resolveName, lidPhoneMap]);
+  }, [resolveName, contactMap, lidPhoneMap]);
 
   return {
-    contactMap, lidPhoneMap, resolveName, displayName, displayInfo, resolveLidAsync,
+    contactMap, lidPhoneMap, resolveName, displayName, displayInfo, resolveLidAsync, resolveGroupAsync,
     addLocalContact, removeContact, lookupPhone, lookupPhonePriority, searchByName, loading,
     refresh: fetchGoogleBulk,
   };

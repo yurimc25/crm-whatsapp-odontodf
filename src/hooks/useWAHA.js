@@ -465,7 +465,7 @@ export function useWAHA(operator) {
   const seenMsgIds      = useRef({});     // chatId → Set<id> — dedup fora de state updater
   const mutedChatsRef   = useRef(mutedChats);
   useEffect(() => { mutedChatsRef.current = mutedChats; }, [mutedChats]);
-  const { lookupPhone, lookupPhonePriority, searchByName, addLocalContact, resolveName, displayName, lidPhoneMap, resolveLidAsync } = useContactsCtx();
+  const { lookupPhone, lookupPhonePriority, searchByName, addLocalContact, resolveName, displayName, lidPhoneMap, resolveLidAsync, resolveGroupAsync: _resolveGroupAsync } = useContactsCtx();
   const lidPhoneMapRef2 = useRef(lidPhoneMap);
   useEffect(() => { lidPhoneMapRef2.current = lidPhoneMap; }, [lidPhoneMap]);
   const displayNameRef = useRef(displayName);
@@ -474,6 +474,8 @@ export function useWAHA(operator) {
   useEffect(() => { resolveLidAsyncRef.current = resolveLidAsync; }, [resolveLidAsync]);
   const lookupPhoneRef = useRef(lookupPhone);
   useEffect(() => { lookupPhoneRef.current = lookupPhone; }, [lookupPhone]);
+  const resolveGroupAsyncRef = useRef(_resolveGroupAsync);
+  useEffect(() => { resolveGroupAsyncRef.current = _resolveGroupAsync; }, [_resolveGroupAsync]);
 
   const perms = { verTodos: operator?.role === "gerente" || operator?.role === "admin" };
 
@@ -1966,11 +1968,19 @@ export function useWAHA(operator) {
   function _batchResolveLids() {
     if (USE_MOCK) return;
     const resolve = resolveLidAsyncRef.current;
+    const resolveGroup = resolveGroupAsyncRef.current;
     if (typeof resolve !== "function") return;
     const chats = _sessionChats.value || [];
     const lidCache = readLidPhoneMap();
     let queued = 0;
     for (const c of chats) {
+      // Grupos: busca nome via WAHA se não tem pushname
+      if (c.id?.endsWith("@g.us")) {
+        if (!c.name && !c.pushname && typeof resolveGroup === "function") {
+          resolveGroup(c.id);
+        }
+        continue;
+      }
       if (!c.id?.endsWith("@lid")) continue;
       const lidOnly = c.id.replace(/@lid$/, "");
       const cached = lidCache[lidOnly];
