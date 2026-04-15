@@ -465,11 +465,13 @@ export function useWAHA(operator) {
   const seenMsgIds      = useRef({});     // chatId → Set<id> — dedup fora de state updater
   const mutedChatsRef   = useRef(mutedChats);
   useEffect(() => { mutedChatsRef.current = mutedChats; }, [mutedChats]);
-  const { lookupPhone, lookupPhonePriority, searchByName, addLocalContact, resolveName, displayName, lidPhoneMap } = useContactsCtx();
+  const { lookupPhone, lookupPhonePriority, searchByName, addLocalContact, resolveName, displayName, lidPhoneMap, resolveLidAsync } = useContactsCtx();
   const lidPhoneMapRef2 = useRef(lidPhoneMap);
   useEffect(() => { lidPhoneMapRef2.current = lidPhoneMap; }, [lidPhoneMap]);
   const displayNameRef = useRef(displayName);
   useEffect(() => { displayNameRef.current = displayName; }, [displayName]);
+  const resolveLidAsyncRef = useRef(resolveLidAsync);
+  useEffect(() => { resolveLidAsyncRef.current = resolveLidAsync; }, [resolveLidAsync]);
 
   const perms = { verTodos: operator?.role === "gerente" || operator?.role === "admin" };
 
@@ -502,6 +504,8 @@ export function useWAHA(operator) {
     loadChats().then(() => {
       // Após carregar, envia estado local para R2 para manter base multi-usuário atualizada
       setTimeout(_syncChatsToR2, 5000);
+      // Inicia resolução em lote de todos os @lid pendentes
+      setTimeout(_batchResolveLids, 8000);
     });
   }, [sessionOk]);
 
@@ -623,6 +627,7 @@ export function useWAHA(operator) {
     const iv = setInterval(() => {
       _lightResync();
       _syncChatsToR2();
+      _batchResolveLids();
     }, 5 * 60 * 1000);
     return () => clearInterval(iv);
   }, [sessionOk]);
@@ -1953,6 +1958,39 @@ export function useWAHA(operator) {
     }
   }
 
+  // ── Resolução em lote de LIDs — processa TODOS os chats @lid ainda sem phone/nome ──
+  // Delega para resolveLidAsync (useContacts) que já tem throttle (MAX_CONCURRENT_LIDS=6)
+  // e faz a sequência: LID → phone (@c.us) → nome (Codental/Google)
+  function _batchResolveLids() {
+    if (USE_MOCK) return;
+    const resolve = resolveLidAsyncRef.current;
+    if (typeof resolve !== "function") return;
+    const chats = _sessionChats.value || [];
+    const lidCache = readLidPhoneMap();
+    let queued = 0;
+    for (const c of chats) {
+      if (!c.id?.endsWith("@lid")) continue;
+      const lidOnly = c.id.replace(/@lid$/, "");
+      const cached = lidCache[lidOnly];
+      // Já tem phone e nome — pula
+      if (cached?.phone && cached?.pushName) continue;
+      // Tem nome no próprio chat mas sem phone — salva nome e ainda enfileira para resolver phone
+      const wahaName = c.name || c.pushname || null;
+      if (wahaName && !cached?.pushName) {
+        _saveLidResolution(c.id, cached?.phone ? (cached.phone + "@c.us") : null, wahaName);
+      }
+      // Se já tem phone mas não tem nome, tenta lookup pelo phone
+      if (cached?.phone && !cached?.pushName) {
+        lookupPhone(cached.phone + "@c.us").catch(() => {});
+        continue;
+      }
+      // Sem phone — enfileira para resolução completa (LID → phone → nome)
+      resolve(c.id);
+      queued++;
+    }
+    if (queued > 0) console.log(`[lid-batch] ${queued} LIDs enfileirados para resolução`);
+  }
+
   // ── Resync leve (automático, a cada 5 min): limit=200 via proxy, sem reset de lastSync ──
   async function _lightResync() {
     if (USE_MOCK) return;
@@ -2063,46 +2101,8 @@ export function useWAHA(operator) {
         return deduped;
       });
 
-      // Tenta resolver @lid sem pushname ainda cacheado — busca nome via WAHA em background
-      // Limita a 5 por ciclo para não saturar conexões
-      const lidCache = readLidPhoneMap();
-      const SESSION  = import.meta.env.VITE_WAHA_SESSION || "default";
-      const unresolved = (Array.isArray(wahaRes) ? wahaRes : [])
-        .filter(c => {
-          if (!c.id?.endsWith("@lid")) return false;
-          const lidOnly = c.id.replace(/@lid$/, "");
-          const cached = lidCache[lidOnly];
-          // Tenta se ainda não tem phone E não tem pushName salvo
-          return !cached?.phone && !cached?.pushName;
-        })
-        .slice(0, 5);
-
-      for (const c of unresolved) {
-        const wahaName = c.name || c.pushname || null;
-        if (wahaName) {
-          // WAHA já tem o nome na lista de chats — salva direto sem request extra
-          _saveLidResolution(c.id, null, wahaName);
-          continue;
-        }
-        // Tenta endpoint individual do WAHA para obter nome/JID
-        try {
-          const enc = encodeURIComponent(c.id);
-          const r = await fetch(
-            `/api/waha?path=${encodeURIComponent(`/api/${SESSION}/contacts?contactId=${enc}`)}`,
-            { headers: { "X-Internal-Key": ikey() } }
-          );
-          if (r.ok) {
-            const data = await r.json();
-            const contact = Array.isArray(data) ? data[0] : data;
-            const jid  = contact?.id || contact?.phone || null;
-            const name = contact?.name || contact?.pushname || contact?.pushName || null;
-            if (jid && !jid.endsWith("@lid") && !jid.endsWith("@s.whatsapp.net")) {
-              _lidToJid.set(c.id, jid);
-            }
-            if (jid || name) _saveLidResolution(c.id, jid, name);
-          }
-        } catch {}
-      }
+      // Dispara resolução em lote de todos os @lid do estado atual — throttled em useContacts
+      _batchResolveLids();
     } catch (e) {
       console.error("[light-resync]", e.message);
     }
