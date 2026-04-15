@@ -76,12 +76,33 @@ export function phoneVariants(digits) {
 }
 
 // Lê/escreve o mapa no localStorage
+// Usa formato raw (sem TTL de expiração) para não perder contatos adicionados manualmente.
+// Fallback: tenta ler o formato antigo com TTL do cache utility.
+const RAW_LS_KEY = "crm_contacts_raw";
 function readLocalMap() {
-  try { return cache.get(LS_KEY) || {}; } catch { return {}; }
+  try {
+    const raw = localStorage.getItem(RAW_LS_KEY);
+    if (raw) return JSON.parse(raw) || {};
+  } catch {}
+  // Fallback: formato antigo com TTL
+  try { return cache.get(LS_KEY) || {}; } catch {}
+  return {};
 }
 
 function writeLocalMap(map) {
-  try { cache.set(LS_KEY, map, LS_TTL); } catch {}
+  // Escreve sem TTL — contatos não expiram
+  try {
+    localStorage.setItem(RAW_LS_KEY, JSON.stringify(map));
+    return;
+  } catch {
+    // Quota exceeded — libera espaço de chaves antigas e tenta de novo
+    try {
+      Object.keys(localStorage)
+        .filter(k => k.startsWith("crm_waha_msgs_") || k.startsWith("crm_img_") || k === "crm_" + LS_KEY)
+        .forEach(k => { try { localStorage.removeItem(k); } catch {} });
+      localStorage.setItem(RAW_LS_KEY, JSON.stringify(map));
+    } catch {}
+  }
 }
 
 // Verifica se deve sincronizar com MongoDB (a cada 1h)
@@ -120,6 +141,8 @@ export function useContacts() {
 
   // ── Merge seguro no estado + localStorage ─────────────────────
   const mergeMap = useCallback((incoming, source = "") => {
+    // Calcula o mapa atualizado fora do updater para evitar side effects dentro do React
+    // (React pode chamar updaters múltiplas vezes no Strict Mode)
     setContactMap(prev => {
       const updated = { ...prev };
       let changed = false;
@@ -127,30 +150,32 @@ export function useContacts() {
         if (!prev[k] || prev[k] !== v) { updated[k] = v; changed = true; }
       }
       if (!changed) return prev;
+      // Persiste no localStorage imediatamente (síncrono, antes do próximo render)
       writeLocalMap(updated);
-      if (source === "local") {
-        pendingSync.current = true;
-        // Tenta sincronizar imediatamente com o MongoDB para refletir a mudança
-        (async () => {
-          try {
-            await fetch("/api/db?action=contacts_cache", {
-              method: "POST",
-              headers: { "Content-Type": "application/json", "X-Internal-Key": internalKey },
-              body: JSON.stringify({ contacts: updated }),
-            });
-            pendingSync.current = false;
-            markMongoSync();
-            console.log("[contacts] immediate sync to MongoDB completed");
-          } catch (e) {
-            console.warn("[contacts] immediate sync failed:", e?.message || e);
-            // deixe pendingSync true para tentativa periódica
-            pendingSync.current = true;
-          }
-        })();
-      }
       console.log(`[contacts] merged ${Object.keys(incoming).length} entries from ${source}`);
       return updated;
     });
+    // Side effects fora do updater: sync com MongoDB
+    if (source === "local") {
+      pendingSync.current = true;
+      // Lê mapa atualizado do localStorage (já escrito pelo updater acima)
+      // e sincroniza com MongoDB para garantir persistência cross-device
+      setTimeout(() => {
+        const map = readLocalMap();
+        if (!Object.keys(map).length) return;
+        fetch("/api/db?action=contacts_cache", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Internal-Key": internalKey },
+          body: JSON.stringify({ contacts: map }),
+        }).then(() => {
+          pendingSync.current = false;
+          markMongoSync();
+          console.log("[contacts] sync to MongoDB completed");
+        }).catch(e => {
+          console.warn("[contacts] sync failed:", e?.message || e);
+        });
+      }, 100); // pequeno delay para o updater do setContactMap terminar primeiro
+    }
   }, [internalKey]);
 
   // ── 1. Inicialização: localStorage → MongoDB ──────────────────
@@ -272,15 +297,26 @@ export function useContacts() {
   const lookupPhone = useCallback(async (wahaId) => {
     const phone = wahaIdToPhone(wahaId);
     if (!phone || phone.length < 7) return null;
-    if (lookedUp.current.has(phone)) return null;
 
-    // Já tem no mapa? Não busca
+    // Já tem no mapa de estado React? Retorna direto
+    const inState = findInMap(phone, contactMap);
+    if (inState) return inState;
+
+    // Já tem no localStorage mas não no estado? Sincroniza estado e retorna
     const current = readLocalMap();
     const found = findInMap(phone, current);
-    if (found) return found;
+    if (found) {
+      // Sincroniza entrada faltante no estado React sem fazer nova busca
+      const incoming = {};
+      for (const v of phoneVariants(phone)) incoming[v] = found;
+      mergeMap(incoming, "local-sync");
+      return found;
+    }
+
+    // Já foi tentado e não encontrado nesta sessão? Não repete
+    if (lookedUp.current.has(phone)) return null;
 
     // Marca como "em progresso" para evitar requisições paralelas duplicadas
-    // (será mantido no Set apenas se a busca falhar — se achar, remove para permitir future retry)
     lookedUp.current.add(phone);
 
     const digits = phone.replace(/\D/g, "");
@@ -400,7 +436,7 @@ export function useContacts() {
     }
 
     return null;
-  }, [findInMap, mergeMap, internalKey, codKey]);
+  }, [contactMap, findInMap, mergeMap, internalKey, codKey]);
 
   // ── lookupPhonePriority — força nova tentativa ignorando o cache de sessão ──
   const lookupPhonePriority = useCallback(async (wahaId) => {
@@ -452,7 +488,13 @@ export function useContacts() {
     const lidOnly = lid.replace(/@lid$/, "");
     if (resolvingLids.current.has(lidOnly)) return;
     const cached = lidPhoneMap[lidOnly];
-    if (cached?.phone) return; // já resolvido
+    // Já tem phone: garante lookup de nome pelo telefone resolvido
+    if (cached?.phone) {
+      const cur = readLocalMap();
+      const found = findInMap(cached.phone, cur);
+      if (!found) lookupPhone(cached.phone + "@c.us");
+      return;
+    }
     resolvingLids.current.add(lidOnly);
 
     (async () => {
@@ -475,6 +517,8 @@ export function useContacts() {
             console.log(`[contacts/lid] resolvido: ${lid} → ${phone}${pushName ? ` (${pushName})` : ""}`);
             return updated;
           });
+          // 3. Busca nome via Codental/Google pelo telefone resolvido
+          lookupPhone(phone + "@c.us");
         } else if (pushName) {
           setLidPhoneMap(prev => {
             if (prev[lidOnly]?.phone) return prev;
@@ -486,7 +530,7 @@ export function useContacts() {
       } catch {}
       resolvingLids.current.delete(lidOnly);
     })();
-  }, [lidPhoneMap]);
+  }, [lidPhoneMap, findInMap, lookupPhone]);
 
   // ── Resolvers ─────────────────────────────────────────────────
   const resolveName = useCallback((wahaId, pushname) => {
@@ -532,10 +576,11 @@ export function useContacts() {
       // Usa pushName do cache WAHA como pushname adicional
       const wahaPush = cached?.pushName || null;
       const effectivePush = pushname || wahaPush || null;
+      // Se o telefone foi resolvido, usa ele formatado; senão, mostra o que temos
       const fmtPhone = phone ? formatPhone(phone) : null;
       const contactName = resolveName(wahaId, effectivePush);
-      // Nome a exibir: contato salvo > pushname do chat > pushName do WAHA > fallback > null
-      const displayLabel = contactName || effectivePush || fallbackName || null;
+      // Nome a exibir: contato salvo > pushname do chat > pushName do WAHA > fallback > telefone formatado
+      const displayLabel = contactName || effectivePush || fallbackName || fmtPhone || null;
       return {
         hasContact: !!contactName,
         name:       displayLabel || "—",
@@ -547,8 +592,9 @@ export function useContacts() {
     const fmtPhone    = formatPhone(phone);
     const contactName = resolveName(wahaId, pushname);
     if (contactName) return { hasContact: true, name: contactName, phone: fmtPhone };
-    const rawNumber = fmtPhone !== "—" ? fmtPhone : (fallbackName || wahaId || "Desconhecido");
-    return { hasContact: false, line1: rawNumber, line2: rawNumber, phone: fmtPhone };
+    // Fallback: pushname do chat > telefone formatado > fallbackName
+    const displayLabel = pushname || (fmtPhone !== "—" ? fmtPhone : null) || fallbackName || wahaId || "Desconhecido";
+    return { hasContact: false, name: displayLabel, line1: displayLabel, phone: fmtPhone };
   }, [resolveName, lidPhoneMap]);
 
   return {

@@ -301,6 +301,7 @@ function persistChats(chats) {
     }
     return {
       id,
+      name:          c.name          || c.pushname || "",
       pushname:      c.pushname      || "",
       lastMsg:       c.lastMsg       || "",
       lastTs:        c.lastTs        || null,
