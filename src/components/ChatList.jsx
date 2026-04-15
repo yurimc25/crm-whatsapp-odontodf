@@ -442,8 +442,13 @@ export function readPhotoCache() {
 }
 export function writePhotoCache(map) {
   try {
+    // Limita a 200 entradas para não lotar o localStorage
+    const entries = Object.entries(map).filter(([, v]) => v); // só URLs reais (não null)
+    const trimmed = entries.length > 200
+      ? Object.fromEntries(entries.slice(entries.length - 200))
+      : Object.fromEntries(entries);
     localStorage.setItem(PHOTO_CACHE_KEY, JSON.stringify({
-      value: map, expires: Date.now() + PHOTO_TTL,
+      value: trimmed, expires: Date.now() + PHOTO_TTL,
     }));
   } catch {}
 }

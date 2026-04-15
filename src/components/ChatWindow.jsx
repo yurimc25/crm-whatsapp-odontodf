@@ -216,10 +216,22 @@ export default function ChatWindow({
   });
 
   function persistExtra(msgs) {
+    const data = JSON.stringify(msgs);
     try {
-      localStorage.setItem(EXTRA_KEY, JSON.stringify(msgs));
-      console.log(`[extra] salvo ${msgs.length} msgs em ${EXTRA_KEY}`);
-    } catch (e) { console.error("[extra] erro ao salvar:", e); }
+      localStorage.setItem(EXTRA_KEY, data);
+    } catch {
+      // Quota exceeded — libera espaço removendo caches menos críticos e tenta de novo
+      try {
+        const KEEP = new Set([EXTRA_KEY]);
+        // Remove fotos e chats antigos (podem ser MB de dados)
+        Object.keys(localStorage)
+          .filter(k => k.startsWith("waha_photos") || k.startsWith("crm_chats"))
+          .forEach(k => { if (!KEEP.has(k)) try { localStorage.removeItem(k); } catch {} });
+        localStorage.setItem(EXTRA_KEY, data);
+      } catch (e2) {
+        console.error("[extra] quota ainda excedida após limpeza:", e2);
+      }
+    }
   }
 
   function addExtraMessage(msg) {
@@ -234,7 +246,6 @@ export default function ChatWindow({
   useEffect(() => {
     try {
       const stored = JSON.parse(localStorage.getItem(`crm_extra_${chat.id}`) || "[]");
-      console.log(`[extra] carregado ${stored.length} msgs de crm_extra_${chat.id}`);
       setExtraMessages(stored);
     } catch { setExtraMessages([]); }
   }, [chat.id]);
@@ -1066,12 +1077,7 @@ function MediaContent({ media, msgId, chatId, chatSession, onOcrResult }) {
   // chatId é redundante e pode ser undefined em alguns caminhos de normalização
   const TRANSCRIPT_KEY = msgId ? `crm_transcript_${msgId}` : null;
   const [transcript,   setTranscript]  = useState(() => {
-    try {
-      const v = TRANSCRIPT_KEY ? (localStorage.getItem(TRANSCRIPT_KEY) || null) : null;
-      if (v) console.log(`[transcript] carregado de ${TRANSCRIPT_KEY}`);
-      else console.log(`[transcript] não encontrado para msgId=${msgId}`);
-      return v;
-    } catch { return null; }
+    try { return TRANSCRIPT_KEY ? (localStorage.getItem(TRANSCRIPT_KEY) || null) : null; } catch { return null; }
   });
   const [transcribing, setTranscribing] = useState(false);
   // PDF lightbox (used only when document is PDF)
@@ -1358,7 +1364,16 @@ function MediaContent({ media, msgId, chatId, chatSession, onOcrResult }) {
           const data = await r.json();
           const text = data.text || "(sem transcrição)";
           setTranscript(text);
-          try { if (TRANSCRIPT_KEY) { localStorage.setItem(TRANSCRIPT_KEY, text); console.log(`[transcript] salvo em ${TRANSCRIPT_KEY}`); } } catch (e) { console.error("[transcript] erro ao salvar:", e); }
+          if (TRANSCRIPT_KEY) {
+            try { localStorage.setItem(TRANSCRIPT_KEY, text); } catch {
+              try {
+                Object.keys(localStorage)
+                  .filter(k => k.startsWith("waha_photos") || k.startsWith("crm_chats"))
+                  .forEach(k => { try { localStorage.removeItem(k); } catch {} });
+                localStorage.setItem(TRANSCRIPT_KEY, text);
+              } catch {}
+            }
+          }
         } else {
           setTranscript("Erro ao transcrever");
         }
