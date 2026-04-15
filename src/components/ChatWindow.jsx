@@ -1057,8 +1057,11 @@ function MediaContent({ media, msgId, chatId, chatSession, onOcrResult }) {
   const [fullUrl,      setFullUrl]     = useState(null);
   const [downloading,  setDownload]    = useState(false);
   const [error,        setError]       = useState(false);
-  // Audio transcription state (used only when isAudio — declared here to respect hooks rules)
-  const [transcript,   setTranscript]  = useState(null);
+  // Audio transcription state — persiste em localStorage por msgId para sobreviver troca de chat
+  const TRANSCRIPT_KEY = `crm_transcript_${chatId}_${msgId}`;
+  const [transcript,   setTranscript]  = useState(() => {
+    try { return localStorage.getItem(TRANSCRIPT_KEY) || null; } catch { return null; }
+  });
   const [transcribing, setTranscribing] = useState(false);
   // PDF lightbox (used only when document is PDF)
   const [pdfLightbox,  setPdfLightbox] = useState(false);
@@ -1342,7 +1345,9 @@ function MediaContent({ media, msgId, chatId, chatSession, onOcrResult }) {
         });
         if (r.ok) {
           const data = await r.json();
-          setTranscript(data.text || "(sem transcrição)");
+          const text = data.text || "(sem transcrição)";
+          setTranscript(text);
+          try { localStorage.setItem(TRANSCRIPT_KEY, text); } catch {}
         } else {
           setTranscript("Erro ao transcrever");
         }
