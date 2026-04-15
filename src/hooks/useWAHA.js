@@ -206,12 +206,28 @@ function readLidPhoneMap() {
   try { return JSON.parse(localStorage.getItem("lid_phone_map") || "{}"); } catch { return {}; }
 }
 
+// Grava resolução LID→phone no localStorage (lid_phone_map) para compartilhar com useContacts
+function _saveLidResolution(lidFull, jid, pushName) {
+  const lidOnly = lidFull.replace(/@lid$/, "");
+  if (!lidOnly) return;
+  const phone = jid ? jid.replace(/@.*$/, "").replace(/\D/g, "") : null;
+  if (!phone && !pushName) return;
+  try {
+    const map = readLidPhoneMap();
+    if (map[lidOnly]?.phone && map[lidOnly].phone === phone) return; // já salvo
+    map[lidOnly] = { phone: phone || null, pushName: pushName || map[lidOnly]?.pushName || null };
+    localStorage.setItem("lid_phone_map", JSON.stringify(map));
+    console.log(`[lid] cache gravado: ${lidOnly} → ${phone || "?"} (${pushName || "sem nome"})`);
+  } catch {}
+}
+
 // Resolve um @lid para o JID @c.us real.
 // Estratégia (em ordem):
 //   1. Cache (_lidToJid) — resultado anterior
-//   2. API de contatos do WAHA
+//   2. API de contatos do WAHA (tenta obter JID e nome)
 //   3. Busca por pushname no chatlist atual (_sessionChats)
 // Falhas ficam em _lidFailed para evitar chamadas repetidas.
+// Quando resolve, também grava em lid_phone_map (localStorage) para useContacts.
 async function resolveLid(lid, pushname) {
   if (_lidToJid.has(lid)) return _lidToJid.get(lid);
   if (_lidFailed.has(lid)) {
@@ -230,11 +246,15 @@ async function resolveLid(lid, pushname) {
         const data = await r.json();
         const contact = Array.isArray(data) ? data[0] : data;
         const jid = contact?.id || contact?.phone || null;
+        const name = contact?.name || contact?.pushname || contact?.pushName || null;
         if (jid && !jid.endsWith("@lid") && !jid.endsWith("@s.whatsapp.net")) {
           _lidToJid.set(lid, jid);
+          _saveLidResolution(lid, jid, pushname || name);
           console.log(`[lid] resolvido via API: ${lid} → ${jid}`);
           return jid;
         }
+        // API retornou mas só tem nome (sem JID @c.us) — salva o nome mesmo assim
+        if (name) _saveLidResolution(lid, null, name);
       }
     } catch {}
   }
@@ -245,26 +265,32 @@ async function resolveLid(lid, pushname) {
     const match = _sessionChats.value.find(c =>
       c.pushname && c.pushname.trim().toLowerCase() === pn
     );
-    if (match) {
+    if (match && !match.id.endsWith("@lid")) {
       console.log(`[lid] resolvido por pushname "${pushname}": ${lid} → ${match.id}`);
       _lidToJid.set(lid, match.id);
       _lidFailed.delete(lid);
+      _saveLidResolution(lid, match.id, pushname);
       return match.id;
     }
   }
 
   // Fallback 2: LID pode ter sido armazenado como @c.us com os mesmos dígitos (phantom antigo)
-  // Ex: 267769870340186@lid → 267769870340186@c.us já existente no chatlist
   if (_sessionChats.value?.length) {
     const lidDigits = lid.replace(/\D/g, "");
-    const phantom = _sessionChats.value.find(c => c.id.replace(/\D/g, "") === lidDigits);
+    const phantom = _sessionChats.value.find(c =>
+      !c.id.endsWith("@lid") && c.id.replace(/\D/g, "") === lidDigits
+    );
     if (phantom) {
       console.log(`[lid] resolvido por phantom ID: ${lid} → ${phantom.id}`);
       _lidToJid.set(lid, phantom.id);
       _lidFailed.delete(lid);
+      _saveLidResolution(lid, phantom.id, pushname || phantom.pushname);
       return phantom.id;
     }
   }
+
+  // Salva o pushname mesmo sem JID, para exibir nome enquanto aguarda resolução real
+  if (pushname) _saveLidResolution(lid, null, pushname);
 
   // Marca como falha para não repetir chamada API (mas permite nova tentativa com pushname)
   _lidFailed.add(lid);
@@ -341,7 +367,7 @@ const FAREWELL_PATTERNS = [
   /^(até logo|até mais|até amanhã|até breve)[\s!.]*$/i,
   /^(tchau|xau|xao|bi|bye)[\s!]*$/i,
   /^(flw|vlw|falou)[\s!]*$/i,
-  /^(boa noite|boa tarde|bom dia)[!.\s🌙☀️🙏😊]*$/i,
+  /^(disponha|confirm|agendada)[!.\s🌙☀️🙏😊]*$/i,
 ];
 // Palavras que indicam pedido/pergunta — impede classificação como despedida
 const REQUEST_WORDS = /avise|avisa|lembre|confirme|gostaria|quero|preciso|pode(ria)?|consegue|horário|agenda|consulta|compromisso|tenho |posso |não (posso|consigo|vou)\b/i;
@@ -1278,7 +1304,12 @@ export function useWAHA(operator) {
           const rawFallback = (payload.from || payload.chatId || "")
             .replace(/:\d+(@\S+)?$/, "");
           if (rawFallback && !rawFallback.endsWith("@lid") && !rawFallback.endsWith("@s.whatsapp.net")) {
-            // payload.from já tem o @c.us — resolve imediatamente
+            // payload.from já tem o @c.us — resolve imediatamente e grava o mapeamento
+            const originalLid = msg.chatId;
+            if (originalLid?.endsWith("@lid")) {
+              _lidToJid.set(originalLid, rawFallback);
+              _saveLidResolution(originalLid, rawFallback, msg.pushname);
+            }
             msg.chatId = rawFallback;
             handleMsg(msg);
           } else {
@@ -2031,6 +2062,47 @@ export function useWAHA(operator) {
         persistChats(deduped);
         return deduped;
       });
+
+      // Tenta resolver @lid sem pushname ainda cacheado — busca nome via WAHA em background
+      // Limita a 5 por ciclo para não saturar conexões
+      const lidCache = readLidPhoneMap();
+      const SESSION  = import.meta.env.VITE_WAHA_SESSION || "default";
+      const unresolved = (Array.isArray(wahaRes) ? wahaRes : [])
+        .filter(c => {
+          if (!c.id?.endsWith("@lid")) return false;
+          const lidOnly = c.id.replace(/@lid$/, "");
+          const cached = lidCache[lidOnly];
+          // Tenta se ainda não tem phone E não tem pushName salvo
+          return !cached?.phone && !cached?.pushName;
+        })
+        .slice(0, 5);
+
+      for (const c of unresolved) {
+        const wahaName = c.name || c.pushname || null;
+        if (wahaName) {
+          // WAHA já tem o nome na lista de chats — salva direto sem request extra
+          _saveLidResolution(c.id, null, wahaName);
+          continue;
+        }
+        // Tenta endpoint individual do WAHA para obter nome/JID
+        try {
+          const enc = encodeURIComponent(c.id);
+          const r = await fetch(
+            `/api/waha?path=${encodeURIComponent(`/api/${SESSION}/contacts?contactId=${enc}`)}`,
+            { headers: { "X-Internal-Key": ikey() } }
+          );
+          if (r.ok) {
+            const data = await r.json();
+            const contact = Array.isArray(data) ? data[0] : data;
+            const jid  = contact?.id || contact?.phone || null;
+            const name = contact?.name || contact?.pushname || contact?.pushName || null;
+            if (jid && !jid.endsWith("@lid") && !jid.endsWith("@s.whatsapp.net")) {
+              _lidToJid.set(c.id, jid);
+            }
+            if (jid || name) _saveLidResolution(c.id, jid, name);
+          }
+        } catch {}
+      }
     } catch (e) {
       console.error("[light-resync]", e.message);
     }
