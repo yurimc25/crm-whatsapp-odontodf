@@ -143,6 +143,27 @@ export function useContacts() {
   // Ref ao lidPhoneMap atual para uso em callbacks sem criar nova referência a cada mudança
   const lidPhoneMapRef = useRef(lidPhoneMap);
   useEffect(() => { lidPhoneMapRef.current = lidPhoneMap; }, [lidPhoneMap]);
+  // Fila para throttle de resolução de LIDs — evita saturar conexões do Chrome
+  const lidQueue = useRef([]);
+  const lidQueueRunning = useRef(false);
+  const MAX_CONCURRENT_LIDS = 3;
+  const activeLidFetches = useRef(0);
+
+  function _drainLidQueue() {
+    while (lidQueue.current.length > 0 && activeLidFetches.current < MAX_CONCURRENT_LIDS) {
+      const task = lidQueue.current.shift();
+      activeLidFetches.current++;
+      task().finally(() => {
+        activeLidFetches.current--;
+        _drainLidQueue();
+      });
+    }
+  }
+
+  function _enqueueLidTask(task) {
+    lidQueue.current.push(task);
+    _drainLidQueue();
+  }
 
   // ── Merge seguro no estado + localStorage ─────────────────────
   const mergeMap = useCallback((incoming, source = "") => {
@@ -504,7 +525,7 @@ export function useContacts() {
     }
     resolvingLids.current.add(lidOnly);
 
-    (async () => {
+    _enqueueLidTask(async () => {
       try {
         // 1. Resolve LID → JID real
         const pnJid = await resolveLidToPhone(lid);
@@ -534,15 +555,15 @@ export function useContacts() {
             return updated;
           });
         } else {
-          // WAHA não conhece este LID — marca como falha para não repetir
+          // WAHA respondeu mas não tem dados (LID inválido/desconhecido) — não retenta
           failedLids.current.add(lidOnly);
         }
       } catch {
-        // Erro de rede ou 404 — marca como falha para não repetir nesta sessão
-        failedLids.current.add(lidOnly);
+        // Erro de rede (ERR_INSUFFICIENT_RESOURCES, timeout, etc.) — NÃO marca como falha
+        // permanente; permite nova tentativa quando o efeito rodar novamente
       }
       resolvingLids.current.delete(lidOnly);
-    })();
+    });
   }, [findInMap, lookupPhone]);
 
   // ── Resolvers ─────────────────────────────────────────────────

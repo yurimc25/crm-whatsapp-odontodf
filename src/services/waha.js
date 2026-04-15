@@ -640,13 +640,13 @@ export async function getContactByLID(lid) {
 export async function resolveLidToPhone(lid) {
   const lidOnly = lid.replace(/@lid$/, "");
   const encoded = encodeURIComponent(lidOnly);
-  try {
-    const r = await fetch(`${WAHA_URL}/api/${SESSION}/lids/${encoded}`, { headers: headers() });
-    if (!r.ok) return null;
-    const data = await r.json();
-    const pn = data?.pn || null;
-    if (pn && !pn.endsWith("@lid")) return pn; // ex: "5561...@c.us"
-  } catch {}
+  // Deixa erros de rede propagarem (para distinção no chamador)
+  // Retorna null apenas quando o servidor responde "não encontrado" (4xx)
+  const r = await fetch(`${WAHA_URL}/api/${SESSION}/lids/${encoded}`, { headers: headers() });
+  if (!r.ok) return null; // 404/401/etc = LID não encontrado — sem throw
+  const data = await r.json().catch(() => null);
+  const pn = data?.pn || null;
+  if (pn && !pn.endsWith("@lid")) return pn; // ex: "5561...@c.us"
   return null;
 }
 

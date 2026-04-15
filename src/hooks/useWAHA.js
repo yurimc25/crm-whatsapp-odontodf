@@ -497,12 +497,6 @@ export function useWAHA(operator) {
         const overrides = readOverrides();
         let changed = false;
         const updated = base.map(c => {
-          // Grupos: sempre lidos
-          if (c.id.endsWith("@g.us")) {
-            if (c.unread === 0 && !c.lastPatientTs) return c;
-            changed = true;
-            return { ...c, unread: 0, lastPatientTs: null };
-          }
           const ck = canonicalKey(c.id, lidCacheApply);
           const r2 = r2Map[c.id] || (ck ? r2Map[ck] : undefined);
           if (!r2) return c;
@@ -704,11 +698,6 @@ export function useWAHA(operator) {
           const local   = prevMap[n.id] || (ck ? prevByPhone[ck] : undefined);
           const r2      = r2Map[n.id] || (ck ? r2Map[ck] : undefined);
           const isMuted = mutedChatsRef.current.has(n.id);
-
-          // Grupos: sempre lidos — não têm timer de paciente
-          if (n.id.endsWith("@g.us")) {
-            return { ...n, ...(local || {}), unread: 0, lastPatientTs: null };
-          }
 
           // Seleciona melhor lastTs / lastMsg entre WAHA, R2 e local
           const wahaTsMs  = n.lastTs     ? new Date(n.lastTs).getTime()     : 0;
@@ -1906,10 +1895,7 @@ export function useWAHA(operator) {
           const r2      = r2Map[n.id] || (ck ? r2Map[ck] : undefined);
           const isMuted = mutedChatsRef.current.has(n.id);
 
-          // Grupos sempre lidos
-          if (n.id.endsWith("@g.us")) {
-            return { ...(local || n), unread: 0, lastPatientTs: null };
-          }
+
 
           const wahaTsMs  = n.lastTs   ? new Date(n.lastTs).getTime()   : 0;
           const r2TsMs    = r2?.lastTs || 0;
