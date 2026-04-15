@@ -216,7 +216,10 @@ export default function ChatWindow({
   });
 
   function persistExtra(msgs) {
-    try { localStorage.setItem(EXTRA_KEY, JSON.stringify(msgs)); } catch {}
+    try {
+      localStorage.setItem(EXTRA_KEY, JSON.stringify(msgs));
+      console.log(`[extra] salvo ${msgs.length} msgs em ${EXTRA_KEY}`);
+    } catch (e) { console.error("[extra] erro ao salvar:", e); }
   }
 
   function addExtraMessage(msg) {
@@ -231,6 +234,7 @@ export default function ChatWindow({
   useEffect(() => {
     try {
       const stored = JSON.parse(localStorage.getItem(`crm_extra_${chat.id}`) || "[]");
+      console.log(`[extra] carregado ${stored.length} msgs de crm_extra_${chat.id}`);
       setExtraMessages(stored);
     } catch { setExtraMessages([]); }
   }, [chat.id]);
@@ -1062,7 +1066,12 @@ function MediaContent({ media, msgId, chatId, chatSession, onOcrResult }) {
   // chatId é redundante e pode ser undefined em alguns caminhos de normalização
   const TRANSCRIPT_KEY = msgId ? `crm_transcript_${msgId}` : null;
   const [transcript,   setTranscript]  = useState(() => {
-    try { return TRANSCRIPT_KEY ? (localStorage.getItem(TRANSCRIPT_KEY) || null) : null; } catch { return null; }
+    try {
+      const v = TRANSCRIPT_KEY ? (localStorage.getItem(TRANSCRIPT_KEY) || null) : null;
+      if (v) console.log(`[transcript] carregado de ${TRANSCRIPT_KEY}`);
+      else console.log(`[transcript] não encontrado para msgId=${msgId}`);
+      return v;
+    } catch { return null; }
   });
   const [transcribing, setTranscribing] = useState(false);
   // PDF lightbox (used only when document is PDF)
@@ -1349,7 +1358,7 @@ function MediaContent({ media, msgId, chatId, chatSession, onOcrResult }) {
           const data = await r.json();
           const text = data.text || "(sem transcrição)";
           setTranscript(text);
-          try { if (TRANSCRIPT_KEY) localStorage.setItem(TRANSCRIPT_KEY, text); } catch {}
+          try { if (TRANSCRIPT_KEY) { localStorage.setItem(TRANSCRIPT_KEY, text); console.log(`[transcript] salvo em ${TRANSCRIPT_KEY}`); } } catch (e) { console.error("[transcript] erro ao salvar:", e); }
         } else {
           setTranscript("Erro ao transcrever");
         }
