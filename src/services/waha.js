@@ -635,6 +635,34 @@ export async function getContactByLID(lid) {
   return r.json().catch(() => null);
 }
 
+// Resolve LID → telefone real via endpoint dedicado: GET /api/{session}/lids/{lid}
+// Retorna { lid, pn } onde pn é o JID real (ex: "5561...@c.us")
+export async function resolveLidToPhone(lid) {
+  const lidOnly = lid.replace(/@lid$/, "");
+  const encoded = encodeURIComponent(lidOnly);
+  try {
+    const r = await fetch(`${WAHA_URL}/api/${SESSION}/lids/${encoded}`, { headers: headers() });
+    if (!r.ok) return null;
+    const data = await r.json();
+    const pn = data?.pn || null;
+    if (pn && !pn.endsWith("@lid")) return pn; // ex: "5561...@c.us"
+  } catch {}
+  return null;
+}
+
+// Busca dados do contato (nome, pushname) via /api/contacts?contactId=
+export async function getContactInfo(contactId) {
+  const id = encodeURIComponent(contactId);
+  try {
+    const r = await fetch(
+      `${WAHA_URL}/api/contacts?contactId=${id}&session=${SESSION}`,
+      { headers: headers() }
+    );
+    if (!r.ok) return null;
+    return r.json().catch(() => null);
+  } catch { return null; }
+}
+
 // ── Chamadas ──────────────────────────────────────────────────────
 
 export async function rejectCall(callId) {

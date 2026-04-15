@@ -8,7 +8,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { cache } from "../utils/cache";
-import { getContactByLID } from "../services/waha";
+import { resolveLidToPhone, getContactInfo } from "../services/waha";
 
 const LS_KEY           = "contacts_map";
 const LID_CACHE_KEY    = "lid_phone_map";   // localStorage: { [lid]: realPhone }
@@ -445,6 +445,8 @@ export function useContacts() {
   }, [internalKey, mergeMap]);
 
   // ── Resolução assíncrona de @lid → { phone, pushName } via WAHA ──
+  // Usa GET /api/{session}/lids/{lid} para obter o telefone real,
+  // depois GET /api/contacts?contactId= para obter o nome.
   // Chamado via useEffect nos componentes, nunca durante render.
   const resolveLidAsync = useCallback((lid) => {
     const lidOnly = lid.replace(/@lid$/, "");
@@ -452,32 +454,38 @@ export function useContacts() {
     const cached = lidPhoneMap[lidOnly];
     if (cached?.phone) return; // já resolvido
     resolvingLids.current.add(lidOnly);
-    getContactByLID(lid).then(contact => {
-      if (!contact) return;
-      const jid      = contact.id || contact.phone || null;
-      const pushName = contact.pushName || contact.pushname || contact.name || null;
-      const phone    = jid && !jid.endsWith("@lid") && !jid.endsWith("@s.whatsapp.net")
-        ? jid.replace(/@.*$/, "").replace(/\D/g, "")
-        : null;
-      if (phone && phone.length >= 8) {
-        setLidPhoneMap(prev => {
-          const updated = { ...prev, [lidOnly]: { phone, pushName } };
-          writeLidCache(updated);
-          console.log(`[contacts/lid] resolvido: ${lid} → ${phone}${pushName ? ` (${pushName})` : ""}`);
-          return updated;
-        });
-      } else if (pushName) {
-        // Pelo menos salvamos o nome mesmo sem telefone
-        setLidPhoneMap(prev => {
-          if (prev[lidOnly]?.phone) return prev; // já tem telefone, não sobrescreve
-          const updated = { ...prev, [lidOnly]: { phone: null, pushName } };
-          writeLidCache(updated);
-          return updated;
-        });
-      }
-    }).catch(() => {}).finally(() => {
+
+    (async () => {
+      try {
+        // 1. Resolve LID → JID real
+        const pnJid = await resolveLidToPhone(lid);
+        const phone = pnJid
+          ? pnJid.replace(/@.*$/, "").replace(/\D/g, "")
+          : null;
+
+        // 2. Busca nome do contato (usando JID real se disponível, senão LID)
+        const contactId = pnJid || lid;
+        const contact   = await getContactInfo(contactId);
+        const pushName  = contact?.name || contact?.pushname || contact?.pushName || null;
+
+        if (phone && phone.length >= 8) {
+          setLidPhoneMap(prev => {
+            const updated = { ...prev, [lidOnly]: { phone, pushName } };
+            writeLidCache(updated);
+            console.log(`[contacts/lid] resolvido: ${lid} → ${phone}${pushName ? ` (${pushName})` : ""}`);
+            return updated;
+          });
+        } else if (pushName) {
+          setLidPhoneMap(prev => {
+            if (prev[lidOnly]?.phone) return prev;
+            const updated = { ...prev, [lidOnly]: { phone: null, pushName } };
+            writeLidCache(updated);
+            return updated;
+          });
+        }
+      } catch {}
       resolvingLids.current.delete(lidOnly);
-    });
+    })();
   }, [lidPhoneMap]);
 
   // ── Resolvers ─────────────────────────────────────────────────

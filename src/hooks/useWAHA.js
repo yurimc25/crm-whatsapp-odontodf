@@ -659,9 +659,8 @@ export function useWAHA(operator) {
 
       markLastSync();
 
-      // Enriquece todos os chats via overview (nome, foto, última mensagem, @lid→@c.us)
-      // Roda em background após 500ms para não bloquear a renderização inicial
-      setTimeout(() => enrichViaOverview(normalized), 500);
+      // Carrega fotos de perfil em background após renderização inicial
+      setTimeout(() => loadProfilePictures(normalized.map(c => c.id)), 1000);
 
       // Carrega última mensagem dos chats sem lastMsg (resolve "Sem mensagens recentes")
       // Limita aos 15 mais recentes — em lotes de 3 com 500ms intervalo
@@ -701,8 +700,19 @@ export function useWAHA(operator) {
       }
     } catch {}
 
-    // Filtra só quem não tem foto em cache
+    // Aplica fotos em cache imediatamente (antes de buscar novas)
+    const cachedWithUrl = Object.entries(photoCache).filter(([, v]) => v);
+    if (cachedWithUrl.length) {
+      setChats(prev => {
+        const changed = prev.some(c => photoCache[c.id] !== undefined && c.photoUrl !== photoCache[c.id]);
+        if (!changed) return prev;
+        return prev.map(c => photoCache[c.id] !== undefined ? { ...c, photoUrl: photoCache[c.id] } : c);
+      });
+    }
+
+    // Busca fotos que não estão em cache ainda
     const semFoto = chatIds.filter(id => !(id in photoCache));
+    if (!semFoto.length) return;
 
     const BATCH = 10;
     for (let i = 0; i < semFoto.length; i += BATCH) {
@@ -718,39 +728,22 @@ export function useWAHA(operator) {
         if (r.status === "fulfilled") {
           const { chatId, url } = r.value;
           photoCache[chatId] = url;
-          updates[chatId]    = url;
+          if (url) updates[chatId] = url; // só atualiza UI se tiver foto real
         }
       }
-      // Atualiza cache localStorage
       try {
         localStorage.setItem(PHOTO_KEY, JSON.stringify({
           value: photoCache, expires: Date.now() + PHOTO_TTL,
         }));
       } catch {}
-      // Atualiza chats com fotos
       if (Object.keys(updates).length) {
         setChats(prev => {
-          const updated = prev.map(c =>
-            c.id in updates ? { ...c, photoUrl: updates[c.id] } : c
-          );
+          const updated = prev.map(c => c.id in updates ? { ...c, photoUrl: updates[c.id] } : c);
           persistChats(updated);
           return updated;
         });
       }
       if (i + BATCH < semFoto.length) await new Promise(r => setTimeout(r, 500));
-    }
-
-    // Aplica fotos já em cache imediatamente
-    const comFoto = Object.entries(photoCache).filter(([, v]) => v);
-    if (comFoto.length) {
-      setChats(prev => {
-        const updated = prev.map(c => {
-          const url = photoCache[c.id];
-          return url !== undefined ? { ...c, photoUrl: url } : c;
-        });
-        persistChats(updated);
-        return updated;
-      });
     }
   }
 
