@@ -324,7 +324,16 @@ function computeLastPatientTs(msgs) {
 // Mensagens de operador que indicam encerramento da conversa
 function isOperatorClosing(text) {
   if (!text) return false;
-  return /^Consulta confirmada[!.]?/i.test(text.trim());
+  const t = text.trim();
+  // Detecta mensagem de confirmação de consulta (com ou sem endereço/link)
+  return /^Consulta confirmada[!.]?/i.test(t);
+}
+
+// Verifica se o lastMsg do chat indica encerramento (operador ou despedida do paciente)
+function lastMsgIsClosing(lastMsg) {
+  if (!lastMsg) return false;
+  const t = lastMsg.trim();
+  return isOperatorClosing(t) || isFarewell(t);
 }
 
 function detectAutoResolve(msgs) {
@@ -431,17 +440,24 @@ export function useWAHA(operator) {
           const localTs = c.lastTs ? new Date(c.lastTs).getTime() : 0;
           if (r2TsMs <= localTs) return c;
           changed = true;
-          const isMuted = mutedChatsRef.current.has(c.id);
-          const lpt = isMuted ? null
+          const isMuted  = mutedChatsRef.current.has(c.id);
+          const closing  = lastMsgIsClosing(r2.lastMsg || c.lastMsg);
+          const lpt = isMuted || closing ? null
             : (r2.lastPatientTs ? new Date(r2.lastPatientTs).toISOString() : null);
-          const unread = isMuted || !lpt ? 0
+          // Não sobrescreve unread=0 local com valor maior do R2 se o chat já foi lido
+          // (c.unread===0 e c.lastPatientTs===null = operador marcou como lido)
+          const alreadyRead = c.unread === 0 && !c.lastPatientTs;
+          const unread = isMuted || closing || !lpt ? 0
+            : alreadyRead ? 0
             : Math.max(r2.unread || 0, c.unread || 0);
+          const isResolved = c.status === "resolved" || closing;
           return {
             ...c,
             lastMsg:       r2.lastMsg || c.lastMsg,
             lastTs:        new Date(r2TsMs).toISOString(),
-            lastPatientTs: lpt,
-            unread,
+            lastPatientTs: isResolved ? null : lpt,
+            unread:        isResolved ? 0 : unread,
+            status:        closing && c.status !== "resolved" ? "resolved" : c.status,
             pushname:      r2.pushname || c.pushname,
           };
         });
@@ -456,8 +472,9 @@ export function useWAHA(operator) {
             const t = c.id.replace(/\D/g, "").slice(-8);
             return t.length >= 8 && t === rTail8;
           })) continue;
-          const isMuted = mutedChatsRef.current.has(r2.id);
-          const lpt = isMuted ? null
+          const isMuted  = mutedChatsRef.current.has(r2.id);
+          const closing  = lastMsgIsClosing(r2.lastMsg);
+          const lpt = isMuted || closing ? null
             : (r2.lastPatientTs ? new Date(r2.lastPatientTs).toISOString() : null);
           updated.push({
             id:            r2.id,
@@ -465,8 +482,8 @@ export function useWAHA(operator) {
             lastMsg:       r2.lastMsg  || "",
             lastTs:        r2.lastTs   ? new Date(r2.lastTs).toISOString() : null,
             lastPatientTs: lpt,
-            unread:        isMuted || !lpt ? 0 : r2.unread || 0,
-            status:        "open",
+            unread:        isMuted || closing || !lpt ? 0 : r2.unread || 0,
+            status:        closing ? "resolved" : "open",
             assignedTo:    null,
             tags:          [],
             photoUrl:      null,
@@ -598,32 +615,35 @@ export function useWAHA(operator) {
             : wahaTsMs >= r2TsMs && n.lastMsg ? n.lastMsg
             : local?.lastMsg || n.lastMsg || r2?.lastMsg || "";
 
-          // Chat novo sem histórico local — usa WAHA + R2 (inclui unread/lastPatientTs do R2)
+          // Chat novo sem histórico local — usa WAHA + R2
           if (!local) {
-            const r2Lpt = r2?.lastPatientTs ? new Date(r2.lastPatientTs).toISOString() : null;
-            const lpt   = isMuted ? null : r2Lpt;
-            const unread = isMuted || !lpt ? 0 : r2?.unread || 0;
-            const entry = { ...n, lastMsg: bestLastMsg, lastTs: bestLastTs, lastPatientTs: lpt, unread };
-            if (lpt && agora - new Date(lpt).getTime() > TRINTA_DIAS && entry.status !== "resolved") {
+            const r2Lpt  = r2?.lastPatientTs ? new Date(r2.lastPatientTs).toISOString() : null;
+            const lpt    = isMuted ? null : r2Lpt;
+            const closing = lastMsgIsClosing(bestLastMsg);
+            const unread  = isMuted || closing || !lpt ? 0 : r2?.unread || 0;
+            const entry   = { ...n, lastMsg: bestLastMsg, lastTs: bestLastTs, lastPatientTs: closing ? null : lpt, unread };
+            const should30 = lpt && agora - new Date(lpt).getTime() > TRINTA_DIAS;
+            if ((closing || should30) && entry.status !== "resolved") {
               toAutoResolveIds.add(entry.id);
               return { ...entry, status: "resolved", unread: 0, lastPatientTs: null };
             }
             return entry;
           }
 
-          // Chat existente — preserva estado local, atualiza lastMsg/lastTs/lpt com fontes mais recentes
+          // Chat existente — preserva estado local, atualiza com fontes mais recentes
           const resolvedLocally = local.status === "resolved";
-          const r2Lpt    = r2?.lastPatientTs !== undefined
+          const closing = lastMsgIsClosing(bestLastMsg);
+          const r2Lpt   = r2?.lastPatientTs !== undefined
             ? (r2?.lastPatientTs ? new Date(r2.lastPatientTs).getTime() : null) : undefined;
           const localLpt = local.lastPatientTs ? new Date(local.lastPatientTs).getTime() : null;
-          // null explícito no R2 significa "operador respondeu" — respeita isso
-          const lpt = isMuted || resolvedLocally ? null
+          const lpt = isMuted || resolvedLocally || closing ? null
             : r2Lpt !== undefined
               ? (r2Lpt ? new Date(Math.max(r2Lpt, localLpt || 0)).toISOString() : null)
               : (local.lastPatientTs ?? null);
-          const shouldAutoResolve = !resolvedLocally && lpt &&
+          const should30 = !resolvedLocally && !closing && lpt &&
             agora - new Date(lpt).getTime() > TRINTA_DIAS;
-          if (shouldAutoResolve) toAutoResolveIds.add(n.id);
+          const shouldAutoResolve = closing || should30;
+          if (shouldAutoResolve && !resolvedLocally) toAutoResolveIds.add(n.id);
 
           const unread = isMuted || shouldAutoResolve || !lpt ? 0
             : r2?.unread !== undefined
@@ -636,7 +656,7 @@ export function useWAHA(operator) {
             lastTs:        bestLastTs,
             lastPatientTs: (resolvedLocally || shouldAutoResolve) ? null : lpt,
             unread,
-            status:        shouldAutoResolve ? "resolved" : (local.status ?? n.status),
+            status:        shouldAutoResolve && !resolvedLocally ? "resolved" : (local.status ?? n.status),
             assignedTo:    local.assignedTo  ?? n.assignedTo,
             photoUrl:      local.photoUrl    ?? null,
             tags:          local.tags        ?? n.tags,
@@ -656,9 +676,9 @@ export function useWAHA(operator) {
         console.log(`[waha] loadChats setChats: prev=${prev.length} merged=${merged.length} deduped=${deduped.length}`);
 
         persistChats(deduped);
-        // Persiste auto-resolves no MongoDB em background
+        // Persiste auto-resolves (30 dias + Consulta confirmada) no MongoDB em background
         if (toAutoResolveIds.size > 0) {
-          console.log(`[waha] auto-resolve: ${toAutoResolveIds.size} chats com >30 dias`);
+          console.log(`[waha] auto-resolve: ${toAutoResolveIds.size} chats (30 dias ou mensagem de fechamento)`);
           Promise.allSettled([...toAutoResolveIds].map(id =>
             fetch("/api/db?action=chat", {
               method: "PATCH",
