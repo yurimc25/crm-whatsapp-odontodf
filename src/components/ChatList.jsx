@@ -428,10 +428,10 @@ export default function ChatList({
 
 const PHOTO_CACHE_KEY = "waha_photos_v4";
 const PHOTO_TTL       = 24 * 60 * 60 * 1000;
-const SESSION         = import.meta.env.VITE_WAHA_SESSION || "default";
-const IKEY            = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
+export const PHOTO_SESSION = import.meta.env.VITE_WAHA_SESSION || "default";
+export const PHOTO_IKEY    = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
 
-function readPhotoCache() {
+export function readPhotoCache() {
   try {
     const raw = localStorage.getItem(PHOTO_CACHE_KEY);
     if (!raw) return {};
@@ -439,7 +439,7 @@ function readPhotoCache() {
     return Date.now() < p.expires ? (p.value || {}) : {};
   } catch { return {}; }
 }
-function writePhotoCache(map) {
+export function writePhotoCache(map) {
   try {
     localStorage.setItem(PHOTO_CACHE_KEY, JSON.stringify({
       value: map, expires: Date.now() + PHOTO_TTL,
@@ -447,63 +447,58 @@ function writePhotoCache(map) {
   } catch {}
 }
 
+// Retorna o chatId correto para buscar foto:
+// - @lid → phone resolvido + @c.us (WAHA não aceita @lid para fotos)
+// - @c.us / @g.us → usa direto
+export function resolvePhotoChatId(chatId, lidPhoneMap) {
+  if (!chatId?.endsWith("@lid")) return chatId;
+  const lidOnly = chatId.replace(/@lid$/, "");
+  const phone   = lidPhoneMap?.[lidOnly]?.phone; // ex: "556195590395" (com DDI)
+  return phone ? phone + "@c.us" : null;
+}
+
+// Busca e cacheia foto via GET /api/{session}/chats/{chatId}/picture
+export async function fetchAndCachePhoto(chatId, lidPhoneMap, cacheKey) {
+  const photoChatId = resolvePhotoChatId(chatId, lidPhoneMap);
+  if (!photoChatId) return null; // LID ainda não resolvido
+
+  const key = cacheKey || chatId;
+  const cache = readPhotoCache();
+  if (cache[key] !== undefined) return cache[key]; // cache hit (null = sem foto)
+
+  const encodedId = encodeURIComponent(photoChatId);
+  try {
+    const r = await fetch(
+      `/api/waha?path=/api/${PHOTO_SESSION}/chats/${encodedId}/picture`,
+      { headers: { "X-Internal-Key": PHOTO_IKEY } }
+    );
+    const data = r.ok ? await r.json() : null;
+    const url = data?.url || null;
+    writePhotoCache({ ...readPhotoCache(), [key]: url });
+    return url;
+  } catch {
+    writePhotoCache({ ...readPhotoCache(), [key]: null });
+    return null;
+  }
+}
+
 function ChatItem({ chat, active, onClick, onOpenMenu, isMuted, now }) {
-  const { displayInfo, resolveLidAsync } = useContactsCtx();
+  const { displayInfo, resolveLidAsync, lidPhoneMap } = useContactsCtx();
   const info = displayInfo(chat.id, chat.name, chat.pushname);
-  const [photoUrl, setPhotoUrl] = useState(() => {
-    const cache = readPhotoCache();
-    return cache[chat.id] || chat.photoUrl || null;
-  });
+  const [photoUrl, setPhotoUrl] = useState(() => readPhotoCache()[chat.id] || chat.photoUrl || null);
 
-  // Quando o cache é atualizado externamente (ex: foto transferida do @c.us para @lid),
-  // sincroniza o estado local com o cache
+  // Dispara resolução de LID
   useEffect(() => {
-    const cached = readPhotoCache()[chat.id];
-    if (cached && cached !== photoUrl) setPhotoUrl(cached);
-  }, [chat.id]);
-
-  // Dispara resolução de LID fora do render (safe side-effect)
-  useEffect(() => {
-    if (chat.id?.endsWith("@lid")) {
-      resolveLidAsync(chat.id);
-    }
+    if (chat.id?.endsWith("@lid")) resolveLidAsync(chat.id);
   }, [chat.id, resolveLidAsync]);
 
-  // Carrega foto via GET /api/{session}/chats/{chatId}/picture
-  // Para @lid: usa o telefone resolvido (@c.us) pois @lid causa 504
+  // Carrega foto: para @lid usa phone resolvido (com DDI) + @c.us
+  // Re-executa quando lidPhoneMap muda (LID recém-resolvido)
   useEffect(() => {
-    let chatId = chat.id;
-    if (chat.id?.endsWith("@lid")) {
-      const rawPhone = info.phone && info.phone !== "—"
-        ? info.phone.replace(/\D/g, "") : null;
-      if (!rawPhone) return; // aguarda resolução do LID
-      chatId = rawPhone + "@c.us";
-    }
-
-    const cacheKey = chat.id;
-    const cache = readPhotoCache();
-    if (cache[cacheKey] !== undefined) {
-      if (cache[cacheKey]) setPhotoUrl(cache[cacheKey]);
-      return;
-    }
-
-    const encodedId = encodeURIComponent(chatId);
-    fetch(
-      `/api/waha?path=/api/${SESSION}/chats/${encodedId}/picture`,
-      { headers: { "X-Internal-Key": IKEY } }
-    )
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        const url = data?.url || null;
-        const updated = { ...readPhotoCache(), [cacheKey]: url };
-        writePhotoCache(updated);
-        if (url) setPhotoUrl(url);
-      })
-      .catch(() => {
-        const updated = { ...readPhotoCache(), [cacheKey]: null };
-        writePhotoCache(updated);
-      });
-  }, [chat.id, info.phone]);
+    fetchAndCachePhoto(chat.id, lidPhoneMap, chat.id).then(url => {
+      if (url) setPhotoUrl(url);
+    });
+  }, [chat.id, lidPhoneMap]);
 
   const hasUnread = !active && !isMuted && (chat.unread > 0);
 

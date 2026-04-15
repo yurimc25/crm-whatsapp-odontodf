@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { fetchAndCachePhoto, readPhotoCache } from "./ChatList";
 import PatientCardDetected from "./modules/PatientCardDetected";
 import { QuickMessages } from "./modules/QuickMessages";
 import { useContactsCtx } from "../App";
@@ -251,8 +252,16 @@ export default function ChatWindow({
   const bottomRef   = useRef(null);
   const scrollRef   = useRef(null);
   const prevScrollH = useRef(0);
-  const { displayInfo, addLocalContact, removeContact } = useContactsCtx();
+  const { displayInfo, addLocalContact, removeContact, lidPhoneMap } = useContactsCtx();
   const info = displayInfo(chat.id, chat.name, chat.pushname);
+  const [photoUrl, setPhotoUrl] = useState(() => readPhotoCache()[chat.id] || chat.photoUrl || null);
+
+  useEffect(() => {
+    setPhotoUrl(readPhotoCache()[chat.id] || chat.photoUrl || null);
+    fetchAndCachePhoto(chat.id, lidPhoneMap, chat.id).then(url => {
+      if (url) setPhotoUrl(url);
+    });
+  }, [chat.id, lidPhoneMap]);
 
   // Auto-refresh a cada 5 segundos
   useEffect(() => {
@@ -417,7 +426,6 @@ export default function ChatWindow({
     msgsWithSeps.push(msg);
   }
 
-  const photoUrl = info.photoUrl || chat.photoUrl || null;
 
   return (
     <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden",
