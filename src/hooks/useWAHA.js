@@ -511,28 +511,36 @@ export function useWAHA(operator) {
           if (r2TsMs <= localTs) return c;
           changed = true;
           const isMuted  = mutedChatsRef.current.has(c.id);
-          const closing  = lastMsgIsClosing(r2.lastMsg || c.lastMsg);
+          // Usa APENAS r2.lastMsg para detectar closing — não usa c.lastMsg como fallback.
+          // Se R2 ainda tem mensagem antiga (ex: "Consulta confirmada!") mas o chat foi
+          // reaberto localmente por nova mensagem do paciente, não re-resolve.
+          const r2LastMsg = r2.lastMsg || "";
+          const closing  = lastMsgIsClosing(r2LastMsg);
+          // Se chat foi reaberto localmente (status=open) e nova msg é mais recente que R2,
+          // não deixa o R2 antigo re-resolver o chat
+          const localReopened = c.status === "open" && c.lastTs && localTs > r2TsMs - 1000;
+          const effectiveClosing = closing && !localReopened;
           // Verifica overrides manuais do operador (keyed por dígitos canônicos)
           const ov = ck ? overrides[ck] : overrides[c.id];
           const r2LptMs = r2.lastPatientTs ? new Date(r2.lastPatientTs).getTime() : 0;
           const ovResolved = ov?.resolvedAt && r2LptMs <= ov.resolvedAt;
           const ovRead = ov?.readAt && r2LptMs <= ov.readAt;
-          const lpt = isMuted || closing || ovRead || ovResolved ? null
+          const lpt = isMuted || effectiveClosing || ovRead || ovResolved ? null
             : (r2.lastPatientTs ? new Date(r2.lastPatientTs).toISOString() : null);
           // Não sobrescreve unread=0 local com valor maior do R2 se o chat já foi lido
           // (c.unread===0 e c.lastPatientTs===null = operador marcou como lido)
           const alreadyRead = c.unread === 0 && !c.lastPatientTs;
-          const unread = isMuted || closing || !lpt || ovRead || ovResolved ? 0
+          const unread = isMuted || effectiveClosing || !lpt || ovRead || ovResolved ? 0
             : alreadyRead ? 0
             : Math.max(r2.unread || 0, c.unread || 0);
-          const isResolved = c.status === "resolved" || closing || ovResolved;
+          const isResolved = (c.status === "resolved" && !localReopened) || effectiveClosing || ovResolved;
           return {
             ...c,
-            lastMsg:       r2.lastMsg || c.lastMsg,
+            lastMsg:       r2LastMsg || c.lastMsg,
             lastTs:        new Date(r2TsMs).toISOString(),
             lastPatientTs: isResolved ? null : lpt,
             unread:        isResolved ? 0 : unread,
-            status:        closing && c.status !== "resolved" ? "resolved" : c.status,
+            status:        effectiveClosing && c.status !== "resolved" ? "resolved" : c.status,
             pushname:      r2.pushname || c.pushname,
           };
         });
