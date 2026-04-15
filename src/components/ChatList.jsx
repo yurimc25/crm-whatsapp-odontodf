@@ -427,17 +427,26 @@ export default function ChatList({
 }
 
 function ChatItem({ chat, active, onClick, onOpenMenu, isMuted, now }) {
-  const { displayInfo } = useContactsCtx();
+  const { displayInfo, resolveLidAsync } = useContactsCtx();
   const info = displayInfo(chat.id, chat.name, chat.pushname);
+
+  // Dispara resolução de LID fora do render (safe side-effect)
+  useEffect(() => {
+    if (chat.id?.endsWith("@lid")) {
+      resolveLidAsync(chat.id);
+    }
+  }, [chat.id, resolveLidAsync]);
+
   const hasUnread = !active && !isMuted && (chat.unread > 0);
 
   const timeSince = !isMuted && chat.lastPatientTs ? formatTimeSince(chat.lastPatientTs, now) : null;
   const waitMs    = !isMuted && chat.lastPatientTs ? (now || Date.now()) - new Date(chat.lastPatientTs).getTime() : 0;
   const urgColor  = waitMs > 4*3600000 ? T.red : waitMs > 3600000 ? T.yellow : T.green;
 
-  const initials = info.hasContact
-    ? info.name.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase()
-    : formatPhone(wahaIdToPhone(chat.id)).replace(/\D/g,"").slice(-4,-2) || "?";
+  const displayedName = info.name || info.line1 || chat.name || chat.pushname || "?";
+  const initials = displayedName !== "—"
+    ? displayedName.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase()
+    : (info.phone || "").replace(/\D/g,"").slice(-4,-2) || "?";
 
   const photoUrl = info.photoUrl || chat.photoUrl || null;
 
@@ -517,6 +526,7 @@ function ChatItem({ chat, active, onClick, onOpenMenu, isMuted, now }) {
       {/* Conteúdo */}
       <div style={{ flex:1, minWidth:0 }}>
         {/* Linha 1: Nome + tempo de espera */}
+        {/* Linha 1: Nome + tempo de espera */}
         <div style={{ display:"flex", justifyContent:"space-between",
           alignItems:"baseline", marginBottom:1 }}>
           <span style={{ color: info.hasContact ? T.text : T.sub,
@@ -524,7 +534,7 @@ function ChatItem({ chat, active, onClick, onOpenMenu, isMuted, now }) {
             fontWeight: hasUnread ? 700 : info.hasContact ? 500 : 400,
             overflow:"hidden", textOverflow:"ellipsis",
             whiteSpace:"nowrap", maxWidth:160 }}>
-            {info.hasContact ? info.name : (info.line1 || info.phone)}
+            {displayedName}
           </span>
           {timeSince && (
             <span style={{ fontSize:10, fontWeight:700,
@@ -534,8 +544,8 @@ function ChatItem({ chat, active, onClick, onOpenMenu, isMuted, now }) {
           )}
         </div>
 
-        {/* Linha 2: Telefone (quando há nome real acima, para não duplicar) */}
-        {info.phone && info.phone !== "—" && info.phone !== (info.line1 || info.name) && (
+        {/* Linha 2: Telefone — exibe sempre que disponível e diferente do nome */}
+        {info.phone && info.phone !== "—" && info.phone !== displayedName && (
           <div style={{ color:T.sub, fontSize:10,
             fontFamily:"'DM Mono', monospace", marginBottom:2 }}>
             {info.phone}

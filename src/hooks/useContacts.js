@@ -96,7 +96,7 @@ function markMongoSync() {
   try { localStorage.setItem(MONGO_SYNC_KEY, String(Date.now())); } catch {}
 }
 
-// ── Cache de LID → telefone real (localStorage, sem TTL — raramente muda) ──
+// ── Cache de LID → { phone, pushName } (localStorage, sem TTL — raramente muda) ──
 function readLidCache() {
   try { return JSON.parse(localStorage.getItem(LID_CACHE_KEY) || "{}"); } catch { return {}; }
 }
@@ -444,24 +444,36 @@ export function useContacts() {
     return false;
   }, [internalKey, mergeMap]);
 
-  // ── Resolução assíncrona de @lid → telefone real ──────────────
+  // ── Resolução assíncrona de @lid → { phone, pushName } via WAHA ──
+  // Chamado via useEffect nos componentes, nunca durante render.
   const resolveLidAsync = useCallback((lid) => {
     const lidOnly = lid.replace(/@lid$/, "");
     if (resolvingLids.current.has(lidOnly)) return;
-    if (lidPhoneMap[lidOnly]) return; // já resolvido
+    const cached = lidPhoneMap[lidOnly];
+    if (cached?.phone) return; // já resolvido
     resolvingLids.current.add(lidOnly);
     getContactByLID(lid).then(contact => {
-      const jid = contact?.id || contact?.phone || null;
-      if (jid && !jid.endsWith("@lid") && !jid.endsWith("@s.whatsapp.net")) {
-        const phone = jid.replace(/@.*$/, "").replace(/\D/g, "");
-        if (phone && phone.length >= 8) {
-          setLidPhoneMap(prev => {
-            const updated = { ...prev, [lidOnly]: phone };
-            writeLidCache(updated);
-            console.log(`[contacts/lid] resolvido: ${lid} → ${phone}`);
-            return updated;
-          });
-        }
+      if (!contact) return;
+      const jid      = contact.id || contact.phone || null;
+      const pushName = contact.pushName || contact.pushname || contact.name || null;
+      const phone    = jid && !jid.endsWith("@lid") && !jid.endsWith("@s.whatsapp.net")
+        ? jid.replace(/@.*$/, "").replace(/\D/g, "")
+        : null;
+      if (phone && phone.length >= 8) {
+        setLidPhoneMap(prev => {
+          const updated = { ...prev, [lidOnly]: { phone, pushName } };
+          writeLidCache(updated);
+          console.log(`[contacts/lid] resolvido: ${lid} → ${phone}${pushName ? ` (${pushName})` : ""}`);
+          return updated;
+        });
+      } else if (pushName) {
+        // Pelo menos salvamos o nome mesmo sem telefone
+        setLidPhoneMap(prev => {
+          if (prev[lidOnly]?.phone) return prev; // já tem telefone, não sobrescreve
+          const updated = { ...prev, [lidOnly]: { phone: null, pushName } };
+          writeLidCache(updated);
+          return updated;
+        });
       }
     }).catch(() => {}).finally(() => {
       resolvingLids.current.delete(lidOnly);
@@ -473,58 +485,66 @@ export function useContacts() {
     const isLid = wahaId?.endsWith("@lid");
     let phone;
     if (isLid) {
-      const lidOnly = wahaId.replace(/@lid$/, "");
-      phone = lidPhoneMap[lidOnly] || null;
-    } else {
-      phone = wahaIdToPhone(wahaId);
+      const lidOnly  = wahaId.replace(/@lid$/, "");
+      const cached   = lidPhoneMap[lidOnly];
+      phone          = cached?.phone || null;
+      // usa pushName do cache WAHA se não tiver pushname do chat
+      const wahaName = cached?.pushName || null;
+      if (!phone) return pushname || wahaName || null;
+      return findInMap(phone, contactMap) || pushname || wahaName || null;
     }
-    if (!phone) return pushname || null;
+    phone = wahaIdToPhone(wahaId);
     return findInMap(phone, contactMap) || pushname || null;
   }, [contactMap, findInMap, lidPhoneMap]);
 
   const displayName = useCallback((wahaId, fallback, pushname) => {
     const resolved = resolveName(wahaId, pushname);
     if (resolved) return resolved;
-    // LID sem resolução ainda: usa pushname ou formata o telefone resolvido
     if (wahaId?.endsWith("@lid")) {
-      const lidOnly = wahaId.replace(/@lid$/, "");
-      const realPhone = lidPhoneMap[lidOnly];
-      if (realPhone) return formatPhone(realPhone);
-      resolveLidAsync(wahaId);
-      return pushname || fallback || wahaId.replace(/@lid$/, "");
+      const lidOnly  = wahaId.replace(/@lid$/, "");
+      const cached   = lidPhoneMap[lidOnly];
+      if (cached?.phone) return formatPhone(cached.phone);
+      if (cached?.pushName) return cached.pushName;
+      return pushname || fallback || null;
     }
-    // Se o fallback é puramente numérico (número bruto sem formatação), formata-o
     if (fallback) {
       const isRawNumber = /^\+?[\d\s\-().]+$/.test(fallback) && fallback.replace(/\D/g,"").length >= 8;
       return isRawNumber ? formatPhone(fallback.replace(/\D/g,"")) : fallback;
     }
     return formatPhone(wahaIdToPhone(wahaId));
-  }, [resolveName, lidPhoneMap, resolveLidAsync]);
+  }, [resolveName, lidPhoneMap]);
 
   const displayInfo = useCallback((wahaId, fallbackName, pushname) => {
     const isLid = wahaId?.endsWith("@lid");
     let phone;
     if (isLid) {
       const lidOnly = wahaId.replace(/@lid$/, "");
-      phone = lidPhoneMap[lidOnly] || null;
-      if (!phone) resolveLidAsync(wahaId);
-    } else {
-      phone = wahaIdToPhone(wahaId);
+      const cached  = lidPhoneMap[lidOnly];
+      phone         = cached?.phone || null;
+      // Usa pushName do cache WAHA como pushname adicional
+      const wahaPush = cached?.pushName || null;
+      const effectivePush = pushname || wahaPush || null;
+      const fmtPhone = phone ? formatPhone(phone) : null;
+      const contactName = resolveName(wahaId, effectivePush);
+      // Nome a exibir: contato salvo > pushname do chat > pushName do WAHA > fallback > null
+      const displayLabel = contactName || effectivePush || fallbackName || null;
+      return {
+        hasContact: !!contactName,
+        name:       displayLabel || "—",
+        line1:      displayLabel || "—",
+        phone:      fmtPhone || null,
+      };
     }
-    const fmtPhone    = phone ? formatPhone(phone) : "—";
+    phone = wahaIdToPhone(wahaId);
+    const fmtPhone    = formatPhone(phone);
     const contactName = resolveName(wahaId, pushname);
     if (contactName) return { hasContact: true, name: contactName, phone: fmtPhone };
-    if (isLid && !phone) {
-      // Ainda aguardando resolução: mostra pushname ou fallback
-      const label = pushname || fallbackName || null;
-      return { hasContact: false, line1: label || "…", line2: label || "…", phone: "—" };
-    }
     const rawNumber = fmtPhone !== "—" ? fmtPhone : (fallbackName || wahaId || "Desconhecido");
     return { hasContact: false, line1: rawNumber, line2: rawNumber, phone: fmtPhone };
-  }, [resolveName, lidPhoneMap, resolveLidAsync]);
+  }, [resolveName, lidPhoneMap]);
 
   return {
-    contactMap, resolveName, displayName, displayInfo,
+    contactMap, resolveName, displayName, displayInfo, resolveLidAsync,
     addLocalContact, removeContact, lookupPhone, lookupPhonePriority, searchByName, loading,
     refresh: fetchGoogleBulk,
   };
