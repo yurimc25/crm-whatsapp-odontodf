@@ -161,8 +161,24 @@ try {
 const LAST_SYNC_KEY  = "waha_last_sync_ts";       // timestamp da última sync bem-sucedida
 const ikey           = () => import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
 
+// ── Chave canônica por dígitos de telefone ──────────────────────────────────
+// Grupos (@g.us) mantêm o chatId como chave — não têm número de telefone
+// Contatos (@c.us, @lid, etc.) usam apenas os dígitos do número
+function canonicalKey(chatId, lidPhoneCache) {
+  if (!chatId) return chatId;
+  if (chatId.endsWith("@g.us")) return chatId;
+  if (chatId.endsWith("@lid")) {
+    const lidOnly = chatId.replace(/@lid$/, "");
+    const phone = lidPhoneCache?.[lidOnly]?.phone;
+    if (phone) return phone.replace(/\D/g, "");
+    // Sem resolução ainda: usa os dígitos do próprio LID como fallback
+    return chatId.replace(/\D/g, "") || chatId;
+  }
+  return chatId.replace(/\D/g, "") || chatId;
+}
+
 // ── Overrides manuais de status/leitura — sobrevivem ao reload ──────────────
-// Estrutura: { [chatId]: { resolvedAt?, readAt? } }
+// Estrutura: { [phoneDigitsOrGroupId]: { resolvedAt?, readAt? } }
 // resolvedAt: timestamp quando o operador resolveu manualmente
 // readAt: timestamp quando o operador marcou como lido (R2 não sobrescreve se lastPatientTs <= readAt)
 const OVERRIDE_KEY = "crm_status_overrides";
@@ -171,14 +187,16 @@ function readOverrides() {
 }
 function saveOverride(chatId, patch) {
   try {
+    const key = canonicalKey(chatId, readLidPhoneMap());
     const cur = readOverrides();
-    localStorage.setItem(OVERRIDE_KEY, JSON.stringify({ ...cur, [chatId]: { ...(cur[chatId] || {}), ...patch } }));
+    localStorage.setItem(OVERRIDE_KEY, JSON.stringify({ ...cur, [key]: { ...(cur[key] || {}), ...patch } }));
   } catch {}
 }
 function clearOverride(chatId) {
   try {
+    const key = canonicalKey(chatId, readLidPhoneMap());
     const cur = readOverrides();
-    delete cur[chatId];
+    delete cur[key];
     localStorage.setItem(OVERRIDE_KEY, JSON.stringify(cur));
   } catch {}
 }
@@ -272,18 +290,28 @@ function persistChats(chats) {
   _sessionChats.expires = Date.now() + CHATS_TTL;
 
   // 2. localStorage: slim — só o necessário para remontar o chatlist após F5
-  const slim = chats.map(c => ({
-    id:            c.id,
-    pushname:      c.pushname      || "",
-    lastMsg:       c.lastMsg       || "",
-    lastTs:        c.lastTs        || null,
-    lastPatientTs: c.lastPatientTs || null,
-    unread:        c.unread        || 0,
-    status:        c.status        || "open",
-    assignedTo:    c.assignedTo    || null,
-    tags:          c.tags          || [],
-    photoUrl:      c.photoUrl      || null,
-  }));
+  // Normaliza @lid → phone@c.us para que após F5 o ID seja estável e prevMap funcione
+  const lidCache = readLidPhoneMap();
+  const slim = chats.map(c => {
+    let id = c.id;
+    if (id.endsWith("@lid")) {
+      const lidOnly = id.replace(/@lid$/, "");
+      const phone = lidCache[lidOnly]?.phone;
+      if (phone) id = phone.replace(/\D/g, "") + "@c.us";
+    }
+    return {
+      id,
+      pushname:      c.pushname      || "",
+      lastMsg:       c.lastMsg       || "",
+      lastTs:        c.lastTs        || null,
+      lastPatientTs: c.lastPatientTs || null,
+      unread:        c.unread        || 0,
+      status:        c.status        || "open",
+      assignedTo:    c.assignedTo    || null,
+      tags:          c.tags          || [],
+      photoUrl:      c.photoUrl      || null,
+    };
+  });
   try {
     localStorage.setItem("crm_" + CHATS_KEY, JSON.stringify({
       value: slim, expires: Date.now() + CHATS_TTL,
@@ -453,7 +481,13 @@ export function useWAHA(operator) {
       if (!r2Res.ok) return;
       const r2Chats = await r2Res.json();
       if (!Array.isArray(r2Chats) || r2Chats.length === 0) return;
-      const r2Map = Object.fromEntries(r2Chats.map(c => [c.id, c]));
+      const lidCacheApply = readLidPhoneMap();
+      const r2Map = {};
+      for (const c of r2Chats) {
+        r2Map[c.id] = c;
+        const ck = canonicalKey(c.id, lidCacheApply);
+        if (ck && ck !== c.id) r2Map[ck] = c;
+      }
       setChats(prev => {
         const base = prev.length ? prev : fallbackChats;
         if (!base.length) { console.log("[r2] applyR2Chats: sem base, aguardando WAHA"); return prev; }
@@ -462,7 +496,14 @@ export function useWAHA(operator) {
         const overrides = readOverrides();
         let changed = false;
         const updated = base.map(c => {
-          const r2 = r2Map[c.id];
+          // Grupos: sempre lidos
+          if (c.id.endsWith("@g.us")) {
+            if (c.unread === 0 && !c.lastPatientTs) return c;
+            changed = true;
+            return { ...c, unread: 0, lastPatientTs: null };
+          }
+          const ck = canonicalKey(c.id, lidCacheApply);
+          const r2 = r2Map[c.id] || (ck ? r2Map[ck] : undefined);
           if (!r2) return c;
           const r2TsMs  = r2.lastTs || 0;
           const localTs = c.lastTs ? new Date(c.lastTs).getTime() : 0;
@@ -470,8 +511,8 @@ export function useWAHA(operator) {
           changed = true;
           const isMuted  = mutedChatsRef.current.has(c.id);
           const closing  = lastMsgIsClosing(r2.lastMsg || c.lastMsg);
-          // Verifica overrides manuais do operador
-          const ov = overrides[c.id];
+          // Verifica overrides manuais do operador (keyed por dígitos canônicos)
+          const ov = ck ? overrides[ck] : overrides[c.id];
           const r2LptMs = r2.lastPatientTs ? new Date(r2.lastPatientTs).getTime() : 0;
           const ovResolved = ov?.resolvedAt && r2LptMs <= ov.resolvedAt;
           const ovRead = ov?.readAt && r2LptMs <= ov.readAt;
@@ -612,15 +653,21 @@ export function useWAHA(operator) {
       console.log(`[waha] ${filtered.length} chats após filtro de data`);
 
       const dbMeta = dbRes?.chats || {};
-      // R2: mapa de id → { lastMsg, lastTs, lastPatientTs, unread } — webhook pré-computa
-      const r2Map  = Array.isArray(r2Res)
-        ? Object.fromEntries(r2Res.map(c => [c.id, c]))
-        : {};
+      // R2: mapa indexado por id E por dígitos de telefone (webhook usa @lid, WAHA usa @c.us)
+      const r2Map  = {};
+      if (Array.isArray(r2Res)) {
+        const lidCacheForR2 = readLidPhoneMap();
+        for (const c of r2Res) {
+          r2Map[c.id] = c;
+          const ck = canonicalKey(c.id, lidCacheForR2);
+          if (ck && ck !== c.id) r2Map[ck] = c;
+        }
+      }
       console.log(`[r2] ${Object.keys(r2Map).length} chats no R2`);
 
       const normalized = filtered.map(c => {
         const n    = normalizeChat(c);
-        const meta = dbMeta[n.id] || {};
+        const meta = dbMeta[n.id] || dbMeta[n.id.replace(/\D/g, "")] || {};
         return { ...n, ...meta };
       });
 
@@ -632,23 +679,27 @@ export function useWAHA(operator) {
       const toAutoResolveIds = new Set();
 
       setChats(prev => {
-        // Augmenta prevMap: além de indexar por id, também indexa @lid chats pelo phone@c.us
-        // para que WAHA retorne @c.us e ainda encontre o estado local salvo como @lid
         const lidPhoneCache = readLidPhoneMap();
         const overrides = readOverrides();
+        // prevMap indexado por id E por chave canônica (dígitos do telefone)
+        // Garante que WAHA retornando @c.us encontre entrada salva como @lid (ou vice-versa)
         const prevMap = {};
+        const prevByPhone = {};
         for (const c of prev) {
           prevMap[c.id] = c;
-          if (c.id.endsWith("@lid")) {
-            const lidOnly = c.id.replace(/@lid$/, "");
-            const phone = lidPhoneCache[lidOnly]?.phone;
-            if (phone) prevMap[phone + "@c.us"] = c;
-          }
+          const ck = canonicalKey(c.id, lidPhoneCache);
+          if (ck) prevByPhone[ck] = c;
         }
         const merged  = normalized.map(n => {
-          const local   = prevMap[n.id];
-          const r2      = r2Map[n.id];
+          const ck = canonicalKey(n.id, lidPhoneCache);
+          const local   = prevMap[n.id] || (ck ? prevByPhone[ck] : undefined);
+          const r2      = r2Map[n.id] || (ck ? r2Map[ck] : undefined);
           const isMuted = mutedChatsRef.current.has(n.id);
+
+          // Grupos: sempre lidos — não têm timer de paciente
+          if (n.id.endsWith("@g.us")) {
+            return { ...n, ...(local || {}), unread: 0, lastPatientTs: null };
+          }
 
           // Seleciona melhor lastTs / lastMsg entre WAHA, R2 e local
           const wahaTsMs  = n.lastTs     ? new Date(n.lastTs).getTime()     : 0;
@@ -660,10 +711,8 @@ export function useWAHA(operator) {
             : wahaTsMs >= r2TsMs && n.lastMsg ? n.lastMsg
             : local?.lastMsg || n.lastMsg || r2?.lastMsg || "";
 
-          // Override manual do operador (markRead / resolveChat) — sobrepõe R2
-          // Usa local.id para manter o id canônico (@lid se houver)
-          const canonicalId = local?.id ?? n.id;
-          const ov = overrides[canonicalId] || overrides[n.id];
+          // Override manual do operador (markRead / resolveChat) — keyed por dígitos canônicos
+          const ov = ck ? overrides[ck] : (overrides[n.id] || null);
           const r2LptMs = r2?.lastPatientTs ? new Date(r2.lastPatientTs).getTime() : 0;
           // resolvedAt: considerado válido se não há nova mensagem do paciente após o override
           const ovResolved = ov?.resolvedAt && r2LptMs <= ov.resolvedAt;
@@ -678,11 +727,10 @@ export function useWAHA(operator) {
             const unread  = isMuted || closing || !lpt || ovRead || ovResolved ? 0 : r2?.unread || 0;
             const entry   = { ...n, lastMsg: bestLastMsg, lastTs: bestLastTs, lastPatientTs: closing || ovRead || ovResolved ? null : lpt, unread };
             const should30 = lpt && agora - new Date(lpt).getTime() > TRINTA_DIAS;
-            if ((closing || should30 || ovResolved) && entry.status !== "resolved") {
-              if (!closing && !should30) {} else toAutoResolveIds.add(entry.id);
+            if (closing || should30 || ovResolved) {
+              if (closing || should30) toAutoResolveIds.add(entry.id);
               return { ...entry, status: "resolved", unread: 0, lastPatientTs: null };
             }
-            if (ovResolved) return { ...entry, status: "resolved", unread: 0, lastPatientTs: null };
             return entry;
           }
 
@@ -1750,15 +1798,34 @@ export function useWAHA(operator) {
       ]);
       if (!Array.isArray(wahaRes)) return;
 
-      const r2Map    = Object.fromEntries((Array.isArray(r2Res) ? r2Res : []).map(c => [c.id, c]));
+      const lidCacheLight = readLidPhoneMap();
+      const r2Map = {};
+      for (const c of (Array.isArray(r2Res) ? r2Res : [])) {
+        r2Map[c.id] = c;
+        const ck = canonicalKey(c.id, lidCacheLight);
+        if (ck && ck !== c.id) r2Map[ck] = c;
+      }
       const normalized = wahaRes.map(c => normalizeChat(c));
+      const overrides = readOverrides();
 
       setChats(prev => {
-        const prevMap = Object.fromEntries(prev.map(c => [c.id, c]));
+        const prevMap = {};
+        const prevByPhone = {};
+        for (const c of prev) {
+          prevMap[c.id] = c;
+          const ck = canonicalKey(c.id, lidCacheLight);
+          if (ck) prevByPhone[ck] = c;
+        }
         const merged  = normalized.map(n => {
-          const local   = prevMap[n.id];
-          const r2      = r2Map[n.id];
+          const ck = canonicalKey(n.id, lidCacheLight);
+          const local   = prevMap[n.id] || (ck ? prevByPhone[ck] : undefined);
+          const r2      = r2Map[n.id] || (ck ? r2Map[ck] : undefined);
           const isMuted = mutedChatsRef.current.has(n.id);
+
+          // Grupos sempre lidos
+          if (n.id.endsWith("@g.us")) {
+            return { ...(local || n), unread: 0, lastPatientTs: null };
+          }
 
           const wahaTsMs  = n.lastTs   ? new Date(n.lastTs).getTime()   : 0;
           const r2TsMs    = r2?.lastTs || 0;
@@ -1771,22 +1838,29 @@ export function useWAHA(operator) {
 
           const lastTs = bestTsMs ? new Date(bestTsMs).toISOString() : (n.lastTs || local?.lastTs);
 
+          const ov = ck ? overrides[ck] : overrides[n.id];
+          const r2LptMs = r2?.lastPatientTs ? new Date(r2.lastPatientTs).getTime() : 0;
+          const ovResolved = ov?.resolvedAt && r2LptMs <= ov.resolvedAt;
+          const ovRead = ov?.readAt && r2LptMs <= ov.readAt;
+
           const r2Lpt   = r2?.lastPatientTs ? new Date(r2.lastPatientTs).getTime() : null;
           const localLpt = local?.lastPatientTs ? new Date(local.lastPatientTs).getTime() : null;
-          const lpt = isMuted ? null
+          const lpt = isMuted || ovRead || ovResolved ? null
             : r2?.lastPatientTs !== undefined
               ? (r2Lpt ? new Date(Math.max(r2Lpt, localLpt || 0)).toISOString() : null)
               : (local?.lastPatientTs ?? null);
 
-          const unread = isMuted || !lpt ? 0
+          const isResolved = local?.status === "resolved" || ovResolved || lastMsgIsClosing(lastMsg);
+          const unread = isMuted || isResolved || !lpt || ovRead ? 0
             : r2?.unread !== undefined
               ? Math.max(r2.unread || 0, local?.unread || 0)
               : (local?.unread ?? n.unread ?? 0);
 
           return {
             ...(local || n),
-            lastMsg, lastTs, unread, lastPatientTs: lpt,
-            status:     local?.status     ?? n.status,
+            lastMsg, lastTs, unread,
+            lastPatientTs: isResolved ? null : lpt,
+            status:     isResolved ? "resolved" : (local?.status ?? n.status),
             assignedTo: local?.assignedTo ?? n.assignedTo,
             tags:       local?.tags       ?? n.tags,
             pushname:   n.pushname || local?.pushname || r2?.pushname,
