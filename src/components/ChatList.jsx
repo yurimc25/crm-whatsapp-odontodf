@@ -492,7 +492,7 @@ function _altChatId(chatId) {
 
 // Busca e cacheia foto via GET /api/{session}/chats/{chatId}/picture
 // Tenta o ID principal e, se não achar, a variante com/sem dígito 9 (BR)
-export async function fetchAndCachePhoto(chatId, lidPhoneMap, cacheKey, forceRefresh = false) {
+export async function fetchAndCachePhoto(chatId, lidPhoneMap, cacheKey) {
   const photoChatId = resolvePhotoChatId(chatId, lidPhoneMap);
   if (!photoChatId) return null; // LID ainda não resolvido
 
@@ -506,11 +506,10 @@ export async function fetchAndCachePhoto(chatId, lidPhoneMap, cacheKey, forceRef
   if (_photoNullCache.has(key)) return null;
 
   // Endpoint correto: /api/contacts/profile-picture?contactId=...&session=...
-  // refresh=true força WAHA a ignorar o cache de 24h do servidor
-  async function _fetchOne(id, refresh = false) {
-    const contactId = encodeURIComponent(id);
-    const refreshParam = refresh ? "&refresh=true" : "";
-    const path = `/api/contacts/profile-picture?contactId=${contactId}&session=${PHOTO_SESSION}${refreshParam}`;
+  // Não usar encodeURIComponent no id aqui — o path inteiro já é encoded no proxy,
+  // resultando em duplo-encoding do @ (422 Unprocessable Content)
+  async function _fetchOne(id) {
+    const path = `/api/contacts/profile-picture?contactId=${id}&session=${PHOTO_SESSION}`;
     const r = await fetch(
       `/api/waha?path=${encodeURIComponent(path)}`,
       { headers: { "X-Internal-Key": PHOTO_IKEY } }
@@ -520,14 +519,12 @@ export async function fetchAndCachePhoto(chatId, lidPhoneMap, cacheKey, forceRef
   }
 
   try {
-    // Primeira tentativa normal; se vier do clearPhotoNullCache (abriu o chat), usa refresh=true
-    const isRefresh = forceRefresh || false;
-    let url = await _fetchOne(photoChatId, isRefresh);
+    let url = await _fetchOne(photoChatId);
 
     // Se não encontrou, tenta variante com/sem dígito 9 (números BR)
     if (!url) {
       const alt = _altChatId(photoChatId);
-      if (alt) url = await _fetchOne(alt, isRefresh);
+      if (alt) url = await _fetchOne(alt);
     }
 
     if (url) {

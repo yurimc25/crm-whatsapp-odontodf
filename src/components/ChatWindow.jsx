@@ -260,8 +260,7 @@ export default function ChatWindow({
   useEffect(() => {
     clearPhotoNullCache(chat.id); // permite retry mesmo que tenha falhado antes
     setPhotoUrl(readPhotoCache()[chat.id] || chat.photoUrl || null);
-    // forceRefresh=true: passa ?refresh=true ao WAHA para ignorar cache de 24h do servidor
-    fetchAndCachePhoto(chat.id, lidPhoneMap, chat.id, true).then(url => {
+    fetchAndCachePhoto(chat.id, lidPhoneMap, chat.id).then(url => {
       if (url) setPhotoUrl(url);
     });
     // Re-busca nome do contato ao abrir (pode ter chegado do R2 sem nome resolvido)
