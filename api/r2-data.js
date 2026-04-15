@@ -27,6 +27,54 @@ export default async function handler(req, res) {
 
   const { type, chatId } = req.query;
 
+  // ── POST: sync de chats (lista enriquecida para multi-usuário) ──
+  if (req.method === "POST" && type === "chats") {
+    let body;
+    try {
+      const raw = await new Promise((resolve, reject) => {
+        let data = "";
+        req.on("data", chunk => data += chunk);
+        req.on("end", () => resolve(data));
+        req.on("error", reject);
+      });
+      body = JSON.parse(raw);
+    } catch {
+      return res.status(400).json({ error: "JSON inválido" });
+    }
+
+    if (!Array.isArray(body)) {
+      return res.status(400).json({ error: "Esperado array de chats" });
+    }
+
+    try {
+      // Lê chats.json atual para merge (não sobrescreve dados de outros clientes)
+      const existing = await r2Get("chats.json").then(r =>
+        r ? JSON.parse(r.buf.toString("utf8")) : []
+      ).catch(() => []);
+
+      // Indexa existentes por id
+      const existMap = {};
+      for (const c of existing) if (c.id) existMap[c.id] = c;
+
+      // Merge: local vence se mais recente
+      for (const c of body) {
+        if (!c.id) continue;
+        const ex = existMap[c.id];
+        const localTs  = c.lastTs  || 0;
+        const remoteTs = ex?.lastTs || 0;
+        if (!ex || localTs >= remoteTs) {
+          existMap[c.id] = c;
+        }
+      }
+
+      const merged = Object.values(existMap);
+      await r2Put("chats.json", Buffer.from(JSON.stringify(merged), "utf8"), "application/json");
+      return res.status(200).json({ ok: true, count: merged.length });
+    } catch (e) {
+      return res.status(500).json({ error: e.message });
+    }
+  }
+
   // ── POST: upload de arquivo para R2 ─────────────────────────────
   if (req.method === "POST" && type === "upload") {
     const publicUrl = process.env.R2_PUBLIC_URL;

@@ -30,6 +30,32 @@ const T = {
   bubbleMe:  "#1e3a2a",   // bolha minha mensagem
 };
 
+function SyncDBButton({ onSync }) {
+  const [syncing, setSyncing] = useState(false);
+  const [lastSync, setLastSync] = useState(null);
+  return (
+    <button
+      title="Salvar lista de conversas na base de dados (multi-usuário)"
+      disabled={syncing}
+      onClick={async () => {
+        setSyncing(true);
+        try {
+          await onSync();
+          setLastSync(new Date().toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" }));
+        } finally {
+          setSyncing(false);
+        }
+      }}
+      style={{ background:"transparent", border:`1px solid #333`,
+        borderRadius:6, padding:"4px 8px",
+        color: syncing ? "#888" : lastSync ? "#4caf87" : "#888",
+        fontSize:11, cursor: syncing ? "wait" : "pointer",
+        transition:"all .15s", whiteSpace:"nowrap" }}>
+      {syncing ? "⏳" : lastSync ? `✓ ${lastSync}` : "⬆ Sync DB"}
+    </button>
+  );
+}
+
 export default function CRMLayout({ operator, onLogout, notificationBell }) {
   const [activeChat, setActiveChat]     = useState(null);
   const [filter, setFilter]             = useState("all");
@@ -44,7 +70,7 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
   const {
     chats, messages, loadMessages, loadOlderMessages, send, deleteMsg, editMsg,
     deleteChat, forwardChat, resolveChat, markRead, markUnread, searchMessages,
-    resyncChats, mutedChats, muteChat, unmuteChat, loading, error, wsStatus, myJid,
+    resyncChats, syncChatsToR2, mutedChats, muteChat, unmuteChat, loading, error, wsStatus, myJid,
   } = useWAHA(operator);
 
   const perms = ROLE_PERMISSIONS[operator.role] || {};
@@ -107,14 +133,14 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
     .filter(c => filter === "all" || c.status === filter)
     .map(c => ({
       ...c,
-      name:  displayName(c.id, c.pushname, c.pushname),
+      name:  displayName(c.id, c.name || c.pushname, c.pushname),
       phone: formatPhone(wahaIdToPhone(c.id)),
     }));
 
   function handleSelectChat(rawChat) {
     setActiveChat({
       ...rawChat,
-      name:  displayName(rawChat.id, rawChat.pushname, rawChat.pushname),
+      name:  displayName(rawChat.id, rawChat.name || rawChat.pushname, rawChat.pushname),
       phone: formatPhone(wahaIdToPhone(rawChat.id)),
     });
     loadMessages(rawChat.id);
@@ -262,6 +288,10 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
               onMouseLeave={e => { e.currentTarget.style.background="transparent"; e.currentTarget.style.color=T.sub; }}>
               ☁️
             </button>
+          )}
+          {/* Sync forçado do chatlist para a base — gerente/admin */}
+          {(operator.role === "gerente" || operator.role === "admin") && (
+            <SyncDBButton onSync={syncChatsToR2} />
           )}
         </div>
       </div>

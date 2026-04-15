@@ -146,7 +146,7 @@ export function useContacts() {
   // Fila para throttle de resolução de LIDs — evita saturar conexões do Chrome
   const lidQueue = useRef([]);
   const lidQueueRunning = useRef(false);
-  const MAX_CONCURRENT_LIDS = 3;
+  const MAX_CONCURRENT_LIDS = 6;
   const activeLidFetches = useRef(0);
 
   function _drainLidQueue() {
@@ -588,7 +588,7 @@ export function useContacts() {
     if (resolved) return resolved;
     if (wahaId?.endsWith("@lid")) {
       const lidOnly  = wahaId.replace(/@lid$/, "");
-      const cached   = lidPhoneMap[lidOnly];
+      const cached   = lidPhoneMapRef.current[lidOnly];
       if (cached?.phone) return formatPhone(cached.phone);
       if (cached?.pushName) return cached.pushName;
       return pushname || fallback || null;
@@ -614,7 +614,9 @@ export function useContacts() {
       const fmtPhone = phone ? formatPhone(phone) : null;
       const contactName = resolveName(wahaId, effectivePush);
       // Nome a exibir: contato salvo > pushname do chat > pushName do WAHA > fallback > telefone formatado
-      const displayLabel = contactName || effectivePush || fallbackName || fmtPhone || null;
+      // Último recurso: dígitos do LID (melhor que "—")
+      const lidDigits = wahaId.replace(/@lid$/, "");
+      const displayLabel = contactName || effectivePush || fallbackName || fmtPhone || lidDigits || null;
       return {
         hasContact: !!contactName,
         name:       displayLabel || "—",

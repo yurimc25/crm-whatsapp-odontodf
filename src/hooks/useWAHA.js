@@ -439,7 +439,11 @@ export function useWAHA(operator) {
   const seenMsgIds      = useRef({});     // chatId → Set<id> — dedup fora de state updater
   const mutedChatsRef   = useRef(mutedChats);
   useEffect(() => { mutedChatsRef.current = mutedChats; }, [mutedChats]);
-  const { lookupPhone, lookupPhonePriority, searchByName, addLocalContact, resolveName } = useContactsCtx();
+  const { lookupPhone, lookupPhonePriority, searchByName, addLocalContact, resolveName, displayName, lidPhoneMap } = useContactsCtx();
+  const lidPhoneMapRef2 = useRef(lidPhoneMap);
+  useEffect(() => { lidPhoneMapRef2.current = lidPhoneMap; }, [lidPhoneMap]);
+  const displayNameRef = useRef(displayName);
+  useEffect(() => { displayNameRef.current = displayName; }, [displayName]);
 
   const perms = { verTodos: operator?.role === "gerente" || operator?.role === "admin" };
 
@@ -469,7 +473,10 @@ export function useWAHA(operator) {
   // Estratégia: cache local → R2 (webhook data) → WAHA completo
   useEffect(() => {
     if (!sessionOk || USE_MOCK) return;
-    loadChats();
+    loadChats().then(() => {
+      // Após carregar, envia estado local para R2 para manter base multi-usuário atualizada
+      setTimeout(_syncChatsToR2, 5000);
+    });
   }, [sessionOk]);
 
   // Aplica dados do R2 sobre o estado atual de chats
@@ -587,7 +594,10 @@ export function useWAHA(operator) {
   // Auto-resync leve a cada 5 minutos (sem reset de lastSync)
   useEffect(() => {
     if (!sessionOk || USE_MOCK) return;
-    const iv = setInterval(_lightResync, 5 * 60 * 1000);
+    const iv = setInterval(() => {
+      _lightResync();
+      _syncChatsToR2();
+    }, 5 * 60 * 1000);
     return () => clearInterval(iv);
   }, [sessionOk]);
 
@@ -1847,6 +1857,7 @@ export function useWAHA(operator) {
     markUnread,
     searchMessages,
     resyncChats,
+    syncChatsToR2: _syncChatsToR2,
     mutedChats,
     muteChat,
     unmuteChat,
@@ -1855,6 +1866,61 @@ export function useWAHA(operator) {
     wsStatus,
     myJid,
   };
+
+  // ── Sync de chats para R2 (multi-usuário) — a cada 5 min ────────────────────────────────
+  // Envia a lista local enriquecida (nome resolvido, LID→phone, última mensagem) para R2.
+  // O servidor faz merge: chats mais recentes vencem, sem apagar dados de outros clientes.
+  async function _syncChatsToR2() {
+    if (USE_MOCK) return;
+    const chats = _sessionChats.value || [];
+    if (!chats.length) return;
+    const lidCache = lidPhoneMapRef2.current;
+    try {
+      const payload = chats
+        .filter(c => c.id && !c.id.endsWith("@s.whatsapp.net"))
+        .map(c => {
+          // Resolve ID canônico: @lid → phone@c.us se possível
+          let resolvedId = c.id;
+          let resolvedPhone = null;
+          if (c.id.endsWith("@lid")) {
+            const lidOnly = c.id.replace(/@lid$/, "");
+            const cached  = lidCache[lidOnly];
+            if (cached?.phone) {
+              resolvedPhone = cached.phone;
+              resolvedId = cached.phone.replace(/\D/g, "") + "@c.us";
+            }
+          } else if (!c.id.endsWith("@g.us")) {
+            resolvedPhone = c.id.replace(/@.*$/, "").replace(/\D/g, "") || null;
+          }
+
+          // Nome: usa displayName (via ref para evitar closure stale)
+          const name = displayNameRef.current(c.id, c.name || c.pushname, c.pushname) || c.name || c.pushname || null;
+
+          return {
+            id:            resolvedId,
+            originalId:    resolvedId !== c.id ? c.id : undefined,
+            phone:         resolvedPhone,
+            pushname:      name || c.pushname || "",
+            lastMsg:       c.lastMsg  || "",
+            lastTs:        c.lastTs   ? new Date(c.lastTs).getTime() : 0,
+            lastPatientTs: c.lastPatientTs ? new Date(c.lastPatientTs).getTime() : null,
+            unread:        c.unread   || 0,
+            status:        c.status   || "open",
+            assignedTo:    c.assignedTo || null,
+            tags:          c.tags     || [],
+          };
+        });
+
+      await fetch("/api/r2-data?type=chats", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json", "X-Internal-Key": ikey() },
+        body:    JSON.stringify(payload),
+      });
+      console.log(`[r2-sync] ${payload.length} chats enviados para R2`);
+    } catch (e) {
+      console.warn("[r2-sync] falha:", e.message);
+    }
+  }
 
   // ── Resync leve (automático, a cada 5 min): limit=200 via proxy, sem reset de lastSync ──
   async function _lightResync() {
@@ -1980,6 +2046,7 @@ export function useWAHA(operator) {
     // R2 já é aplicado internamente — não precisa de applyR2Chats() extra
     await loadChats(true);
     console.log("[resync] concluído");
+    setTimeout(_syncChatsToR2, 3000);
   }
 }
 
