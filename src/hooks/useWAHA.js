@@ -10,7 +10,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useContactsCtx } from "../App";
 import {
   getChats, getMessages, sendText, getSessionStatus,
-  normalizeChat, normalizeMessage, getProfilePicture,
+  normalizeChat, normalizeMessage,
   deleteMessage as wahaDeleteMessage, editMessage as wahaEditMessage,
 } from "../services/waha";
 import { MOCK_CHATS, MOCK_MESSAGES } from "../data/mock";
@@ -687,10 +687,11 @@ export function useWAHA(operator) {
     }
   }
 
-  // ── Fotos de perfil — lotes de 10, cache 24h no localStorage ──
+  // ── Fotos de perfil — via proxy /api/waha, cache 24h ──
   async function loadProfilePictures(chatIds) {
-    const PHOTO_KEY = "waha_photos_v2";
+    const PHOTO_KEY = "waha_photos_v3";
     const PHOTO_TTL = 24 * 60 * 60 * 1000;
+    const SESSION   = import.meta.env.VITE_WAHA_SESSION || "default";
     let photoCache  = {};
     try {
       const raw = localStorage.getItem(PHOTO_KEY);
@@ -700,35 +701,43 @@ export function useWAHA(operator) {
       }
     } catch {}
 
-    // Aplica fotos em cache imediatamente (antes de buscar novas)
-    const cachedWithUrl = Object.entries(photoCache).filter(([, v]) => v);
-    if (cachedWithUrl.length) {
-      setChats(prev => {
-        const changed = prev.some(c => photoCache[c.id] !== undefined && c.photoUrl !== photoCache[c.id]);
-        if (!changed) return prev;
-        return prev.map(c => photoCache[c.id] !== undefined ? { ...c, photoUrl: photoCache[c.id] } : c);
-      });
+    // Aplica fotos já em cache imediatamente
+    const cachedUrls = Object.fromEntries(Object.entries(photoCache).filter(([, v]) => v));
+    if (Object.keys(cachedUrls).length) {
+      setChats(prev => prev.map(c => cachedUrls[c.id] ? { ...c, photoUrl: cachedUrls[c.id] } : c));
     }
 
-    // Busca fotos que não estão em cache ainda
-    const semFoto = chatIds.filter(id => !(id in photoCache));
+    // Busca fotos ausentes do cache (inclui quem tem null — pode ter sido erro anterior)
+    // Só pula se já tem URL válida
+    const semFoto = chatIds.filter(id => !photoCache[id]);
     if (!semFoto.length) return;
 
-    const BATCH = 10;
+    async function fetchPhoto(chatId) {
+      const id = encodeURIComponent(chatId);
+      try {
+        const r = await fetch(
+          `/api/waha?path=/api/contacts/profile-picture&contactId=${id}&session=${SESSION}`,
+          { headers: { "X-Internal-Key": ikey() } }
+        );
+        if (!r.ok) return null;
+        const data = await r.json();
+        return data?.profilePictureURL || data?.pictureUrl || data?.url || null;
+      } catch { return null; }
+    }
+
+    const BATCH = 5;
     for (let i = 0; i < semFoto.length; i += BATCH) {
       const batch = semFoto.slice(i, i + BATCH);
-      const results = await Promise.allSettled(
-        batch.map(async (chatId) => {
-          const url = await getProfilePicture(chatId).catch(() => null);
-          return { chatId, url };
-        })
-      );
+      const results = await Promise.allSettled(batch.map(async (chatId) => ({
+        chatId, url: await fetchPhoto(chatId),
+      })));
+
       const updates = {};
       for (const r of results) {
         if (r.status === "fulfilled") {
           const { chatId, url } = r.value;
-          photoCache[chatId] = url;
-          if (url) updates[chatId] = url; // só atualiza UI se tiver foto real
+          photoCache[chatId] = url || null;
+          if (url) updates[chatId] = url;
         }
       }
       try {
@@ -738,12 +747,12 @@ export function useWAHA(operator) {
       } catch {}
       if (Object.keys(updates).length) {
         setChats(prev => {
-          const updated = prev.map(c => c.id in updates ? { ...c, photoUrl: updates[c.id] } : c);
-          persistChats(updated);
-          return updated;
+          const next = prev.map(c => c.id in updates ? { ...c, photoUrl: updates[c.id] } : c);
+          persistChats(next);
+          return next;
         });
       }
-      if (i + BATCH < semFoto.length) await new Promise(r => setTimeout(r, 500));
+      if (i + BATCH < semFoto.length) await new Promise(r => setTimeout(r, 300));
     }
   }
 
