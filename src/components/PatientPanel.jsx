@@ -160,7 +160,7 @@ export default function PatientPanel({ chat, operator }) {
     let cancelled = false;
     async function buscar() {
       try {
-        const phone = info.phone.replace(/\D/g, "");
+        const phone = (info.phone || "").replace(/\D/g, "");
         const tail8 = phone.slice(-8);
         // Filtra pacientes cujo telefone compartilha >= 8 dígitos finais com o número do chat
         function matchesPhone(p) {

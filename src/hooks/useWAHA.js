@@ -472,6 +472,8 @@ export function useWAHA(operator) {
   useEffect(() => { displayNameRef.current = displayName; }, [displayName]);
   const resolveLidAsyncRef = useRef(resolveLidAsync);
   useEffect(() => { resolveLidAsyncRef.current = resolveLidAsync; }, [resolveLidAsync]);
+  const lookupPhoneRef = useRef(lookupPhone);
+  useEffect(() => { lookupPhoneRef.current = lookupPhone; }, [lookupPhone]);
 
   const perms = { verTodos: operator?.role === "gerente" || operator?.role === "admin" };
 
@@ -1981,7 +1983,7 @@ export function useWAHA(operator) {
       }
       // Se já tem phone mas não tem nome, tenta lookup pelo phone
       if (cached?.phone && !cached?.pushName) {
-        lookupPhone(cached.phone + "@c.us").catch(() => {});
+        lookupPhoneRef.current(cached.phone + "@c.us").catch(() => {});
         continue;
       }
       // Sem phone — enfileira para resolução completa (LID → phone → nome)
@@ -2019,15 +2021,15 @@ export function useWAHA(operator) {
       setChats(prev => {
         const prevMap = {};
         const prevByPhone = {};
-        for (const c of prev) {
-          prevMap[c.id] = c;
-          const ck = canonicalKey(c.id, lidCacheLight);
-          if (ck) prevByPhone[ck] = c;
+        for (const pc0 of prev) {
+          prevMap[pc0.id] = pc0;
+          const pc0k = canonicalKey(pc0.id, lidCacheLight);
+          if (pc0k) prevByPhone[pc0k] = pc0;
         }
         const merged  = normalized.map(n => {
-          const ck = canonicalKey(n.id, lidCacheLight);
-          const local   = prevMap[n.id] || (ck ? prevByPhone[ck] : undefined);
-          const r2      = r2Map[n.id] || (ck ? r2Map[ck] : undefined);
+          const nck = canonicalKey(n.id, lidCacheLight);
+          const local   = prevMap[n.id] || (nck ? prevByPhone[nck] : undefined);
+          const r2      = r2Map[n.id] || (nck ? r2Map[nck] : undefined);
           const isMuted = mutedChatsRef.current.has(n.id);
 
 
@@ -2043,7 +2045,7 @@ export function useWAHA(operator) {
 
           const lastTs = bestTsMs ? new Date(bestTsMs).toISOString() : (n.lastTs || local?.lastTs);
 
-          const ov = ck ? overrides[ck] : overrides[n.id];
+          const ov = nck ? overrides[nck] : overrides[n.id];
           const r2LptMs = r2?.lastPatientTs ? new Date(r2.lastPatientTs).getTime() : 0;
           const ovResolved = ov?.resolvedAt && r2LptMs <= ov.resolvedAt;
           const ovRead = ov?.readAt && r2LptMs <= ov.readAt;
@@ -2083,17 +2085,17 @@ export function useWAHA(operator) {
         // Usa chave canônica para evitar duplicatas quando o mesmo contato aparece
         // em formatos diferentes (@lid vs @c.us).
         const mergedKeys = new Set();
-        for (const c of merged) {
-          mergedKeys.add(c.id);
-          const ck = canonicalKey(c.id, lidCacheLight);
-          if (ck) mergedKeys.add(ck);
+        for (const mc of merged) {
+          mergedKeys.add(mc.id);
+          const mck = canonicalKey(mc.id, lidCacheLight);
+          if (mck) mergedKeys.add(mck);
         }
-        for (const c of prev) {
-          const ck = canonicalKey(c.id, lidCacheLight);
-          if (!mergedKeys.has(c.id) && !(ck && mergedKeys.has(ck))) {
-            merged.push(c);
-            mergedKeys.add(c.id);
-            if (ck) mergedKeys.add(ck);
+        for (const pc of prev) {
+          const pck = canonicalKey(pc.id, lidCacheLight);
+          if (!mergedKeys.has(pc.id) && !(pck && mergedKeys.has(pck))) {
+            merged.push(pc);
+            mergedKeys.add(pc.id);
+            if (pck) mergedKeys.add(pck);
           }
         }
         const deduped = _dedupeChats(merged);
