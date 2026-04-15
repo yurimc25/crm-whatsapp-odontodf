@@ -492,7 +492,7 @@ function _altChatId(chatId) {
 
 // Busca e cacheia foto via GET /api/{session}/chats/{chatId}/picture
 // Tenta o ID principal e, se não achar, a variante com/sem dígito 9 (BR)
-export async function fetchAndCachePhoto(chatId, lidPhoneMap, cacheKey) {
+export async function fetchAndCachePhoto(chatId, lidPhoneMap, cacheKey, forceRefresh = false) {
   const photoChatId = resolvePhotoChatId(chatId, lidPhoneMap);
   if (!photoChatId) return null; // LID ainda não resolvido
 
@@ -505,22 +505,29 @@ export async function fetchAndCachePhoto(chatId, lidPhoneMap, cacheKey) {
   // Já tentou esta sessão e não tinha foto — não repete até F5
   if (_photoNullCache.has(key)) return null;
 
-  async function _fetchOne(id) {
+  // Endpoint correto: /api/contacts/profile-picture?contactId=...&session=...
+  // refresh=true força WAHA a ignorar o cache de 24h do servidor
+  async function _fetchOne(id, refresh = false) {
+    const contactId = encodeURIComponent(id);
+    const refreshParam = refresh ? "&refresh=true" : "";
+    const path = `/api/contacts/profile-picture?contactId=${contactId}&session=${PHOTO_SESSION}${refreshParam}`;
     const r = await fetch(
-      `/api/waha?path=/api/${PHOTO_SESSION}/chats/${encodeURIComponent(id)}/picture`,
+      `/api/waha?path=${encodeURIComponent(path)}`,
       { headers: { "X-Internal-Key": PHOTO_IKEY } }
     );
     const data = r.ok ? await r.json() : null;
-    return data?.url || null;
+    return data?.profilePictureURL || data?.pictureUrl || data?.url || null;
   }
 
   try {
-    let url = await _fetchOne(photoChatId);
+    // Primeira tentativa normal; se vier do clearPhotoNullCache (abriu o chat), usa refresh=true
+    const isRefresh = forceRefresh || false;
+    let url = await _fetchOne(photoChatId, isRefresh);
 
     // Se não encontrou, tenta variante com/sem dígito 9 (números BR)
     if (!url) {
       const alt = _altChatId(photoChatId);
-      if (alt) url = await _fetchOne(alt);
+      if (alt) url = await _fetchOne(alt, isRefresh);
     }
 
     if (url) {
