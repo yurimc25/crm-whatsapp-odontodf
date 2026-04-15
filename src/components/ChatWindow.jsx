@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { fetchAndCachePhoto, readPhotoCache } from "./ChatList";
+import { fetchAndCachePhoto, readPhotoCache, clearPhotoNullCache } from "./ChatList";
 import PatientCardDetected from "./modules/PatientCardDetected";
 import { QuickMessages } from "./modules/QuickMessages";
 import { useContactsCtx } from "../App";
@@ -252,12 +252,27 @@ export default function ChatWindow({
   const bottomRef   = useRef(null);
   const scrollRef   = useRef(null);
   const prevScrollH = useRef(0);
-  const { displayInfo, addLocalContact, removeContact, lidPhoneMap } = useContactsCtx();
+  const { displayInfo, addLocalContact, removeContact, lidPhoneMap, lookupPhonePriority, resolveLidAsync } = useContactsCtx();
   const info = displayInfo(chat.id, chat.name, chat.pushname);
   const [photoUrl, setPhotoUrl] = useState(() => readPhotoCache()[chat.id] || chat.photoUrl || null);
 
+  // Ao abrir o chat: força re-fetch de foto e nome (útil para chats vindos do R2 sem esses dados)
   useEffect(() => {
+    clearPhotoNullCache(chat.id); // permite retry mesmo que tenha falhado antes
     setPhotoUrl(readPhotoCache()[chat.id] || chat.photoUrl || null);
+    fetchAndCachePhoto(chat.id, lidPhoneMap, chat.id).then(url => {
+      if (url) setPhotoUrl(url);
+    });
+    // Re-busca nome do contato ao abrir (pode ter chegado do R2 sem nome resolvido)
+    if (chat.id?.endsWith("@lid")) {
+      resolveLidAsync(chat.id);
+    } else if (!chat.id?.endsWith("@g.us")) {
+      lookupPhonePriority(chat.id).catch(() => {});
+    }
+  }, [chat.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Re-tenta foto quando LID é resolvido (lidPhoneMap muda)
+  useEffect(() => {
     fetchAndCachePhoto(chat.id, lidPhoneMap, chat.id).then(url => {
       if (url) setPhotoUrl(url);
     });

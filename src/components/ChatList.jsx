@@ -436,7 +436,10 @@ export function readPhotoCache() {
     const raw = localStorage.getItem(PHOTO_CACHE_KEY);
     if (!raw) return {};
     const p = JSON.parse(raw);
-    return Date.now() < p.expires ? (p.value || {}) : {};
+    if (Date.now() >= p.expires) return {};
+    // Filtra entradas null — não persiste "sem foto" (pode ter mudado)
+    const map = p.value || {};
+    return Object.fromEntries(Object.entries(map).filter(([, v]) => v));
   } catch { return {}; }
 }
 export function writePhotoCache(map) {
@@ -461,7 +464,34 @@ export function resolvePhotoChatId(chatId, lidPhoneMap) {
 // mas permite nova tentativa após F5 (ao contrário de salvar null no localStorage)
 const _photoNullCache = new Set();
 
+// Remove um ID do cache null para forçar re-fetch (ex: ao abrir o chat)
+export function clearPhotoNullCache(chatId) {
+  _photoNullCache.delete(chatId);
+  const alt = _altChatId(chatId);
+  if (alt) _photoNullCache.delete(alt);
+}
+
+// Gera variante alternativa do número BR (com/sem 9 extra)
+function _altChatId(chatId) {
+  if (!chatId?.endsWith("@c.us")) return null;
+  const digits = chatId.replace(/@c\.us$/, "");
+  if (!digits.startsWith("55") || digits.length < 12) return null;
+  const local = digits.slice(2); // remove DDI 55
+  const ddd = local.slice(0, 2);
+  const num = local.slice(2);
+  if (num.length === 9 && num.startsWith("9")) {
+    // tem 9 extra → variante sem 9
+    return `55${ddd}${num.slice(1)}@c.us`;
+  }
+  if (num.length === 8) {
+    // sem 9 → variante com 9
+    return `55${ddd}9${num}@c.us`;
+  }
+  return null;
+}
+
 // Busca e cacheia foto via GET /api/{session}/chats/{chatId}/picture
+// Tenta o ID principal e, se não achar, a variante com/sem dígito 9 (BR)
 export async function fetchAndCachePhoto(chatId, lidPhoneMap, cacheKey) {
   const photoChatId = resolvePhotoChatId(chatId, lidPhoneMap);
   if (!photoChatId) return null; // LID ainda não resolvido
@@ -475,16 +505,25 @@ export async function fetchAndCachePhoto(chatId, lidPhoneMap, cacheKey) {
   // Já tentou esta sessão e não tinha foto — não repete até F5
   if (_photoNullCache.has(key)) return null;
 
-  const encodedId = encodeURIComponent(photoChatId);
-  try {
+  async function _fetchOne(id) {
     const r = await fetch(
-      `/api/waha?path=/api/${PHOTO_SESSION}/chats/${encodedId}/picture`,
+      `/api/waha?path=/api/${PHOTO_SESSION}/chats/${encodeURIComponent(id)}/picture`,
       { headers: { "X-Internal-Key": PHOTO_IKEY } }
     );
     const data = r.ok ? await r.json() : null;
-    const url = data?.url || null;
+    return data?.url || null;
+  }
+
+  try {
+    let url = await _fetchOne(photoChatId);
+
+    // Se não encontrou, tenta variante com/sem dígito 9 (números BR)
+    if (!url) {
+      const alt = _altChatId(photoChatId);
+      if (alt) url = await _fetchOne(alt);
+    }
+
     if (url) {
-      // Só persiste no localStorage quando há URL real
       writePhotoCache({ ...readPhotoCache(), [key]: url });
     } else {
       // Sem foto: marca só em memória (retry possível após F5)
@@ -492,7 +531,7 @@ export async function fetchAndCachePhoto(chatId, lidPhoneMap, cacheKey) {
     }
     return url;
   } catch {
-    // Erro de rede: não marca como null permanente, permite retry
+    // Erro de rede: permite retry (não marca como null)
     return null;
   }
 }
