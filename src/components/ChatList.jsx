@@ -463,13 +463,26 @@ function ChatItem({ chat, active, onClick, onOpenMenu, isMuted, now }) {
   }, [chat.id, resolveLidAsync]);
 
   // Carrega foto de perfil com cache localStorage
+  // Para @lid: usa o telefone resolvido (@c.us) — @lid causa 504 na API de foto do WAHA
   useEffect(() => {
-    const cache = readPhotoCache();
-    if (cache[chat.id] !== undefined) {
-      if (cache[chat.id]) setPhotoUrl(cache[chat.id]);
-      return; // já em cache (com ou sem foto)
+    // Determina qual contactId usar para buscar a foto
+    let photoContactId = chat.id;
+    if (chat.id?.endsWith("@lid")) {
+      // Usa telefone resolvido se disponível, senão aguarda resolução
+      const rawPhone = info.phone && info.phone !== "—"
+        ? info.phone.replace(/\D/g, "")
+        : null;
+      if (!rawPhone) return; // LID ainda não resolvido — aguarda re-render
+      photoContactId = rawPhone + "@c.us";
     }
-    const id = encodeURIComponent(chat.id);
+
+    const cache = readPhotoCache();
+    const cacheKey = chat.id; // chaveado pelo id do chat (estável)
+    if (cache[cacheKey] !== undefined) {
+      if (cache[cacheKey]) setPhotoUrl(cache[cacheKey]);
+      return;
+    }
+    const id = encodeURIComponent(photoContactId);
     fetch(
       `/api/waha?path=/api/contacts/profile-picture&contactId=${id}&session=${SESSION}`,
       { headers: { "X-Internal-Key": IKEY } }
@@ -477,15 +490,15 @@ function ChatItem({ chat, active, onClick, onOpenMenu, isMuted, now }) {
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         const url = data?.profilePictureURL || data?.pictureUrl || data?.url || null;
-        const updated = { ...readPhotoCache(), [chat.id]: url };
+        const updated = { ...readPhotoCache(), [cacheKey]: url };
         writePhotoCache(updated);
         if (url) setPhotoUrl(url);
       })
       .catch(() => {
-        const updated = { ...readPhotoCache(), [chat.id]: null };
+        const updated = { ...readPhotoCache(), [cacheKey]: null };
         writePhotoCache(updated);
       });
-  }, [chat.id]);
+  }, [chat.id, info.phone]);
 
   const hasUnread = !active && !isMuted && (chat.unread > 0);
 

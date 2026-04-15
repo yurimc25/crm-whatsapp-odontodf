@@ -128,9 +128,16 @@ function _dedupeChats(chats) {
       const ex    = deduped[existIdx];
       const exTs  = ex.lastTs  ? new Date(ex.lastTs).getTime()   : 0;
       const newTs = chat.lastTs ? new Date(chat.lastTs).getTime() : 0;
+      // Prefere @lid (alimentado pelo webhook/R2 em tempo real) sobre @c.us (lista WAHA)
+      const lidId  = ex.id.endsWith("@lid") ? ex.id : (chat.id.endsWith("@lid") ? chat.id : null);
+      const cusId  = ex.id.endsWith("@c.us") ? ex.id : (chat.id.endsWith("@c.us") ? chat.id : null);
+      const bestId = lidId || cusId || ex.id;
+      // Para dados do chat, prioriza o @lid (tem lastMsg/lastTs mais recentes via webhook)
+      const lidChat = ex.id.endsWith("@lid") ? ex : (chat.id.endsWith("@lid") ? chat : null);
+      const base    = lidChat || (newTs > exTs ? chat : ex);
       deduped[existIdx] = {
-        ...(newTs > exTs ? chat : ex),
-        id:            ex.id.endsWith("@c.us") ? ex.id : (chat.id.endsWith("@c.us") ? chat.id : ex.id),
+        ...base,
+        id:            bestId,
         photoUrl:      ex.photoUrl   || chat.photoUrl,
         unread:        Math.max(ex.unread || 0, chat.unread || 0),
         lastPatientTs: ex.lastPatientTs || chat.lastPatientTs,
