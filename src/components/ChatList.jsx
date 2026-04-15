@@ -516,6 +516,7 @@ function ChatItem({ chat, active, onClick, onOpenMenu, isMuted, now }) {
 
       {/* Conteúdo */}
       <div style={{ flex:1, minWidth:0 }}>
+        {/* Linha 1: Nome + tempo de espera */}
         <div style={{ display:"flex", justifyContent:"space-between",
           alignItems:"baseline", marginBottom:1 }}>
           <span style={{ color: info.hasContact ? T.text : T.sub,
@@ -523,7 +524,7 @@ function ChatItem({ chat, active, onClick, onOpenMenu, isMuted, now }) {
             fontWeight: hasUnread ? 700 : info.hasContact ? 500 : 400,
             overflow:"hidden", textOverflow:"ellipsis",
             whiteSpace:"nowrap", maxWidth:160 }}>
-            {info.hasContact ? info.name : info.phone}
+            {info.hasContact ? info.name : (info.line1 || info.phone)}
           </span>
           {timeSince && (
             <span style={{ fontSize:10, fontWeight:700,
@@ -533,13 +534,15 @@ function ChatItem({ chat, active, onClick, onOpenMenu, isMuted, now }) {
           )}
         </div>
 
-        {info.hasContact && (
+        {/* Linha 2: Telefone (quando há nome real acima, para não duplicar) */}
+        {info.phone && info.phone !== "—" && info.phone !== (info.line1 || info.name) && (
           <div style={{ color:T.sub, fontSize:10,
             fontFamily:"'DM Mono', monospace", marginBottom:2 }}>
             {info.phone}
           </div>
         )}
 
+        {/* Linha 3: Última mensagem */}
         <div style={{ color: hasUnread ? "#ccc" : T.sub,
           fontSize:12, fontWeight: hasUnread ? 500 : 400,
           overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
