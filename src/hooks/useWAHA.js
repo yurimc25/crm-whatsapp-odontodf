@@ -161,6 +161,33 @@ try {
 const LAST_SYNC_KEY  = "waha_last_sync_ts";       // timestamp da última sync bem-sucedida
 const ikey           = () => import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
 
+// ── Overrides manuais de status/leitura — sobrevivem ao reload ──────────────
+// Estrutura: { [chatId]: { resolvedAt?, readAt? } }
+// resolvedAt: timestamp quando o operador resolveu manualmente
+// readAt: timestamp quando o operador marcou como lido (R2 não sobrescreve se lastPatientTs <= readAt)
+const OVERRIDE_KEY = "crm_status_overrides";
+function readOverrides() {
+  try { return JSON.parse(localStorage.getItem(OVERRIDE_KEY) || "{}"); } catch { return {}; }
+}
+function saveOverride(chatId, patch) {
+  try {
+    const cur = readOverrides();
+    localStorage.setItem(OVERRIDE_KEY, JSON.stringify({ ...cur, [chatId]: { ...(cur[chatId] || {}), ...patch } }));
+  } catch {}
+}
+function clearOverride(chatId) {
+  try {
+    const cur = readOverrides();
+    delete cur[chatId];
+    localStorage.setItem(OVERRIDE_KEY, JSON.stringify(cur));
+  } catch {}
+}
+
+// Lê lid_phone_map do localStorage para bridge LID→phone em loadChats
+function readLidPhoneMap() {
+  try { return JSON.parse(localStorage.getItem("lid_phone_map") || "{}"); } catch { return {}; }
+}
+
 // Resolve um @lid para o JID @c.us real.
 // Estratégia (em ordem):
 //   1. Cache (_lidToJid) — resultado anterior
@@ -432,6 +459,7 @@ export function useWAHA(operator) {
         if (!base.length) { console.log("[r2] applyR2Chats: sem base, aguardando WAHA"); return prev; }
         console.log(`[r2] applyR2Chats: prev=${prev.length} base=${base.length}`);
         const localIds = new Set(base.map(c => c.id));
+        const overrides = readOverrides();
         let changed = false;
         const updated = base.map(c => {
           const r2 = r2Map[c.id];
@@ -442,15 +470,20 @@ export function useWAHA(operator) {
           changed = true;
           const isMuted  = mutedChatsRef.current.has(c.id);
           const closing  = lastMsgIsClosing(r2.lastMsg || c.lastMsg);
-          const lpt = isMuted || closing ? null
+          // Verifica overrides manuais do operador
+          const ov = overrides[c.id];
+          const r2LptMs = r2.lastPatientTs ? new Date(r2.lastPatientTs).getTime() : 0;
+          const ovResolved = ov?.resolvedAt && r2LptMs <= ov.resolvedAt;
+          const ovRead = ov?.readAt && r2LptMs <= ov.readAt;
+          const lpt = isMuted || closing || ovRead || ovResolved ? null
             : (r2.lastPatientTs ? new Date(r2.lastPatientTs).toISOString() : null);
           // Não sobrescreve unread=0 local com valor maior do R2 se o chat já foi lido
           // (c.unread===0 e c.lastPatientTs===null = operador marcou como lido)
           const alreadyRead = c.unread === 0 && !c.lastPatientTs;
-          const unread = isMuted || closing || !lpt ? 0
+          const unread = isMuted || closing || !lpt || ovRead || ovResolved ? 0
             : alreadyRead ? 0
             : Math.max(r2.unread || 0, c.unread || 0);
-          const isResolved = c.status === "resolved" || closing;
+          const isResolved = c.status === "resolved" || closing || ovResolved;
           return {
             ...c,
             lastMsg:       r2.lastMsg || c.lastMsg,
@@ -599,7 +632,19 @@ export function useWAHA(operator) {
       const toAutoResolveIds = new Set();
 
       setChats(prev => {
-        const prevMap = Object.fromEntries(prev.map(c => [c.id, c]));
+        // Augmenta prevMap: além de indexar por id, também indexa @lid chats pelo phone@c.us
+        // para que WAHA retorne @c.us e ainda encontre o estado local salvo como @lid
+        const lidPhoneCache = readLidPhoneMap();
+        const overrides = readOverrides();
+        const prevMap = {};
+        for (const c of prev) {
+          prevMap[c.id] = c;
+          if (c.id.endsWith("@lid")) {
+            const lidOnly = c.id.replace(/@lid$/, "");
+            const phone = lidPhoneCache[lidOnly]?.phone;
+            if (phone) prevMap[phone + "@c.us"] = c;
+          }
+        }
         const merged  = normalized.map(n => {
           const local   = prevMap[n.id];
           const r2      = r2Map[n.id];
@@ -615,28 +660,39 @@ export function useWAHA(operator) {
             : wahaTsMs >= r2TsMs && n.lastMsg ? n.lastMsg
             : local?.lastMsg || n.lastMsg || r2?.lastMsg || "";
 
-          // Chat novo sem histórico local — usa WAHA + R2
+          // Override manual do operador (markRead / resolveChat) — sobrepõe R2
+          // Usa local.id para manter o id canônico (@lid se houver)
+          const canonicalId = local?.id ?? n.id;
+          const ov = overrides[canonicalId] || overrides[n.id];
+          const r2LptMs = r2?.lastPatientTs ? new Date(r2.lastPatientTs).getTime() : 0;
+          // resolvedAt: considerado válido se não há nova mensagem do paciente após o override
+          const ovResolved = ov?.resolvedAt && r2LptMs <= ov.resolvedAt;
+          // readAt: considerado válido se não há nova mensagem do paciente após o override
+          const ovRead = ov?.readAt && r2LptMs <= ov.readAt;
+
+          // Chat novo sem histórico local — usa WAHA + R2 (mas aplica overrides)
           if (!local) {
             const r2Lpt  = r2?.lastPatientTs ? new Date(r2.lastPatientTs).toISOString() : null;
             const lpt    = isMuted ? null : r2Lpt;
             const closing = lastMsgIsClosing(bestLastMsg);
-            const unread  = isMuted || closing || !lpt ? 0 : r2?.unread || 0;
-            const entry   = { ...n, lastMsg: bestLastMsg, lastTs: bestLastTs, lastPatientTs: closing ? null : lpt, unread };
+            const unread  = isMuted || closing || !lpt || ovRead || ovResolved ? 0 : r2?.unread || 0;
+            const entry   = { ...n, lastMsg: bestLastMsg, lastTs: bestLastTs, lastPatientTs: closing || ovRead || ovResolved ? null : lpt, unread };
             const should30 = lpt && agora - new Date(lpt).getTime() > TRINTA_DIAS;
-            if ((closing || should30) && entry.status !== "resolved") {
-              toAutoResolveIds.add(entry.id);
+            if ((closing || should30 || ovResolved) && entry.status !== "resolved") {
+              if (!closing && !should30) {} else toAutoResolveIds.add(entry.id);
               return { ...entry, status: "resolved", unread: 0, lastPatientTs: null };
             }
+            if (ovResolved) return { ...entry, status: "resolved", unread: 0, lastPatientTs: null };
             return entry;
           }
 
           // Chat existente — preserva estado local, atualiza com fontes mais recentes
-          const resolvedLocally = local.status === "resolved";
+          const resolvedLocally = local.status === "resolved" || ovResolved;
           const closing = lastMsgIsClosing(bestLastMsg);
           const r2Lpt   = r2?.lastPatientTs !== undefined
             ? (r2?.lastPatientTs ? new Date(r2.lastPatientTs).getTime() : null) : undefined;
           const localLpt = local.lastPatientTs ? new Date(local.lastPatientTs).getTime() : null;
-          const lpt = isMuted || resolvedLocally || closing ? null
+          const lpt = isMuted || resolvedLocally || closing || ovRead ? null
             : r2Lpt !== undefined
               ? (r2Lpt ? new Date(Math.max(r2Lpt, localLpt || 0)).toISOString() : null)
               : (local.lastPatientTs ?? null);
@@ -645,7 +701,7 @@ export function useWAHA(operator) {
           const shouldAutoResolve = closing || should30;
           if (shouldAutoResolve && !resolvedLocally) toAutoResolveIds.add(n.id);
 
-          const unread = isMuted || shouldAutoResolve || !lpt ? 0
+          const unread = isMuted || shouldAutoResolve || resolvedLocally || !lpt || ovRead ? 0
             : r2?.unread !== undefined
               ? Math.max(r2.unread || 0, local.unread || 0)
               : (local.unread ?? n.unread ?? 0);
@@ -654,9 +710,11 @@ export function useWAHA(operator) {
             ...n,
             lastMsg:       bestLastMsg,
             lastTs:        bestLastTs,
-            lastPatientTs: (resolvedLocally || shouldAutoResolve) ? null : lpt,
+            lastPatientTs: (resolvedLocally || shouldAutoResolve || ovRead) ? null : lpt,
             unread,
-            status:        shouldAutoResolve && !resolvedLocally ? "resolved" : (local.status ?? n.status),
+            status:        (shouldAutoResolve || ovResolved) && !resolvedLocally ? "resolved"
+                           : resolvedLocally ? "resolved"
+                           : (local.status ?? n.status),
             assignedTo:    local.assignedTo  ?? n.assignedTo,
             photoUrl:      local.photoUrl    ?? null,
             tags:          local.tags        ?? n.tags,
@@ -1542,6 +1600,12 @@ export function useWAHA(operator) {
         };
       });
       persistChats(updated);
+      // Persiste override manual para sobreviver ao reload
+      if (newSt === "resolved") {
+        saveOverride(chatId, { resolvedAt: Date.now(), readAt: Date.now() });
+      } else {
+        clearOverride(chatId);
+      }
       // Persiste no MongoDB
       persistChat(chatId, {
         status:        newSt,
@@ -1560,6 +1624,8 @@ export function useWAHA(operator) {
       persistChats(updated);
       return updated;
     });
+    // Persiste override manual para sobreviver ao reload
+    saveOverride(chatId, { readAt: Date.now() });
     persistChat(chatId, { unread: 0, lastPatientTs: null });
   }, []);
 
