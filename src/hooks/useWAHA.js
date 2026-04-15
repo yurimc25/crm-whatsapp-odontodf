@@ -314,9 +314,19 @@ function computeLastPatientTs(msgs) {
   return patientMsgs[0].ts; // ts da msg mais recente do paciente
 }
 
+// Mensagens de operador que indicam encerramento da conversa
+function isOperatorClosing(text) {
+  if (!text) return false;
+  return /^Consulta confirmada[!.]?/i.test(text.trim());
+}
+
 function detectAutoResolve(msgs) {
   if (!msgs?.length) return false;
   const last5 = msgs.slice(-5);
+  // Verifica se última mensagem do operador é de encerramento
+  const lastOp = [...last5].reverse().find(m => m.from === "operator");
+  if (lastOp && isOperatorClosing(lastOp.text)) return true;
+  // Verifica se última mensagem do paciente é despedida
   const lastPatient = [...last5].reverse().find(m => m.from === "patient");
   return lastPatient ? isFarewell(lastPatient.text) : false;
 }
@@ -964,7 +974,7 @@ export function useWAHA(operator) {
 
       setChats(prev => {
         const isPatient = msg.from === "patient";
-        const autoRes   = isPatient && isFarewell(msg.text);
+        const autoRes   = (isPatient && isFarewell(msg.text)) || (!isPatient && isOperatorClosing(msg.text));
         const lastMsg   = msg.text || (msg.location ? "📍 Localização" : msg.media ? "📎 Mídia" : "");
 
         // Encontra o chat por ID exato, depois por tail-10 e tail-8
@@ -1002,15 +1012,20 @@ export function useWAHA(operator) {
           lastPatientTs: isPatient && !autoRes && !isMuted ? msg.ts
                        : !isPatient || autoRes           ? null
                        : c.lastPatientTs,
-          // patient normal → +1 unread; despedida ou operador → zera unread
+          // patient normal → +1 unread; despedida ou operador fechando → zera unread
           unread:        isPatient && !autoRes && !isMuted ? (c.unread || 0) + 1
                        : !isPatient || autoRes            ? 0
                        : c.unread,
-          status:        isPatient && !autoRes && !isMuted && c.status === "resolved" ? "open" : c.status,
+          // autoRes → resolve; patient normal reabre se estava resolvido
+          status:        autoRes ? "resolved"
+                       : isPatient && !isMuted && c.status === "resolved" ? "open"
+                       : c.status,
         });
-        // Persiste reabertura no MongoDB em background
-        const reopened = updated.find(c => c.id === target.id);
-        if (reopened?.status === "open" && target.status === "resolved") {
+        // Persiste mudanças de status no MongoDB em background
+        const afterUpdate = updated.find(c => c.id === target.id);
+        if (autoRes && target.status !== "resolved") {
+          persistChat(target.id, { status: "resolved", unread: 0, lastPatientTs: null });
+        } else if (afterUpdate?.status === "open" && target.status === "resolved") {
           persistChat(target.id, { status: "open", lastPatientTs: msg.ts });
         }
         persistChats(updated);
