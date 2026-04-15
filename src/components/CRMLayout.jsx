@@ -60,7 +60,7 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
   // O @lid é alimentado pelo webhook em tempo real e é a fonte de verdade.
   // Transfere a foto do @c.us para o @lid antes de descartar.
   const dedupedChats = useMemo(() => {
-    const PHOTO_KEY = "waha_photos_v3";
+    const PHOTO_KEY = "waha_photos_v4";
 
     // Monta mapa phone → chat@lid (usando lidPhoneMap já resolvido)
     const lidByPhone = new Map(); // phone (digits) → chat

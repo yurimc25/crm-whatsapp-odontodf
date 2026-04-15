@@ -426,7 +426,7 @@ export default function ChatList({
   );
 }
 
-const PHOTO_CACHE_KEY = "waha_photos_v3";
+const PHOTO_CACHE_KEY = "waha_photos_v4";
 const PHOTO_TTL       = 24 * 60 * 60 * 1000;
 const SESSION         = import.meta.env.VITE_WAHA_SESSION || "default";
 const IKEY            = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
@@ -469,34 +469,32 @@ function ChatItem({ chat, active, onClick, onOpenMenu, isMuted, now }) {
     }
   }, [chat.id, resolveLidAsync]);
 
-  // Carrega foto de perfil com cache localStorage
-  // Para @lid: usa o telefone resolvido (@c.us) — @lid causa 504 na API de foto do WAHA
+  // Carrega foto via GET /api/{session}/chats/{chatId}/picture
+  // Para @lid: usa o telefone resolvido (@c.us) pois @lid causa 504
   useEffect(() => {
-    // Determina qual contactId usar para buscar a foto
-    let photoContactId = chat.id;
+    let chatId = chat.id;
     if (chat.id?.endsWith("@lid")) {
-      // Usa telefone resolvido se disponível, senão aguarda resolução
       const rawPhone = info.phone && info.phone !== "—"
-        ? info.phone.replace(/\D/g, "")
-        : null;
-      if (!rawPhone) return; // LID ainda não resolvido — aguarda re-render
-      photoContactId = rawPhone + "@c.us";
+        ? info.phone.replace(/\D/g, "") : null;
+      if (!rawPhone) return; // aguarda resolução do LID
+      chatId = rawPhone + "@c.us";
     }
 
+    const cacheKey = chat.id;
     const cache = readPhotoCache();
-    const cacheKey = chat.id; // chaveado pelo id do chat (estável)
     if (cache[cacheKey] !== undefined) {
       if (cache[cacheKey]) setPhotoUrl(cache[cacheKey]);
       return;
     }
-    const id = encodeURIComponent(photoContactId);
+
+    const encodedId = encodeURIComponent(chatId);
     fetch(
-      `/api/waha?path=/api/contacts/profile-picture&contactId=${id}&session=${SESSION}`,
+      `/api/waha?path=/api/${SESSION}/chats/${encodedId}/picture`,
       { headers: { "X-Internal-Key": IKEY } }
     )
       .then(r => r.ok ? r.json() : null)
       .then(data => {
-        const url = data?.profilePictureURL || data?.pictureUrl || data?.url || null;
+        const url = data?.url || null;
         const updated = { ...readPhotoCache(), [cacheKey]: url };
         writePhotoCache(updated);
         if (url) setPhotoUrl(url);
