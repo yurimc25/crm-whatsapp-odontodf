@@ -426,9 +426,34 @@ export default function ChatList({
   );
 }
 
+const PHOTO_CACHE_KEY = "waha_photos_v3";
+const PHOTO_TTL       = 24 * 60 * 60 * 1000;
+const SESSION         = import.meta.env.VITE_WAHA_SESSION || "default";
+const IKEY            = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
+
+function readPhotoCache() {
+  try {
+    const raw = localStorage.getItem(PHOTO_CACHE_KEY);
+    if (!raw) return {};
+    const p = JSON.parse(raw);
+    return Date.now() < p.expires ? (p.value || {}) : {};
+  } catch { return {}; }
+}
+function writePhotoCache(map) {
+  try {
+    localStorage.setItem(PHOTO_CACHE_KEY, JSON.stringify({
+      value: map, expires: Date.now() + PHOTO_TTL,
+    }));
+  } catch {}
+}
+
 function ChatItem({ chat, active, onClick, onOpenMenu, isMuted, now }) {
   const { displayInfo, resolveLidAsync } = useContactsCtx();
   const info = displayInfo(chat.id, chat.name, chat.pushname);
+  const [photoUrl, setPhotoUrl] = useState(() => {
+    const cache = readPhotoCache();
+    return cache[chat.id] || chat.photoUrl || null;
+  });
 
   // Dispara resolução de LID fora do render (safe side-effect)
   useEffect(() => {
@@ -436,6 +461,31 @@ function ChatItem({ chat, active, onClick, onOpenMenu, isMuted, now }) {
       resolveLidAsync(chat.id);
     }
   }, [chat.id, resolveLidAsync]);
+
+  // Carrega foto de perfil com cache localStorage
+  useEffect(() => {
+    const cache = readPhotoCache();
+    if (cache[chat.id] !== undefined) {
+      if (cache[chat.id]) setPhotoUrl(cache[chat.id]);
+      return; // já em cache (com ou sem foto)
+    }
+    const id = encodeURIComponent(chat.id);
+    fetch(
+      `/api/waha?path=/api/contacts/profile-picture&contactId=${id}&session=${SESSION}`,
+      { headers: { "X-Internal-Key": IKEY } }
+    )
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        const url = data?.profilePictureURL || data?.pictureUrl || data?.url || null;
+        const updated = { ...readPhotoCache(), [chat.id]: url };
+        writePhotoCache(updated);
+        if (url) setPhotoUrl(url);
+      })
+      .catch(() => {
+        const updated = { ...readPhotoCache(), [chat.id]: null };
+        writePhotoCache(updated);
+      });
+  }, [chat.id]);
 
   const hasUnread = !active && !isMuted && (chat.unread > 0);
 
@@ -447,8 +497,6 @@ function ChatItem({ chat, active, onClick, onOpenMenu, isMuted, now }) {
   const initials = displayedName !== "—"
     ? displayedName.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase()
     : (info.phone || "").replace(/\D/g,"").slice(-4,-2) || "?";
-
-  const photoUrl = info.photoUrl || chat.photoUrl || null;
 
   // Formata última mensagem para preview
   const lastMsgPreview = (() => {
