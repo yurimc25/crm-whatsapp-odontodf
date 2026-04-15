@@ -1950,10 +1950,26 @@ export function useWAHA(operator) {
             pushname:   n.pushname || local?.pushname || r2?.pushname,
           };
         });
-        const wahaIds = new Set(normalized.map(c => c.id));
-        for (const c of prev) if (!wahaIds.has(c.id)) merged.push(c);
-        persistChats(merged);
-        return merged;
+        // Chats do prev que não estão no resultado do WAHA — mantém localmente.
+        // Usa chave canônica para evitar duplicatas quando o mesmo contato aparece
+        // em formatos diferentes (@lid vs @c.us).
+        const mergedKeys = new Set();
+        for (const c of merged) {
+          mergedKeys.add(c.id);
+          const ck = canonicalKey(c.id, lidCacheLight);
+          if (ck) mergedKeys.add(ck);
+        }
+        for (const c of prev) {
+          const ck = canonicalKey(c.id, lidCacheLight);
+          if (!mergedKeys.has(c.id) && !(ck && mergedKeys.has(ck))) {
+            merged.push(c);
+            mergedKeys.add(c.id);
+            if (ck) mergedKeys.add(ck);
+          }
+        }
+        const deduped = _dedupeChats(merged);
+        persistChats(deduped);
+        return deduped;
       });
     } catch (e) {
       console.error("[light-resync]", e.message);
