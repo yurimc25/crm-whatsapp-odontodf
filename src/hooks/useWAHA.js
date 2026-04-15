@@ -625,14 +625,24 @@ export function useWAHA(operator) {
     return () => clearInterval(iv);
   }, [sessionOk]);
 
-  // Auto-resync leve a cada 5 minutos (sem reset de lastSync)
+  // Persiste chatlist no localStorage a cada 1 minuto para manter cache local atualizado
+  useEffect(() => {
+    if (!sessionOk || USE_MOCK) return;
+    const iv = setInterval(() => {
+      const current = _sessionChats.value;
+      if (current?.length) persistChats(current);
+    }, 60 * 1000);
+    return () => clearInterval(iv);
+  }, [sessionOk]);
+
+  // Auto-resync leve a cada 2.5 minutos (era 5 min) + sync R2 + resolução de LIDs
   useEffect(() => {
     if (!sessionOk || USE_MOCK) return;
     const iv = setInterval(() => {
       _lightResync();
       _syncChatsToR2();
       _batchResolveLids();
-    }, 5 * 60 * 1000);
+    }, 2.5 * 60 * 1000);
     return () => clearInterval(iv);
   }, [sessionOk]);
 

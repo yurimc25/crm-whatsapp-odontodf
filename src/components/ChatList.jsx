@@ -457,14 +457,23 @@ export function resolvePhotoChatId(chatId, lidPhoneMap) {
   return phone ? phone + "@c.us" : null;
 }
 
+// IDs tentados nesta sessão que não têm foto — evita retry a cada render
+// mas permite nova tentativa após F5 (ao contrário de salvar null no localStorage)
+const _photoNullCache = new Set();
+
 // Busca e cacheia foto via GET /api/{session}/chats/{chatId}/picture
 export async function fetchAndCachePhoto(chatId, lidPhoneMap, cacheKey) {
   const photoChatId = resolvePhotoChatId(chatId, lidPhoneMap);
   if (!photoChatId) return null; // LID ainda não resolvido
 
   const key = cacheKey || chatId;
+
+  // Cache hit positivo (URL real) — retorna imediatamente
   const cache = readPhotoCache();
-  if (cache[key] !== undefined) return cache[key]; // cache hit (null = sem foto)
+  if (cache[key]) return cache[key];
+
+  // Já tentou esta sessão e não tinha foto — não repete até F5
+  if (_photoNullCache.has(key)) return null;
 
   const encodedId = encodeURIComponent(photoChatId);
   try {
@@ -474,10 +483,16 @@ export async function fetchAndCachePhoto(chatId, lidPhoneMap, cacheKey) {
     );
     const data = r.ok ? await r.json() : null;
     const url = data?.url || null;
-    writePhotoCache({ ...readPhotoCache(), [key]: url });
+    if (url) {
+      // Só persiste no localStorage quando há URL real
+      writePhotoCache({ ...readPhotoCache(), [key]: url });
+    } else {
+      // Sem foto: marca só em memória (retry possível após F5)
+      _photoNullCache.add(key);
+    }
     return url;
   } catch {
-    writePhotoCache({ ...readPhotoCache(), [key]: null });
+    // Erro de rede: não marca como null permanente, permite retry
     return null;
   }
 }

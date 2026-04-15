@@ -1058,9 +1058,11 @@ function MediaContent({ media, msgId, chatId, chatSession, onOcrResult }) {
   const [downloading,  setDownload]    = useState(false);
   const [error,        setError]       = useState(false);
   // Audio transcription state — persiste em localStorage por msgId para sobreviver troca de chat
-  const TRANSCRIPT_KEY = `crm_transcript_${chatId}_${msgId}`;
+  // Usa apenas msgId como chave (globalmente único por mensagem WhatsApp)
+  // chatId é redundante e pode ser undefined em alguns caminhos de normalização
+  const TRANSCRIPT_KEY = msgId ? `crm_transcript_${msgId}` : null;
   const [transcript,   setTranscript]  = useState(() => {
-    try { return localStorage.getItem(TRANSCRIPT_KEY) || null; } catch { return null; }
+    try { return TRANSCRIPT_KEY ? (localStorage.getItem(TRANSCRIPT_KEY) || null) : null; } catch { return null; }
   });
   const [transcribing, setTranscribing] = useState(false);
   // PDF lightbox (used only when document is PDF)
@@ -1347,7 +1349,7 @@ function MediaContent({ media, msgId, chatId, chatSession, onOcrResult }) {
           const data = await r.json();
           const text = data.text || "(sem transcrição)";
           setTranscript(text);
-          try { localStorage.setItem(TRANSCRIPT_KEY, text); } catch {}
+          try { if (TRANSCRIPT_KEY) localStorage.setItem(TRANSCRIPT_KEY, text); } catch {}
         } else {
           setTranscript("Erro ao transcrever");
         }
