@@ -455,6 +455,13 @@ function ChatItem({ chat, active, onClick, onOpenMenu, isMuted, now }) {
     return cache[chat.id] || chat.photoUrl || null;
   });
 
+  // Quando o cache é atualizado externamente (ex: foto transferida do @c.us para @lid),
+  // sincroniza o estado local com o cache
+  useEffect(() => {
+    const cached = readPhotoCache()[chat.id];
+    if (cached && cached !== photoUrl) setPhotoUrl(cached);
+  }, [chat.id]);
+
   // Dispara resolução de LID fora do render (safe side-effect)
   useEffect(() => {
     if (chat.id?.endsWith("@lid")) {

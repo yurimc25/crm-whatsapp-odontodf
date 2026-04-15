@@ -552,7 +552,7 @@ export function useContacts() {
   }, [resolveName, lidPhoneMap]);
 
   return {
-    contactMap, resolveName, displayName, displayInfo, resolveLidAsync,
+    contactMap, lidPhoneMap, resolveName, displayName, displayInfo, resolveLidAsync,
     addLocalContact, removeContact, lookupPhone, lookupPhonePriority, searchByName, loading,
     refresh: fetchGoogleBulk,
   };

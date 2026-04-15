@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import ChatList from "./ChatList";
 import ChatWindow from "./ChatWindow";
 import PatientPanel from "./PatientPanel";
@@ -39,7 +39,7 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
   const [resyncKey, setResyncKey]       = useState(0);
   const [agendaOpen, setAgendaOpen]     = useState(false);
 
-  const { displayName } = useContactsCtx();
+  const { displayName, lidPhoneMap } = useContactsCtx();
 
   const {
     chats, messages, loadMessages, loadOlderMessages, send, deleteMsg, editMsg,
@@ -56,7 +56,52 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
     return false;
   }
 
-  const enrichedChats = chats
+  // Dedup por telefone resolvido: remove @c.us quando existe @lid com mesmo número.
+  // O @lid é alimentado pelo webhook em tempo real e é a fonte de verdade.
+  // Transfere a foto do @c.us para o @lid antes de descartar.
+  const dedupedChats = useMemo(() => {
+    const PHOTO_KEY = "waha_photos_v3";
+
+    // Monta mapa phone → chat@lid (usando lidPhoneMap já resolvido)
+    const lidByPhone = new Map(); // phone (digits) → chat
+    for (const c of chats) {
+      if (!c.id?.endsWith("@lid")) continue;
+      const lidOnly = c.id.replace(/@lid$/, "");
+      const resolved = lidPhoneMap[lidOnly];
+      const phone = resolved?.phone || null;
+      if (phone) lidByPhone.set(phone, c);
+    }
+
+    // Identifica @c.us que são duplicatas de @lid resolvidos
+    const idsToRemove = new Set();
+    let photoCacheRaw = null;
+    for (const c of chats) {
+      if (!c.id?.endsWith("@c.us")) continue;
+      const phone = c.id.replace(/@.*$/, "").replace(/\D/g, "");
+      const lidChat = lidByPhone.get(phone);
+      if (!lidChat) continue;
+      idsToRemove.add(c.id);
+      // Transfere foto do @c.us para o @lid (somente se @lid não tem foto ainda)
+      try {
+        if (!photoCacheRaw) {
+          const raw = localStorage.getItem(PHOTO_KEY);
+          photoCacheRaw = raw ? JSON.parse(raw) : { value: {}, expires: Date.now() + 86400000 };
+        }
+        const cusPhoto = photoCacheRaw.value?.[c.id] || c.photoUrl || null;
+        const lidPhoto = photoCacheRaw.value?.[lidChat.id];
+        if (cusPhoto && !lidPhoto) {
+          photoCacheRaw.value[lidChat.id] = cusPhoto;
+          localStorage.setItem(PHOTO_KEY, JSON.stringify(photoCacheRaw));
+        }
+      } catch {}
+    }
+
+    return idsToRemove.size > 0
+      ? chats.filter(c => !idsToRemove.has(c.id))
+      : chats;
+  }, [chats, lidPhoneMap]);
+
+  const enrichedChats = dedupedChats
     .filter(c => !myJid || c.id !== myJid)
     .filter(canSeeChat)
     .filter(c => filter === "all" || c.status === filter)
