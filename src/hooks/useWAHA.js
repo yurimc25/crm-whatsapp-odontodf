@@ -773,8 +773,75 @@ export function useWAHA(operator) {
 
         // ── CRÍTICO: preserva chats locais que o WAHA não retornou (mais antigos que fromTs)
         const wahaIds = new Set(normalized.map(c => c.id));
+        const wahaPhones = new Set(normalized.map(c => c.id.replace(/\D/g, "")).filter(d => d.length >= 8));
         for (const c of prev) {
           if (!wahaIds.has(c.id)) merged.push(c); // preserva sem modificar
+        }
+
+        // ── Sessão nova (prev vazio): adiciona chats do R2 que WAHA não retornou
+        // Garante que num computador novo, chats históricos do webhook apareçam imediatamente
+        if (prev.length === 0) {
+          const r2Chats = Array.isArray(r2Res) ? r2Res : [];
+          for (const r2 of r2Chats) {
+            if (wahaIds.has(r2.id)) continue; // já processado pelo WAHA
+            if (!_isValidNewChatId(r2.id)) continue;
+            const rDigits = r2.id.replace(/\D/g, "");
+            // Evita duplicata por telefone (tail-8)
+            const dupByPhone = rDigits.length >= 8 && (wahaPhones.has(rDigits.slice(-8)) ||
+              merged.some(c => {
+                const cd = c.id.replace(/\D/g, "");
+                return cd.length >= 8 && cd.slice(-8) === rDigits.slice(-8);
+              }));
+            if (dupByPhone) continue;
+            const r2Ck = canonicalKey(r2.id, lidPhoneCache);
+            const ov = r2Ck ? overrides[r2Ck] : null;
+            const r2LptMs = r2.lastPatientTs ? new Date(r2.lastPatientTs).getTime() : 0;
+            const ovResolved = ov?.resolvedAt && r2LptMs <= ov.resolvedAt;
+            const ovRead = ov?.readAt && r2LptMs <= ov.readAt;
+            const isMuted = mutedChatsRef.current.has(r2.id);
+            const closing = lastMsgIsClosing(r2.lastMsg);
+            const lpt = isMuted || closing || ovRead || ovResolved ? null
+              : (r2.lastPatientTs ? new Date(r2.lastPatientTs).toISOString() : null);
+            const unread = isMuted || closing || !lpt || ovRead || ovResolved ? 0 : r2.unread || 0;
+            const status = closing || ovResolved ? "resolved" : "open";
+            merged.push({
+              id:            r2.id,
+              name:          r2.pushname || "",
+              pushname:      r2.pushname || "",
+              lastMsg:       r2.lastMsg  || "",
+              lastTs:        r2.lastTs   ? new Date(r2.lastTs).toISOString() : null,
+              lastPatientTs: lpt,
+              unread,
+              status,
+              assignedTo:    null,
+              tags:          [],
+              photoUrl:      null,
+            });
+            wahaPhones.add(rDigits.slice(-8));
+          }
+          // Também adiciona chats do MongoDB que têm metadados mas não estão no WAHA ou R2
+          for (const [chatId, meta] of Object.entries(dbMeta)) {
+            if (wahaIds.has(chatId)) continue;
+            if (!_isValidNewChatId(chatId)) continue;
+            const mDigits = chatId.replace(/\D/g, "");
+            const dupByPhone = mDigits.length >= 8 && (wahaPhones.has(mDigits.slice(-8)) ||
+              merged.some(c => c.id.replace(/\D/g,"").slice(-8) === mDigits.slice(-8)));
+            if (dupByPhone) continue;
+            merged.push({
+              id:            chatId,
+              name:          meta.pushname || "",
+              pushname:      meta.pushname || "",
+              lastMsg:       meta.lastMsg  || "",
+              lastTs:        meta.lastTs   || null,
+              lastPatientTs: null,
+              unread:        0,
+              status:        meta.status   || "open",
+              assignedTo:    meta.assignedTo || null,
+              tags:          meta.tags       || [],
+              photoUrl:      null,
+            });
+            if (mDigits.length >= 8) wahaPhones.add(mDigits.slice(-8));
+          }
         }
 
         // ── Deduplica por tail-8 de telefone (cobre @lid resolvido, formato antigo/novo BR)
