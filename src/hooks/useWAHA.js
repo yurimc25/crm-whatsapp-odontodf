@@ -782,9 +782,14 @@ export function useWAHA(operator) {
         console.log(`[waha] loadChats setChats: prev=${prev.length} merged=${merged.length} deduped=${deduped.length}`);
 
         persistChats(deduped);
-        // Persiste auto-resolves (30 dias + Consulta confirmada) no MongoDB em background
+        // Persiste auto-resolves (30 dias + Consulta confirmada) no localStorage e MongoDB
         if (toAutoResolveIds.size > 0) {
           console.log(`[waha] auto-resolve: ${toAutoResolveIds.size} chats (30 dias ou mensagem de fechamento)`);
+          const now = Date.now();
+          // Salva override no localStorage para sobreviver ao reload
+          for (const id of toAutoResolveIds) {
+            saveOverride(id, { resolvedAt: now, readAt: now });
+          }
           Promise.allSettled([...toAutoResolveIds].map(id =>
             fetch("/api/db?action=chat", {
               method: "PATCH",
@@ -1154,11 +1159,14 @@ export function useWAHA(operator) {
                        : isPatient && !isMuted && c.status === "resolved" ? "open"
                        : c.status,
         });
-        // Persiste mudanças de status no MongoDB em background
+        // Persiste mudanças de status no MongoDB e localStorage (override)
         const afterUpdate = updated.find(c => c.id === target.id);
         if (autoRes && target.status !== "resolved") {
+          const now = Date.now();
+          saveOverride(target.id, { resolvedAt: now, readAt: now });
           persistChat(target.id, { status: "resolved", unread: 0, lastPatientTs: null });
         } else if (afterUpdate?.status === "open" && target.status === "resolved") {
+          clearOverride(target.id);
           persistChat(target.id, { status: "open", lastPatientTs: msg.ts });
         }
         persistChats(updated);

@@ -483,14 +483,19 @@ export async function fetchAndCachePhoto(chatId, lidPhoneMap, cacheKey) {
 }
 
 function ChatItem({ chat, active, onClick, onOpenMenu, isMuted, now }) {
-  const { displayInfo, resolveLidAsync, lidPhoneMap } = useContactsCtx();
+  const { displayInfo, resolveLidAsync, lookupPhone, lidPhoneMap } = useContactsCtx();
   const info = displayInfo(chat.id, chat.name, chat.pushname);
   const [photoUrl, setPhotoUrl] = useState(() => readPhotoCache()[chat.id] || chat.photoUrl || null);
 
-  // Dispara resolução de LID
+  // Dispara resolução de LID ou lookup de nome para @c.us sem nome resolvido
   useEffect(() => {
-    if (chat.id?.endsWith("@lid")) resolveLidAsync(chat.id);
-  }, [chat.id, resolveLidAsync]);
+    if (chat.id?.endsWith("@lid")) {
+      resolveLidAsync(chat.id);
+    } else if (!chat.id?.endsWith("@g.us") && !info.hasContact) {
+      // @c.us sem nome no mapa de contatos — tenta buscar via Codental/Google
+      lookupPhone(chat.id);
+    }
+  }, [chat.id, info.hasContact, resolveLidAsync, lookupPhone]);
 
   // Carrega foto: para @lid usa phone resolvido (com DDI) + @c.us
   // Re-executa quando lidPhoneMap muda (LID recém-resolvido)
