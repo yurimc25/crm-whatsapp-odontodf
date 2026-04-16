@@ -154,7 +154,12 @@ function _dedupeChats(chats) {
 // (versões anteriores gravavam msgs lá; agora só usamos memória → libera espaço para os chats)
 try {
   Object.keys(localStorage)
-    .filter(k => k.startsWith("crm_waha_msgs_") || k.startsWith("crm_img_"))
+    .filter(k =>
+      k.startsWith("crm_waha_msgs_") ||
+      k.startsWith("crm_img_") ||
+      // versões antigas do cache de fotos (v1/v2/v3)
+      /^waha_photos_v[123]$/.test(k)
+    )
     .forEach(k => localStorage.removeItem(k));
 } catch {}
 
@@ -336,22 +341,19 @@ function persistChats(chats) {
       status:        c.status        || "open",
       assignedTo:    c.assignedTo    || null,
       tags:          c.tags          || [],
-      photoUrl:      c.photoUrl      || null,
+      // photoUrl omitido do slim — já está no waha_photos_v4; reduz ~100KB com 300 chats
     };
   });
+  const payload = JSON.stringify({ value: slim, expires: Date.now() + CHATS_TTL });
   try {
-    localStorage.setItem("crm_" + CHATS_KEY, JSON.stringify({
-      value: slim, expires: Date.now() + CHATS_TTL,
-    }));
+    localStorage.setItem("crm_" + CHATS_KEY, payload);
   } catch {
-    // Quota exceeded mesmo com slim — libera mensagens antigas e tenta novamente
+    // Quota exceeded — libera caches reconstruíveis e tenta de novo
     try {
       Object.keys(localStorage)
-        .filter(k => k.startsWith("crm_waha_msgs_") || k.startsWith("crm_img_"))
+        .filter(k => k.startsWith("waha_photos") || k.startsWith("crm_waha_msgs_") || k.startsWith("crm_img_"))
         .forEach(k => { try { localStorage.removeItem(k); } catch {} });
-      localStorage.setItem("crm_" + CHATS_KEY, JSON.stringify({
-        value: slim, expires: Date.now() + CHATS_TTL,
-      }));
+      localStorage.setItem("crm_" + CHATS_KEY, payload);
     } catch {}
   }
 }
