@@ -4,18 +4,17 @@ const WAHA_KEY = import.meta.env.VITE_WAHA_API_KEY || "";
 const SESSION  = import.meta.env.VITE_WAHA_SESSION || "default";
 const IKEY     = () => import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
 
-const headers = () => ({
-  "Content-Type": "application/json",
-  "X-Api-Key": WAHA_KEY,
-});
 
-// Faz chamadas ao WAHA através do proxy Vercel (evita CORS e expõe API key no browser).
-// `wahaPath` deve começar com "/" e ser um path relativo ao WAHA, ex: "/api/default/chats".
+// Faz chamadas ao WAHA através do proxy Vercel (evita CORS e não expõe API key no browser).
 async function proxyFetch(wahaPath, options = {}) {
   const url = `/api/waha?path=${encodeURIComponent(wahaPath)}`;
+  const method = options.method || "GET";
+  const extraHeaders = (!["GET", "DELETE"].includes(method))
+    ? { "Content-Type": "application/json" }
+    : {};
   return fetch(url, {
     ...options,
-    headers: { "X-Internal-Key": IKEY(), ...(options.headers || {}) },
+    headers: { "X-Internal-Key": IKEY(), ...extraHeaders, ...(options.headers || {}) },
   });
 }
 
@@ -48,10 +47,7 @@ export async function getProfilePicture(chatId) {
 
   try {
     const id = encodeURIComponent(chatId);
-    const r = await fetch(
-      `${WAHA_URL}/api/contacts/profile-picture?contactId=${id}&session=${SESSION}`,
-      { headers: headers() }
-    );
+    const r = await proxyFetch(`/api/contacts/profile-picture?contactId=${id}&session=${SESSION}`);
     if (!r.ok) {
       const updated = { ...cache, [chatId]: null };
       setPhotoCache(updated);
@@ -78,17 +74,14 @@ export async function getChats() {
   let offset = 0;
 
   while (true) {
-    const r = await fetch(
-      `${WAHA_URL}/api/${SESSION}/chats?limit=${limit}&offset=${offset}`,
-      { headers: headers() }
-    );
+    const r = await proxyFetch(`/api/${SESSION}/chats?limit=${limit}&offset=${offset}`);
     if (!r.ok) throw new Error(`WAHA getChats: ${r.status}`);
     const batch = await r.json();
     if (!Array.isArray(batch) || batch.length === 0) break;
     allChats.push(...batch);
-    if (batch.length < limit) break; // última página
+    if (batch.length < limit) break;
     offset += limit;
-    if (allChats.length > 1000) break; // safety
+    if (allChats.length > 1000) break;
   }
 
   return allChats;
@@ -96,18 +89,14 @@ export async function getChats() {
 
 export async function getMessages(chatId, limit = 20) {
   const id = encodeURIComponent(chatId);
-  const r = await fetch(
-    `${WAHA_URL}/api/${SESSION}/chats/${id}/messages?limit=${limit}&downloadMedia=false`,
-    { headers: headers() }
-  );
+  const r = await proxyFetch(`/api/${SESSION}/chats/${id}/messages?limit=${limit}&downloadMedia=false`);
   if (!r.ok) throw new Error(`WAHA getMessages: ${r.status}`);
   return r.json();
 }
 
 export async function sendText(chatId, text) {
-  const r = await fetch(`${WAHA_URL}/api/sendText`, {
+  const r = await proxyFetch(`/api/sendText`, {
     method: "POST",
-    headers: headers(),
     body: JSON.stringify({ chatId, text, session: SESSION }),
   });
   if (!r.ok) throw new Error(`WAHA sendText: ${r.status}`);
@@ -115,7 +104,7 @@ export async function sendText(chatId, text) {
 }
 
 export async function getSessionStatus() {
-  const r = await fetch(`${WAHA_URL}/api/sessions/${SESSION}`, { headers: headers() });
+  const r = await proxyFetch(`/api/sessions/${SESSION}`);
   if (!r.ok) throw new Error(`WAHA status: ${r.status}`);
   return r.json();
 }
@@ -465,9 +454,8 @@ function stringToColor(str) {
 export async function deleteMessage(chatId, msgId, forEveryone = false) {
   const id  = encodeURIComponent(chatId);
   const mid = encodeURIComponent(msgId);
-  const r = await fetch(`${WAHA_URL}/api/${SESSION}/chats/${id}/messages/${mid}`, {
+  const r = await proxyFetch(`/api/${SESSION}/chats/${id}/messages/${mid}`, {
     method: "DELETE",
-    headers: headers(),
     body: JSON.stringify({ deleteMedia: true }),
   });
   if (!r.ok) throw new Error(`WAHA deleteMessage: ${r.status}`);
@@ -477,9 +465,8 @@ export async function deleteMessage(chatId, msgId, forEveryone = false) {
 export async function editMessage(chatId, msgId, newText) {
   const id  = encodeURIComponent(chatId);
   const mid = encodeURIComponent(msgId);
-  const r = await fetch(`${WAHA_URL}/api/${SESSION}/chats/${id}/messages/${mid}`, {
+  const r = await proxyFetch(`/api/${SESSION}/chats/${id}/messages/${mid}`, {
     method: "PUT",
-    headers: headers(),
     body: JSON.stringify({ text: newText }),
   });
   if (!r.ok) throw new Error(`WAHA editMessage: ${r.status}`);
@@ -487,13 +474,9 @@ export async function editMessage(chatId, msgId, newText) {
 }
 
 export async function sendReaction(chatId, msgId, reaction) {
-  const r = await fetch(`${WAHA_URL}/api/reaction`, {
+  const r = await proxyFetch(`/api/reaction`, {
     method: "PUT",
-    headers: headers(),
-    body: JSON.stringify({
-      session: SESSION,
-      reaction: { messageId: msgId, reaction },
-    }),
+    body: JSON.stringify({ session: SESSION, reaction: { messageId: msgId, reaction } }),
   });
   if (!r.ok) throw new Error(`WAHA sendReaction: ${r.status}`);
   return r.json().catch(() => ({}));
@@ -529,28 +512,18 @@ export async function uploadToR2(file, ikey) {
 }
 
 export async function sendImage(chatId, url, caption = "", mimetype = "image/jpeg", filename = "image.jpg") {
-  const r = await fetch(`${WAHA_URL}/api/sendImage`, {
+  const r = await proxyFetch(`/api/sendImage`, {
     method: "POST",
-    headers: headers(),
-    body: JSON.stringify({
-      session: SESSION, chatId,
-      file: { url, mimetype, filename },
-      caption,
-    }),
+    body: JSON.stringify({ session: SESSION, chatId, file: { url, mimetype, filename }, caption }),
   });
   if (!r.ok) throw new Error(`WAHA sendImage: ${r.status}`);
   return r.json();
 }
 
 export async function sendFile(chatId, url, filename, mimetype, caption = "") {
-  const r = await fetch(`${WAHA_URL}/api/sendFile`, {
+  const r = await proxyFetch(`/api/sendFile`, {
     method: "POST",
-    headers: headers(),
-    body: JSON.stringify({
-      session: SESSION, chatId,
-      file: { url, filename, mimetype },
-      caption,
-    }),
+    body: JSON.stringify({ session: SESSION, chatId, file: { url, filename, mimetype }, caption }),
   });
   if (!r.ok) {
     const errBody = await r.text().catch(() => "");
@@ -560,51 +533,35 @@ export async function sendFile(chatId, url, filename, mimetype, caption = "") {
 }
 
 export async function sendVideo(chatId, url, filename, caption = "") {
-  const r = await fetch(`${WAHA_URL}/api/sendVideo`, {
+  const r = await proxyFetch(`/api/sendVideo`, {
     method: "POST",
-    headers: headers(),
-    body: JSON.stringify({
-      session: SESSION, chatId,
-      caption,
-      file: { url, mimetype: "video/mp4", filename },
-      convert: false,
-    }),
+    body: JSON.stringify({ session: SESSION, chatId, caption, file: { url, mimetype: "video/mp4", filename }, convert: false }),
   });
   if (!r.ok) throw new Error(`WAHA sendVideo: ${r.status}`);
   return r.json();
 }
 
 export async function sendVoice(chatId, url) {
-  const r = await fetch(`${WAHA_URL}/api/sendVoice`, {
+  const r = await proxyFetch(`/api/sendVoice`, {
     method: "POST",
-    headers: headers(),
-    body: JSON.stringify({
-      session: SESSION, chatId,
-      file: { url, mimetype: "audio/ogg; codecs=opus" },
-      convert: false,
-    }),
+    body: JSON.stringify({ session: SESSION, chatId, file: { url, mimetype: "audio/ogg; codecs=opus" }, convert: false }),
   });
   if (!r.ok) throw new Error(`WAHA sendVoice: ${r.status}`);
   return r.json();
 }
 
 export async function sendSticker(chatId, base64DataUri) {
-  const r = await fetch(`${WAHA_URL}/api/sendSticker`, {
+  const r = await proxyFetch(`/api/sendSticker`, {
     method: "POST",
-    headers: headers(),
-    body: JSON.stringify({
-      session: SESSION, chatId,
-      file: { data: base64DataUri },
-    }),
+    body: JSON.stringify({ session: SESSION, chatId, file: { data: base64DataUri } }),
   });
   if (!r.ok) throw new Error(`WAHA sendSticker: ${r.status}`);
   return r.json();
 }
 
 export async function sendLocation(chatId, lat, lng, title = "") {
-  const r = await fetch(`${WAHA_URL}/api/sendLocation`, {
+  const r = await proxyFetch(`/api/sendLocation`, {
     method: "POST",
-    headers: headers(),
     body: JSON.stringify({ session: SESSION, chatId, latitude: lat, longitude: lng, title }),
   });
   if (!r.ok) throw new Error(`WAHA sendLocation: ${r.status}`);
@@ -612,9 +569,8 @@ export async function sendLocation(chatId, lat, lng, title = "") {
 }
 
 export async function sendContactVcard(chatId, contactName, vcard) {
-  const r = await fetch(`${WAHA_URL}/api/sendContactVcard`, {
+  const r = await proxyFetch(`/api/sendContactVcard`, {
     method: "POST",
-    headers: headers(),
     body: JSON.stringify({ session: SESSION, chatId, name: contactName, vcard }),
   });
   if (!r.ok) throw new Error(`WAHA sendContactVcard: ${r.status}`);
@@ -625,23 +581,20 @@ export async function sendContactVcard(chatId, contactName, vcard) {
 
 export async function checkPhoneExists(phone) {
   const digits = phone.replace(/\D/g, "");
-  const r = await fetch(
-    `${WAHA_URL}/api/contacts/check-exists?phone=${digits}&session=${SESSION}`,
-    { headers: headers() }
-  );
+  const r = await proxyFetch(`/api/contacts/check-exists?phone=${digits}&session=${SESSION}`);
   if (!r.ok) return { numberExists: false, chatId: null };
   return r.json().catch(() => ({ numberExists: false }));
 }
 
 export async function getAllLIDs() {
-  const r = await fetch(`${WAHA_URL}/api/${SESSION}/contacts?limit=1000`, { headers: headers() });
+  const r = await proxyFetch(`/api/${SESSION}/contacts?limit=1000`);
   if (!r.ok) throw new Error(`WAHA getAllLIDs: ${r.status}`);
   return r.json();
 }
 
 export async function getContactByLID(lid) {
   const id = encodeURIComponent(lid);
-  const r = await fetch(`${WAHA_URL}/api/${SESSION}/contacts/${id}`, { headers: headers() });
+  const r = await proxyFetch(`/api/${SESSION}/contacts/${id}`);
   if (!r.ok) return null;
   return r.json().catch(() => null);
 }
@@ -674,9 +627,8 @@ export async function getContactInfo(contactId) {
 // ── Chamadas ──────────────────────────────────────────────────────
 
 export async function rejectCall(callId) {
-  const r = await fetch(`${WAHA_URL}/api/${SESSION}/calls/${callId}/reject`, {
+  const r = await proxyFetch(`/api/${SESSION}/calls/${callId}/reject`, {
     method: "POST",
-    headers: headers(),
     body: JSON.stringify({ reason: "reject" }),
   });
   return r.ok;
