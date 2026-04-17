@@ -2,11 +2,22 @@
 const WAHA_URL = import.meta.env.VITE_WAHA_URL || "https://n8n-waha8.vxjlst.easypanel.host";
 const WAHA_KEY = import.meta.env.VITE_WAHA_API_KEY || "";
 const SESSION  = import.meta.env.VITE_WAHA_SESSION || "default";
+const IKEY     = () => import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
 
 const headers = () => ({
   "Content-Type": "application/json",
   "X-Api-Key": WAHA_KEY,
 });
+
+// Faz chamadas ao WAHA através do proxy Vercel (evita CORS e expõe API key no browser).
+// `wahaPath` deve começar com "/" e ser um path relativo ao WAHA, ex: "/api/default/chats".
+async function proxyFetch(wahaPath, options = {}) {
+  const url = `/api/waha?path=${encodeURIComponent(wahaPath)}`;
+  return fetch(url, {
+    ...options,
+    headers: { "X-Internal-Key": IKEY(), ...(options.headers || {}) },
+  });
+}
 
 // ── Cache de fotos de perfil ──────────────────────────────────────
 const PHOTO_KEY = "waha_photos";
@@ -636,28 +647,25 @@ export async function getContactByLID(lid) {
 }
 
 // Resolve LID → telefone real via endpoint dedicado: GET /api/{session}/lids/{lid}
-// Retorna { lid, pn } onde pn é o JID real (ex: "5561...@c.us")
+// Retorna o JID real (ex: "5561...@c.us") ou null se não suportado/não encontrado.
 export async function resolveLidToPhone(lid) {
   const lidOnly = lid.replace(/@lid$/, "");
   const encoded = encodeURIComponent(lidOnly);
-  // Deixa erros de rede propagarem (para distinção no chamador)
-  // Retorna null apenas quando o servidor responde "não encontrado" (4xx)
-  const r = await fetch(`${WAHA_URL}/api/${SESSION}/lids/${encoded}`, { headers: headers() });
-  if (!r.ok) return null; // 404/401/etc = LID não encontrado — sem throw
-  const data = await r.json().catch(() => null);
-  const pn = data?.pn || null;
-  if (pn && !pn.endsWith("@lid")) return pn; // ex: "5561...@c.us"
-  return null;
+  try {
+    const r = await proxyFetch(`/api/${SESSION}/lids/${encoded}`);
+    if (!r.ok) return null;
+    const data = await r.json().catch(() => null);
+    const pn = data?.pn || null;
+    if (pn && !pn.endsWith("@lid")) return pn;
+    return null;
+  } catch { return null; }
 }
 
 // Busca dados do contato (nome, pushname) via /api/contacts?contactId=
 export async function getContactInfo(contactId) {
   const id = encodeURIComponent(contactId);
   try {
-    const r = await fetch(
-      `${WAHA_URL}/api/contacts?contactId=${id}&session=${SESSION}`,
-      { headers: headers() }
-    );
+    const r = await proxyFetch(`/api/contacts?contactId=${id}&session=${SESSION}`);
     if (!r.ok) return null;
     return r.json().catch(() => null);
   } catch { return null; }
