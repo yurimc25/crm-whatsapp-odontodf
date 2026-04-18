@@ -178,61 +178,65 @@ export default async function handler(req, res) {
     const r2Json = async (k, def) => { try { const r = await r2Get(k); return r ? JSON.parse(r.buf.toString("utf8")) : def; } catch { return def; } };
     const r2WriteJson = async (k, data) => r2Put(k, Buffer.from(JSON.stringify(data), "utf8"), "application/json");
 
-    let processed = 0, saved = 0;
-    const errors = [];
-    const chatsIndex = await r2Json("chats.json", []);
-    const chatsMap = {};
-    for (const c of chatsIndex) if (c.id) chatsMap[c.id] = c;
-    let chatsChanged = false;
+    try {
+      let processed = 0, saved = 0;
+      const errors = [];
+      const chatsIndex = await r2Json("chats.json", []);
+      const chatsMap = {};
+      for (const c of chatsIndex) if (c.id) chatsMap[c.id] = c;
+      let chatsChanged = false;
 
-    for (const cid of chatIds) {
-      try {
-        const r = await fetch(`${wahaUrl}/api/${session}/chats/${encodeURIComponent(cid)}/messages?limit=200&downloadMedia=false`,
-          { headers: wahaHeaders, signal: AbortSignal.timeout(10000) });
-        if (!r.ok) { errors.push(cid); processed++; continue; }
-        const raw = await r.json();
-        if (!Array.isArray(raw) || !raw.length) { processed++; continue; }
+      for (const cid of chatIds) {
+        try {
+          const r = await fetch(`${wahaUrl}/api/${session}/chats/${encodeURIComponent(cid)}/messages?limit=200&downloadMedia=false`,
+            { headers: wahaHeaders, signal: AbortSignal.timeout(8000) });
+          if (!r.ok) { errors.push(`${cid}:waha${r.status}`); processed++; continue; }
+          const raw = await r.json();
+          if (!Array.isArray(raw) || !raw.length) { processed++; continue; }
 
-        const msgs = raw.map(m => {
-          const tsRaw = m.timestamp || m._data?.t || 0;
-          const tsMs  = tsRaw ? (tsRaw > 1e12 ? tsRaw : tsRaw * 1000) : 0;
-          const id    = m.id?._serialized || (typeof m.id === "string" ? m.id : null) || `msg-${tsMs}`;
-          return { id, chatId: cid, ts: tsMs, fromMe: m.fromMe ?? m._data?.fromMe ?? false,
-            body: m.body || m._data?.body || m.caption || m._data?.caption || "",
-            type: m.type || m._data?.type || "chat",
-            pushname: m.notifyName || m._data?.notifyName || "" };
-        }).filter(m => m.id && m.ts > 0);
-        if (!msgs.length) { processed++; continue; }
-        msgs.sort((a, b) => a.ts - b.ts);
+          const msgs = raw.map(m => {
+            const tsRaw = m.timestamp || m._data?.t || 0;
+            const tsMs  = tsRaw ? (tsRaw > 1e12 ? tsRaw : tsRaw * 1000) : 0;
+            const id    = m.id?._serialized || (typeof m.id === "string" ? m.id : null) || `msg-${tsMs}`;
+            return { id, chatId: cid, ts: tsMs, fromMe: m.fromMe ?? m._data?.fromMe ?? false,
+              body: m.body || m._data?.body || m.caption || m._data?.caption || "",
+              type: m.type || m._data?.type || "chat",
+              pushname: m.notifyName || m._data?.notifyName || "" };
+          }).filter(m => m.id && m.ts > 0);
+          if (!msgs.length) { processed++; continue; }
+          msgs.sort((a, b) => a.ts - b.ts);
 
-        const rKey = chatKey(cid);
-        const exist = await r2Json(rKey, []);
-        const existIds = new Set(exist.map(m => m.id));
-        const novas = msgs.filter(m => !existIds.has(m.id));
-        if (novas.length > 0) {
-          const merged = [...exist, ...novas].sort((a, b) => (a.ts||0) - (b.ts||0));
-          if (merged.length > MAX_MSGS) merged.splice(0, merged.length - MAX_MSGS);
-          await r2WriteJson(rKey, merged);
-          saved += novas.length;
-        }
+          const rKey = chatKey(cid);
+          const exist = await r2Json(rKey, []);
+          const existIds = new Set(exist.map(m => m.id));
+          const novas = msgs.filter(m => !existIds.has(m.id));
+          if (novas.length > 0) {
+            const merged = [...exist, ...novas].sort((a, b) => (a.ts||0) - (b.ts||0));
+            if (merged.length > MAX_MSGS) merged.splice(0, merged.length - MAX_MSGS);
+            await r2WriteJson(rKey, merged);
+            saved += novas.length;
+          }
 
-        const lastMsg = msgs[msgs.length - 1];
-        const entry = { id: cid, lastMsg: lastMsg.body || "", lastTs: lastMsg.ts, fromMe: lastMsg.fromMe,
-          pushname: lastMsg.pushname || chatsMap[cid]?.pushname || "",
-          lastPatientTs: chatsMap[cid]?.lastPatientTs ?? null, unread: chatsMap[cid]?.unread ?? 0 };
-        if (chatsMap[cid]) {
-          if (!chatsMap[cid].lastTs || lastMsg.ts > chatsMap[cid].lastTs) { chatsMap[cid] = { ...chatsMap[cid], ...entry }; chatsChanged = true; }
-        } else { chatsMap[cid] = entry; chatsChanged = true; }
-        processed++;
-      } catch (e) { errors.push(cid); processed++; }
+          const lastMsg = msgs[msgs.length - 1];
+          const entry = { id: cid, lastMsg: lastMsg.body || "", lastTs: lastMsg.ts, fromMe: lastMsg.fromMe,
+            pushname: lastMsg.pushname || chatsMap[cid]?.pushname || "",
+            lastPatientTs: chatsMap[cid]?.lastPatientTs ?? null, unread: chatsMap[cid]?.unread ?? 0 };
+          if (chatsMap[cid]) {
+            if (!chatsMap[cid].lastTs || lastMsg.ts > chatsMap[cid].lastTs) { chatsMap[cid] = { ...chatsMap[cid], ...entry }; chatsChanged = true; }
+          } else { chatsMap[cid] = entry; chatsChanged = true; }
+          processed++;
+        } catch (e) { errors.push(`${cid}:${e.message}`); processed++; }
+      }
+
+      if (chatsChanged) {
+        const updated = Object.values(chatsMap);
+        if (updated.length > 1000) updated.splice(1000);
+        await r2WriteJson("chats.json", updated);
+      }
+      return res.status(200).json({ ok: true, processed, saved, errors });
+    } catch (e) {
+      return res.status(500).json({ error: e.message, stack: e.stack?.split("\n")[0] });
     }
-
-    if (chatsChanged) {
-      const updated = Object.values(chatsMap);
-      if (updated.length > 1000) updated.splice(1000);
-      await r2WriteJson("chats.json", updated);
-    }
-    return res.status(200).json({ ok: true, processed, saved, errors });
   }
 
   // ── GET ──────────────────────────────────────────────────────────

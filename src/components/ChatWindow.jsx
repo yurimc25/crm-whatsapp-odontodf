@@ -194,12 +194,17 @@ function MigrateChatButton({ chatId, onDone }) {
         headers: { "Content-Type": "application/json", "X-Internal-Key": _ikey() },
         body: JSON.stringify({ chatIds: [chatId] }),
       });
-      if (!r.ok) throw new Error(`Erro ${r.status}`);
       const result = await r.json();
+      if (!r.ok) {
+        console.error("[migrate]", result);
+        throw new Error(result.error || `Erro ${r.status}`);
+      }
+      if (result.errors?.length) console.warn("[migrate] erros por chat:", result.errors);
       setSaved(result.saved || 0);
       setState("done");
       onDone?.();
-    } catch {
+    } catch (e) {
+      console.error("[migrate] falhou:", e.message);
       setState("error");
     }
   }
