@@ -1325,11 +1325,18 @@ export function useWAHA(operator) {
         : [];
 
       setMessages(prev => {
-        const existing = prev[chatId] || [];
-        const ids      = new Set(r2Msgs.map(m => m.id));
+        const existing    = prev[chatId] || [];
+        const existingMap = new Map(existing.map(m => [m.id, m]));
+        const ids         = new Set(r2Msgs.map(m => m.id));
         // Preserva msgs recebidas via WebSocket ainda não persistidas no R2
         const wsExtras = existing.filter(m => !ids.has(m.id) && !m.id.startsWith("tmp-"));
-        const merged   = sortMsgs([...r2Msgs, ...wsExtras]);
+        // Para cada msg do R2, preserva o media carregado localmente (blob URL) se R2 não tem URL
+        const r2WithMedia = r2Msgs.map(m => {
+          const local = existingMap.get(m.id);
+          if (local?.media && !m.media?.url) return { ...m, media: local.media };
+          return m;
+        });
+        const merged = sortMsgs([...r2WithMedia, ...wsExtras]);
         _sessionMsgs.set(chatId, merged);
         _cacheMsgs(chatId, merged);
         return { ...prev, [chatId]: merged };
