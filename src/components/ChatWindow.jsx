@@ -264,10 +264,14 @@ export default function ChatWindow({
     });
   }
 
-  const bottomRef      = useRef(null);
-  const scrollRef      = useRef(null);
-  const prevScrollH    = useRef(0);
-  const scrollToChatId = useRef(null);
+  const bottomRef        = useRef(null);
+  const scrollRef        = useRef(null);
+  const prevScrollH      = useRef(0);
+  const scrollToChatId   = useRef(null);
+  const chatOpenedAtRef  = useRef(0);
+  const prevMsgCountRef  = useRef(0);
+  const [showScrollBtn,     setShowScrollBtn]     = useState(false);
+  const [unreadScrollCount, setUnreadScrollCount] = useState(0);
   const { displayInfo, addLocalContact, removeContact, lidPhoneMap } = useContactsCtx();
   const info = displayInfo(chat.id, chat.name, chat.pushname);
   const [photoUrl, setPhotoUrl] = useState(() => readPhotoCache()[chat.id] || chat.photoUrl || null);
@@ -291,7 +295,11 @@ export default function ChatWindow({
 
   useEffect(() => {
     setHasMore(true); setOldestDate(null); setLoadingMore(false);
-    scrollToChatId.current = chat.id;
+    scrollToChatId.current  = chat.id;
+    chatOpenedAtRef.current = Date.now();
+    prevMsgCountRef.current = 0;
+    setShowScrollBtn(false);
+    setUnreadScrollCount(0);
   }, [chat.id]);
 
   useEffect(() => {
@@ -300,15 +308,30 @@ export default function ChatWindow({
     if (scrollToChatId.current) {
       scrollToChatId.current = null;
       bottomRef.current?.scrollIntoView({ behavior:"instant" });
+      prevMsgCountRef.current = messages.length;
       return;
     }
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 300;
-    if (nearBottom) bottomRef.current?.scrollIntoView({ behavior:"instant" });
+    const isNew = messages.length > prevMsgCountRef.current;
+    prevMsgCountRef.current = messages.length;
+    if (!isNew) return;
+    const nearBottom      = el.scrollHeight - el.scrollTop - el.clientHeight < 500;
+    const withinOpenWindow = Date.now() - chatOpenedAtRef.current < 5000;
+    if (nearBottom || withinOpenWindow) {
+      bottomRef.current?.scrollIntoView({ behavior:"instant" });
+      setShowScrollBtn(false);
+      setUnreadScrollCount(0);
+    } else {
+      setShowScrollBtn(true);
+      setUnreadScrollCount(prev => prev + 1);
+    }
   }, [messages]);
 
   const handleScroll = useCallback(async () => {
     const el = scrollRef.current;
-    if (!el || loadingMore || !hasMore || !onLoadOlder) return;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 500;
+    if (nearBottom) { setShowScrollBtn(false); setUnreadScrollCount(0); }
+    if (loadingMore || !hasMore || !onLoadOlder) return;
     if (el.scrollTop > 80) return;
     setLoadingMore(true);
     prevScrollH.current = el.scrollHeight;
@@ -545,7 +568,8 @@ export default function ChatWindow({
       </div>
 
       {/* Mensagens */}
-      <div ref={scrollRef} style={{ flex:1, overflowY:"auto", padding:"12px 16px",
+      <div style={{ flex:1, position:"relative", overflow:"hidden", background:T.bg }}>
+      <div ref={scrollRef} style={{ height:"100%", overflowY:"auto", padding:"12px 16px",
         display:"flex", flexDirection:"column", gap:2, background:T.bg }}>
 
         {loadingMore && (
@@ -602,6 +626,38 @@ export default function ChatWindow({
           );
         })}
         <div ref={bottomRef} />
+      </div>
+
+      {/* Botão scroll para baixo — aparece quando há mensagens novas e usuário está acima */}
+      {showScrollBtn && (
+        <button
+          onClick={() => {
+            bottomRef.current?.scrollIntoView({ behavior:"smooth" });
+            setShowScrollBtn(false);
+            setUnreadScrollCount(0);
+          }}
+          style={{
+            position:"absolute", bottom:16, right:16,
+            width:40, height:40, borderRadius:"50%",
+            background:T.accent, color:"#fff",
+            border:"none", cursor:"pointer",
+            display:"flex", alignItems:"center", justifyContent:"center",
+            boxShadow:"0 2px 10px rgba(0,0,0,.5)", fontSize:18, zIndex:10,
+          }}>
+          ↓
+          {unreadScrollCount > 0 && (
+            <span style={{
+              position:"absolute", top:-5, right:-5,
+              background:"#e53935", color:"#fff", borderRadius:"50%",
+              minWidth:18, height:18, fontSize:10, fontWeight:700,
+              display:"flex", alignItems:"center", justifyContent:"center",
+              padding:"0 3px",
+            }}>
+              {unreadScrollCount > 9 ? "9+" : unreadScrollCount}
+            </span>
+          )}
+        </button>
+      )}
       </div>
 
       {/* Mensagem de contexto do menu */}
