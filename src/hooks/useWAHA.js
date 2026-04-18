@@ -9,8 +9,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useContactsCtx } from "../App";
 import {
-  getChats, getMessages, sendText, getSessionStatus,
-  normalizeChat, normalizeMessage,
+  sendText, getSessionStatus,
+  normalizeMessage, extractPhone, stringToColor,
   deleteMessage as wahaDeleteMessage, editMessage as wahaEditMessage,
 } from "../services/waha";
 import { MOCK_CHATS, MOCK_MESSAGES } from "../data/mock";
@@ -46,6 +46,31 @@ function removeTmp(current, incoming) {
     if (realFromMeTexts.has(m.text?.trim())) return false;
     return true;
   });
+}
+
+// Converte mensagem do R2 (formato webhook) para formato do app
+function _r2MediaLabel(type) {
+  if (!type) return "";
+  const t = type.toLowerCase();
+  if (t.includes("image") || t.includes("sticker")) return "📷 Imagem";
+  if (t.includes("video")) return "🎥 Vídeo";
+  if (t.includes("audio") || t.includes("ptt") || t.includes("voice")) return "🎵 Áudio";
+  return "📎 Arquivo";
+}
+function normalizeR2Message(m) {
+  const tsMs = typeof m.ts === "number" ? m.ts : (m.ts ? new Date(m.ts).getTime() : 0);
+  const hasMedia = ["image","video","audio","voice","document","sticker","ptt"].includes((m.type||"").toLowerCase());
+  return {
+    id:       m.id,
+    chatId:   m.chatId,
+    from:     m.fromMe ? "operator" : "patient",
+    text:     m.body || (hasMedia ? _r2MediaLabel(m.type) : ""),
+    type:     m.type  || "chat",
+    ts:       tsMs ? new Date(tsMs).toISOString() : null,
+    time:     tsMs ? new Date(tsMs).toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" }) : "",
+    hasMedia,
+    media:    null,
+  };
 }
 
 const USE_MOCK    = import.meta.env.VITE_USE_MOCK === "true";
@@ -650,10 +675,9 @@ export function useWAHA(operator) {
 
   async function loadChats(forceFullSync = false) {
     setLoading(true);
-    // Força sincronização completa: ignora lastSync, busca 100 dias
     if (forceFullSync) {
       try { localStorage.removeItem(LAST_SYNC_KEY); } catch {}
-      console.log("[waha] force full sync: buscando 100 dias de histórico");
+      console.log("[waha] force full sync via R2");
     }
     try {
       // ── 1. Exibe imediatamente enquanto carrega (sessão → localStorage slim) ──
@@ -672,77 +696,52 @@ export function useWAHA(operator) {
         } catch {}
       }
 
-      // ── 2. R2: atualiza lastMsg/lastTs com dados persistidos pelo webhook ──
-      // Calcula fromTs baseado na última sync salva (+ 1 dia de buffer)
-      let fromTs = null;
-      const lastSync = getLastSyncTs();
-      if (lastSync > 0) {
-        const msSinceSync = Date.now() - lastSync;
-        const msToFetch   = msSinceSync + 86400000; // + 1 dia de buffer
-        const daysToFetch = Math.min(Math.ceil(msToFetch / 86400000), 100);
-        fromTs = Math.floor((Date.now() - daysToFetch * 86400000) / 1000);
-        console.log(`[waha] última sync: ${new Date(lastSync).toLocaleString()} — buscando últimos ${daysToFetch} dias`);
-      } else {
-        fromTs = Math.floor((Date.now() - 100 * 86400000) / 1000);
-        console.log("[waha] first load: buscando últimos 100 dias");
-      }
-
-      // Busca WAHA + MongoDB + R2 em paralelo
-      const [raw, dbRes, r2Res] = await Promise.all([
-        getChats(),
-        fetch(`/api/db?action=chats`, { headers: { "X-Internal-Key": ikey() } })
-          .then(r => r.json()).catch(() => ({ chats: {} })),
+      // ── 2. Busca R2 + MongoDB em paralelo (fonte primária: webhook → R2) ──
+      const [r2Res, dbRes] = await Promise.all([
         fetch("/api/r2-data?type=chats", { headers: { "X-Internal-Key": ikey() } })
           .then(r => r.ok ? r.json() : []).catch(() => []),
+        fetch(`/api/db?action=chats`, { headers: { "X-Internal-Key": ikey() } })
+          .then(r => r.json()).catch(() => ({ chats: {} })),
       ]);
 
-      if (!Array.isArray(raw)) return;
-      console.log(`[waha] ${raw.length} chats recebidos do WAHA`);
+      const dbMeta  = dbRes?.chats || {};
+      const r2Valid = (Array.isArray(r2Res) ? r2Res : []).filter(c => c.id && _isValidNewChatId(c.id));
+      console.log(`[r2] ${r2Valid.length} chats carregados do R2`);
 
-      // forceFullSync: sem filtro de data — pega TUDO que o WAHA tem
-      // Carga normal: filtra por fromTs para não reprocessar chats muito antigos
-      const filtered = forceFullSync
-        ? raw
-        : (fromTs
-          ? raw.filter(c => {
-              const lm = c.lastMessage;
-              const ts = lm?.timestamp || lm?.t || 0;
-              return ts === 0 || ts >= fromTs;
-            })
-          : raw);
-      console.log(`[waha] ${filtered.length} chats após filtro de data`);
-
-      const dbMeta = dbRes?.chats || {};
-      // R2: mapa indexado por id E por dígitos de telefone (webhook usa @lid, WAHA usa @c.us)
-      const r2Map  = {};
-      if (Array.isArray(r2Res)) {
-        const lidCacheForR2 = readLidPhoneMap();
-        for (const c of r2Res) {
-          r2Map[c.id] = c;
-          const ck = canonicalKey(c.id, lidCacheForR2);
-          if (ck && ck !== c.id) r2Map[ck] = c;
-        }
-      }
-      console.log(`[r2] ${Object.keys(r2Map).length} chats no R2`);
-
-      const normalized = filtered.map(c => {
-        const n    = normalizeChat(c);
-        const meta = dbMeta[n.id] || dbMeta[n.id.replace(/\D/g, "")] || {};
-        return { ...n, ...meta };
+      // ── 3. Normaliza chats do R2 para formato do app ──
+      const normalized = r2Valid.map(c => {
+        const meta    = dbMeta[c.id] || dbMeta[c.id.replace(/\D/g,"")] || {};
+        const cleanId = c.id.replace(/@.*$/, "");
+        const phone   = extractPhone(c.id);
+        const pn      = c.pushname || "";
+        return {
+          id:           c.id,
+          name:         pn || cleanId,
+          pushname:     pn,
+          phone:        phone ? ("+" + phone) : (pn || cleanId),
+          isValidPhone: !!phone,
+          lastMsg:      c.lastMsg || "",
+          lastTime:     c.lastTs ? new Date(c.lastTs).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"}) : "",
+          lastTs:       c.lastTs ? new Date(c.lastTs).toISOString() : null,
+          lastPatientTs: c.lastPatientTs || null,
+          unread:       c.unread || 0,
+          status:       meta.status     || "open",
+          assignedTo:   meta.assignedTo || null,
+          tags:         meta.tags       || [],
+          avatar:       (pn || cleanId || "??").slice(0, 2).toUpperCase(),
+          avatarColor:  stringToColor(c.id),
+          photoUrl:     null,
+        };
       });
 
-      // Mescla com cache local — cache local TEM PRIORIDADE sobre WAHA
-      // O WAHA não conhece status/resolved/lastPatientTs — só o local sabe
-      // Auto-resolve 30 dias também feito aqui dentro para garantir estado correto
+      // ── 4. Mescla com estado local e aplica overrides ──
       const TRINTA_DIAS = 30 * 24 * 60 * 60 * 1000;
       const agora = Date.now();
       const toAutoResolveIds = new Set();
 
       setChats(prev => {
         const lidPhoneCache = readLidPhoneMap();
-        const overrides = readOverrides();
-        // prevMap indexado por id E por chave canônica (dígitos do telefone)
-        // Garante que WAHA retornando @c.us encontre entrada salva como @lid (ou vice-versa)
+        const overrides     = readOverrides();
         const prevMap = {};
         const prevByPhone = {};
         for (const c of prev) {
@@ -750,168 +749,81 @@ export function useWAHA(operator) {
           const ck = canonicalKey(c.id, lidPhoneCache);
           if (ck) prevByPhone[ck] = c;
         }
-        const merged  = normalized.map(n => {
-          const ck = canonicalKey(n.id, lidPhoneCache);
+
+        const r2Ids    = new Set(normalized.map(c => c.id));
+        const r2Phones = new Set(normalized.map(c => c.id.replace(/\D/g,"")).filter(d => d.length >= 8));
+
+        const merged = normalized.map(n => {
+          const ck      = canonicalKey(n.id, lidPhoneCache);
           const local   = prevMap[n.id] || (ck ? prevByPhone[ck] : undefined);
-          const r2      = r2Map[n.id] || (ck ? r2Map[ck] : undefined);
           const isMuted = mutedChatsRef.current.has(n.id);
 
-          // Seleciona melhor lastTs / lastMsg entre WAHA, R2 e local
-          const wahaTsMs  = n.lastTs     ? new Date(n.lastTs).getTime()     : 0;
-          const r2TsMs    = r2?.lastTs   || 0;
-          const localTsMs = local?.lastTs ? new Date(local.lastTs).getTime() : 0;
-          const bestTsMs  = Math.max(wahaTsMs, r2TsMs, localTsMs);
-          const bestLastTs = bestTsMs ? new Date(bestTsMs).toISOString() : (n.lastTs || local?.lastTs);
-          const bestLastMsg = r2TsMs > wahaTsMs && r2TsMs > localTsMs && r2?.lastMsg ? r2.lastMsg
-            : wahaTsMs >= r2TsMs && n.lastMsg ? n.lastMsg
-            : local?.lastMsg || n.lastMsg || r2?.lastMsg || "";
-
-          // Override manual do operador (markRead / resolveChat) — keyed por dígitos canônicos
-          const ov = ck ? overrides[ck] : (overrides[n.id] || null);
-          const r2LptMs = r2?.lastPatientTs ? new Date(r2.lastPatientTs).getTime() : 0;
-          // resolvedAt: considerado válido se não há nova mensagem do paciente após o override
+          const r2LptMs    = n.lastPatientTs ? new Date(n.lastPatientTs).getTime() : 0;
+          const localLptMs = local?.lastPatientTs ? new Date(local.lastPatientTs).getTime() : 0;
+          const ov         = ck ? overrides[ck] : (overrides[n.id] || null);
           const ovResolved = ov?.resolvedAt && r2LptMs <= ov.resolvedAt;
-          // readAt: considerado válido se não há nova mensagem do paciente após o override
-          const ovRead = ov?.readAt && r2LptMs <= ov.readAt;
+          const ovRead     = ov?.readAt     && r2LptMs <= ov.readAt;
 
-          // Chat novo sem histórico local — usa WAHA + R2 (mas aplica overrides)
-          if (!local) {
-            const r2Lpt  = r2?.lastPatientTs ? new Date(r2.lastPatientTs).toISOString() : null;
-            const lpt    = isMuted ? null : r2Lpt;
-            const closing = lastMsgIsClosing(bestLastMsg);
-            const unread  = isMuted || closing || !lpt || ovRead || ovResolved ? 0 : r2?.unread || 0;
-            const entry   = { ...n, lastMsg: bestLastMsg, lastTs: bestLastTs, lastPatientTs: closing || ovRead || ovResolved ? null : lpt, unread };
-            const should30 = lpt && agora - new Date(lpt).getTime() > TRINTA_DIAS;
-            if (closing || should30 || ovResolved) {
-              if (closing || should30) toAutoResolveIds.add(entry.id);
-              return { ...entry, status: "resolved", unread: 0, lastPatientTs: null };
-            }
-            return entry;
-          }
+          const closing = lastMsgIsClosing(n.lastMsg);
+          // Para chats abertos localmente pelo WebSocket, preserva o LPT local mais recente
+          const localIsOpen = local?.status === "open" && !!local?.lastPatientTs;
+          const lpt = isMuted || closing || ovRead || ovResolved ? null
+            : localIsOpen
+              ? local.lastPatientTs
+              : (r2LptMs ? new Date(Math.max(r2LptMs, localLptMs)).toISOString() : null);
+          const should30 = lpt && agora - new Date(lpt).getTime() > TRINTA_DIAS;
+          if ((closing || should30) && (local?.status !== "resolved")) toAutoResolveIds.add(n.id);
 
-          // Chat existente — preserva estado local, atualiza com fontes mais recentes
-          const resolvedLocally = local.status === "resolved" || ovResolved;
-          const closing = lastMsgIsClosing(bestLastMsg);
-          const r2Lpt   = r2?.lastPatientTs !== undefined
-            ? (r2?.lastPatientTs ? new Date(r2.lastPatientTs).getTime() : null) : undefined;
-          const localLpt = local.lastPatientTs ? new Date(local.lastPatientTs).getTime() : null;
-          const lpt = isMuted || resolvedLocally || closing || ovRead ? null
-            : r2Lpt !== undefined
-              ? (r2Lpt ? new Date(Math.max(r2Lpt, localLpt || 0)).toISOString() : null)
-              : (local.lastPatientTs ?? null);
-          const should30 = !resolvedLocally && !closing && lpt &&
-            agora - new Date(lpt).getTime() > TRINTA_DIAS;
-          const shouldAutoResolve = closing || should30;
-          if (shouldAutoResolve && !resolvedLocally) toAutoResolveIds.add(n.id);
-
-          const unread = isMuted || shouldAutoResolve || resolvedLocally || !lpt || ovRead ? 0
-            : r2?.unread !== undefined
-              ? Math.max(r2.unread || 0, local.unread || 0)
-              : (local.unread ?? n.unread ?? 0);
+          const unread = isMuted || closing || should30 || ovResolved || ovRead || !lpt ? 0 : n.unread || 0;
+          const status = closing || should30 || ovResolved ? "resolved" : (local?.status ?? n.status);
 
           return {
             ...n,
-            lastMsg:       bestLastMsg,
-            lastTs:        bestLastTs,
-            lastPatientTs: (resolvedLocally || shouldAutoResolve || ovRead) ? null : lpt,
+            photoUrl:      local?.photoUrl   ?? null,
+            name:          local?.name       || n.name,
+            pushname:      n.pushname        || local?.pushname || "",
+            lastPatientTs: (closing || should30 || ovResolved || ovRead) ? null : lpt,
             unread,
-            status:        (shouldAutoResolve || ovResolved) && !resolvedLocally ? "resolved"
-                           : resolvedLocally ? "resolved"
-                           : (local.status ?? n.status),
-            assignedTo:    local.assignedTo  ?? n.assignedTo,
-            photoUrl:      local.photoUrl    ?? null,
-            tags:          local.tags        ?? n.tags,
-            pushname:      n.pushname || local.pushname || r2?.pushname,
+            status,
+            assignedTo:    local?.assignedTo ?? n.assignedTo,
+            tags:          local?.tags       ?? n.tags,
           };
         });
 
-        // ── CRÍTICO: preserva chats locais que o WAHA não retornou (mais antigos que fromTs)
-        const wahaIds = new Set(normalized.map(c => c.id));
-        const wahaPhones = new Set(normalized.map(c => c.id.replace(/\D/g, "")).filter(d => d.length >= 8));
+        // Preserva chats locais que ainda não chegaram via webhook (pré-webhook ou edge cases)
         for (const c of prev) {
-          if (!wahaIds.has(c.id)) merged.push(c); // preserva sem modificar
+          if (r2Ids.has(c.id)) continue;
+          const ck = canonicalKey(c.id, lidPhoneCache);
+          if (ck && r2Phones.has(ck)) continue;
+          merged.push(c);
         }
 
-        // ── Sessão nova (prev vazio): adiciona chats do R2 que WAHA não retornou
-        // Garante que num computador novo, chats históricos do webhook apareçam imediatamente
-        if (prev.length === 0) {
-          const r2Chats = Array.isArray(r2Res) ? r2Res : [];
-          for (const r2 of r2Chats) {
-            if (wahaIds.has(r2.id)) continue; // já processado pelo WAHA
-            if (!_isValidNewChatId(r2.id)) continue;
-            const rDigits = r2.id.replace(/\D/g, "");
-            // Evita duplicata por telefone (tail-8)
-            const dupByPhone = rDigits.length >= 8 && (wahaPhones.has(rDigits.slice(-8)) ||
-              merged.some(c => {
-                const cd = c.id.replace(/\D/g, "");
-                return cd.length >= 8 && cd.slice(-8) === rDigits.slice(-8);
-              }));
-            if (dupByPhone) continue;
-            const r2Ck = canonicalKey(r2.id, lidPhoneCache);
-            const ov = r2Ck ? overrides[r2Ck] : null;
-            const r2LptMs = r2.lastPatientTs ? new Date(r2.lastPatientTs).getTime() : 0;
-            const ovResolved = ov?.resolvedAt && r2LptMs <= ov.resolvedAt;
-            const ovRead = ov?.readAt && r2LptMs <= ov.readAt;
-            const isMuted = mutedChatsRef.current.has(r2.id);
-            const closing = lastMsgIsClosing(r2.lastMsg);
-            const lpt = isMuted || closing || ovRead || ovResolved ? null
-              : (r2.lastPatientTs ? new Date(r2.lastPatientTs).toISOString() : null);
-            const unread = isMuted || closing || !lpt || ovRead || ovResolved ? 0 : r2.unread || 0;
-            const status = closing || ovResolved ? "resolved" : "open";
-            merged.push({
-              id:            r2.id,
-              name:          r2.pushname || "",
-              pushname:      r2.pushname || "",
-              lastMsg:       r2.lastMsg  || "",
-              lastTs:        r2.lastTs   ? new Date(r2.lastTs).toISOString() : null,
-              lastPatientTs: lpt,
-              unread,
-              status,
-              assignedTo:    null,
-              tags:          [],
-              photoUrl:      null,
-            });
-            wahaPhones.add(rDigits.slice(-8));
-          }
-          // Também adiciona chats do MongoDB que têm metadados mas não estão no WAHA ou R2
-          for (const [chatId, meta] of Object.entries(dbMeta)) {
-            if (wahaIds.has(chatId)) continue;
-            if (!_isValidNewChatId(chatId)) continue;
-            const mDigits = chatId.replace(/\D/g, "");
-            const dupByPhone = mDigits.length >= 8 && (wahaPhones.has(mDigits.slice(-8)) ||
-              merged.some(c => c.id.replace(/\D/g,"").slice(-8) === mDigits.slice(-8)));
-            if (dupByPhone) continue;
-            merged.push({
-              id:            chatId,
-              name:          meta.pushname || "",
-              pushname:      meta.pushname || "",
-              lastMsg:       meta.lastMsg  || "",
-              lastTs:        meta.lastTs   || null,
-              lastPatientTs: null,
-              unread:        0,
-              status:        meta.status   || "open",
-              assignedTo:    meta.assignedTo || null,
-              tags:          meta.tags       || [],
-              photoUrl:      null,
-            });
-            if (mDigits.length >= 8) wahaPhones.add(mDigits.slice(-8));
-          }
+        // Adiciona chats do MongoDB sem entrada no R2
+        for (const [chatId, meta] of Object.entries(dbMeta)) {
+          if (r2Ids.has(chatId)) continue;
+          if (!_isValidNewChatId(chatId)) continue;
+          const mDigits = chatId.replace(/\D/g,"");
+          if (mDigits.length >= 8 && r2Phones.has(mDigits.slice(-8))) continue;
+          if (merged.some(c => c.id === chatId)) continue;
+          const pn = meta.pushname || "";
+          merged.push({
+            id: chatId, name: pn, pushname: pn,
+            lastMsg: meta.lastMsg || "", lastTs: meta.lastTs || null,
+            lastPatientTs: null, unread: 0,
+            status: meta.status || "open", assignedTo: meta.assignedTo || null,
+            tags: meta.tags || [], photoUrl: null,
+            avatar: (pn||"??").slice(0,2).toUpperCase(), avatarColor: stringToColor(chatId),
+          });
         }
 
-        // ── Deduplica por tail-8 de telefone (cobre @lid resolvido, formato antigo/novo BR)
-        // e filtra chats apagados pelo operador + IDs inválidos (@lid, >13 dígitos)
         const deduped = _dedupeChats(merged);
-        console.log(`[waha] loadChats setChats: prev=${prev.length} merged=${merged.length} deduped=${deduped.length}`);
-
+        console.log(`[waha] loadChats: r2=${normalized.length} merged=${merged.length} deduped=${deduped.length}`);
         persistChats(deduped);
-        // Persiste auto-resolves (30 dias + Consulta confirmada) no localStorage e MongoDB
+
         if (toAutoResolveIds.size > 0) {
-          console.log(`[waha] auto-resolve: ${toAutoResolveIds.size} chats (30 dias ou mensagem de fechamento)`);
+          console.log(`[waha] auto-resolve: ${toAutoResolveIds.size} chats`);
           const now = Date.now();
-          // Salva override no localStorage para sobreviver ao reload
-          for (const id of toAutoResolveIds) {
-            saveOverride(id, { resolvedAt: now, readAt: now });
-          }
+          for (const id of toAutoResolveIds) saveOverride(id, { resolvedAt: now, readAt: now });
           Promise.allSettled([...toAutoResolveIds].map(id =>
             fetch("/api/db?action=chat", {
               method: "PATCH",
@@ -928,26 +840,7 @@ export function useWAHA(operator) {
       });
 
       markLastSync();
-
-      // Carrega fotos de perfil em background após renderização inicial
-      setTimeout(() => loadProfilePictures(normalized.map(c => c.id)), 1000);
-
-      // Carrega última mensagem dos chats sem lastMsg (resolve "Sem mensagens recentes")
-      // Limita aos 15 mais recentes — em lotes de 3 com 500ms intervalo
-      const semMsg = normalized
-        .filter(c => !c.lastMsg && c.lastTs)
-        .sort((a, b) => {
-          const ta = new Date(a.lastTs).getTime();
-          const tb = new Date(b.lastTs).getTime();
-          return tb - ta;
-        })
-        .slice(0, 15)
-        .map(c => c.id);
-
-      if (semMsg.length > 0) {
-        console.log(`[waha] loadLastMessages para ${semMsg.length} chats`);
-        setTimeout(() => loadLastMessages(semMsg), 1000);
-      }
+      setTimeout(() => loadProfilePictures(r2Valid.map(c => c.id)), 1000);
 
     } catch (e) {
       console.error("[waha] loadChats:", e.message);
@@ -1436,8 +1329,7 @@ export function useWAHA(operator) {
   // ── 4. loadMessages — abre ChatWindow: últimas 60 msgs ────────
   const loadMessages = useCallback(async (chatId) => {
     activeChatRef.current = chatId;
-    delete seenMsgIds.current[chatId]; // reseta dedup para nova poll começar do zero
-    // Busca contato on-demand com prioridade (ignora cache de sessão)
+    delete seenMsgIds.current[chatId];
     try {
       const existing = resolveName(chatId, null);
       if (!existing && typeof lookupPhonePriority === "function") {
@@ -1446,9 +1338,7 @@ export function useWAHA(operator) {
         }).catch(() => {});
       }
     } catch {}
-    // Não zera unread ao abrir — só zera quando o operador enviar uma resposta
 
-    // ── Cache em memória: exibe imediatamente se já carregou antes ──
     const cached = _sessionMsgs.get(chatId);
     if (cached?.length) {
       setMessages(prev => ({ ...prev, [chatId]: cached }));
@@ -1459,61 +1349,45 @@ export function useWAHA(operator) {
       return;
     }
 
-    // ── R2: mescla mensagens persistidas pelo webhook ────────────
-    // Roda em paralelo com o WAHA para não atrasar, aplica ao finalizar
-    const r2MsgsPromise = fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`, {
-      headers: { "X-Internal-Key": ikey() }
-    }).then(r => r.ok ? r.json() : []).catch(() => []);
-
     try {
-      const [raw, r2Raw] = await Promise.all([getMessages(chatId, 60), r2MsgsPromise]);
-      const normalized = sortMsgs(raw.map(normalizeMessage));
+      // Fonte primária: R2 (webhook-persistido — atualizado mesmo com CRM fechado)
+      const r2Raw = await fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`, {
+        headers: { "X-Internal-Key": ikey() }
+      }).then(r => r.ok ? r.json() : []).catch(() => []);
+
+      const r2Msgs = Array.isArray(r2Raw)
+        ? sortMsgs(r2Raw.map(normalizeR2Message))
+        : [];
 
       setMessages(prev => {
         const existing = prev[chatId] || [];
-        const ids      = new Set(normalized.map(m => m.id));
-
-        // Mescla mensagens do R2 (persistidas pelo webhook) que o WAHA não retornou
-        const r2Extras = Array.isArray(r2Raw)
-          ? r2Raw
-              .filter(m => !ids.has(m.id) && m.chatId === chatId)
-              .map(m => ({
-                id:     m.id,
-                chatId: m.chatId,
-                from:   m.fromMe ? "operator" : "patient",
-                text:   m.body || "",
-                type:   m.type || "chat",
-                ts:     m.ts ? new Date(m.ts).toISOString() : null,
-                time:   m.ts ? new Date(m.ts).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "",
-              }))
-          : [];
-
+        const ids      = new Set(r2Msgs.map(m => m.id));
+        // Preserva msgs recebidas via WebSocket ainda não persistidas no R2
         const wsExtras = existing.filter(m => !ids.has(m.id) && !m.id.startsWith("tmp-"));
-        const merged   = sortMsgs([...normalized, ...r2Extras, ...wsExtras]);
+        const merged   = sortMsgs([...r2Msgs, ...wsExtras]);
         _sessionMsgs.set(chatId, merged);
         return { ...prev, [chatId]: merged };
       });
 
-      // Atualiza metadata do chat
-      const lastAny   = normalized[normalized.length - 1];
-      const lastOpIdx = normalized.map(m => m.from).lastIndexOf("operator");
-      const lastPIdx  = normalized.map(m => m.from).lastIndexOf("patient");
+      // Atualiza metadata do chat (lastMsg, lastPatientTs)
+      const lastAny   = r2Msgs[r2Msgs.length - 1];
+      const lastOpIdx = r2Msgs.map(m => m.from).lastIndexOf("operator");
+      const lastPIdx  = r2Msgs.map(m => m.from).lastIndexOf("patient");
       const semResp   = lastOpIdx === -1
-        ? normalized.filter(m => m.from === "patient")
-        : normalized.slice(lastOpIdx + 1).filter(m => m.from === "patient");
+        ? r2Msgs.filter(m => m.from === "patient")
+        : r2Msgs.slice(lastOpIdx + 1).filter(m => m.from === "patient");
       const ultimoFoiOp = lastOpIdx > lastPIdx || lastPIdx === -1;
-      const autoResolve = detectAutoResolve(normalized);
+      const autoResolve = detectAutoResolve(r2Msgs);
       const novoLPTs    = (ultimoFoiOp || autoResolve) ? null : (semResp[0]?.ts || null);
 
       setChats(prev => {
-        const existing = prev.find(c => c.id === chatId);
+        const chat    = prev.find(c => c.id === chatId);
         const updated = prev.map(c => c.id !== chatId ? c : {
           ...c,
           lastMsg:       lastAny?.text || c.lastMsg,
           lastTime:      lastAny?.time || c.lastTime,
           lastPatientTs: novoLPTs,
-          // Unread só é zerado ao enviar resposta (send/markRead) — abrir o chat não zera
-          unread:        existing?.unread ?? 0,
+          unread:        chat?.unread ?? 0,
         });
         persistChats(updated);
         return updated;
@@ -1630,77 +1504,79 @@ export function useWAHA(operator) {
     return () => clearInterval(iv);
   }, [sessionOk]);
 
-  // ── Polling lista de chats (10s) — busca 20 mais recentes direto no WAHA ──
+  // ── Polling lista de chats (30s) — R2 como fonte, cobre reconexão e multi-aba ──
   useEffect(() => {
     if (!sessionOk || USE_MOCK) return;
     const iv = setInterval(async () => {
       try {
-        const SESSION   = import.meta.env.VITE_WAHA_SESSION || "default";
-        const cutoffSec = Math.floor((Date.now() - 60 * 60 * 1000) / 1000); // 1h atrás
-        const r = await fetch(
-          `/api/waha?path=${encodeURIComponent(`/api/${SESSION}/chats`)}&limit=30`,
-          { headers: { "X-Internal-Key": ikey() } }
-        );
-        if (!r.ok) return;
-        const all = await r.json();
-        if (!Array.isArray(all)) return;
-        // Filtra client-side: só chats com atividade na última hora
-        const recent = all.filter(c => {
-          const ts = c.lastMessage?.timestamp || c.lastMessage?.t || 0;
-          return ts === 0 || ts >= cutoffSec;
-        });
-        if (!recent.length) return;
-        const normalized = recent.map(c => normalizeChat(c));
+        const r2Res = await fetch("/api/r2-data?type=chats", { headers: { "X-Internal-Key": ikey() } })
+          .then(r => r.ok ? r.json() : []).catch(() => []);
+        if (!Array.isArray(r2Res) || !r2Res.length) return;
 
-        // Chats cujo lastTs avançou mas lastMsg ainda está vazio (mídia sem body)
-        // → precisa buscar a mensagem real via loadLastMessages
-        const precisamMsg = [];
+        const lidCache  = readLidPhoneMap();
+        const overrides = readOverrides();
 
         setChats(prev => {
           let changed = false;
+          const prevById = {};
+          for (const c of prev) prevById[c.id] = c;
+
+          const r2Map = {};
+          for (const c of r2Res) if (c.id) r2Map[c.id] = c;
+
           const updated = prev.map(c => {
-            const n = normalized.find(x => x.id === c.id);
-            if (!n) return c;
-            // Nada mudou
-            if (n.lastTs === c.lastTs && (n.lastMsg || c.lastMsg)) return c;
+            const r2 = r2Map[c.id];
+            if (!r2) return c;
+            const r2TsMs = r2.lastTs || 0;
+            const cTsMs  = c.lastTs ? new Date(c.lastTs).getTime() : 0;
+            if (r2TsMs <= cTsMs) return c;
             changed = true;
-            // lastTs mudou → busca a mensagem real para garantir lastMsg e unread corretos
-            if (n.lastTs && n.lastTs !== c.lastTs) {
-              precisamMsg.push(c.id);
-            }
-            const newUnread = Math.max(c.unread || 0, n.unread || 0);
+            const ck = canonicalKey(c.id, lidCache);
+            const ov = ck ? overrides[ck] : (overrides[c.id] || null);
+            const r2LptMs  = r2.lastPatientTs ? new Date(r2.lastPatientTs).getTime() : 0;
+            const ovRead     = ov?.readAt     && r2LptMs <= ov.readAt;
+            const ovResolved = ov?.resolvedAt && r2LptMs <= ov.resolvedAt;
+            const closing    = lastMsgIsClosing(r2.lastMsg);
+            const lpt = closing || ovRead || ovResolved ? null
+              : (r2.lastPatientTs ? new Date(r2.lastPatientTs).toISOString() : null);
             return {
               ...c,
-              lastMsg:  n.lastMsg  || c.lastMsg,
-              lastTime: n.lastTime || c.lastTime,
-              lastTs:   n.lastTs   || c.lastTs,
-              unread:   newUnread,
+              lastMsg:       r2.lastMsg || c.lastMsg,
+              lastTime:      new Date(r2TsMs).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"}),
+              lastTs:        new Date(r2TsMs).toISOString(),
+              lastPatientTs: lpt,
+              unread:        closing || ovResolved || ovRead || !lpt ? 0 : Math.max(r2.unread||0, c.unread||0),
+              status:        closing || ovResolved ? "resolved" : c.status,
             };
           });
-          // Chats novos — filtra IDs inválidos (@lid, >13 dígitos) e dedup por tail-8
-          const ids = new Set(prev.map(c => c.id));
-          for (const n of normalized) {
-            if (ids.has(n.id)) continue;
-            if (!_isValidNewChatId(n.id)) continue;
-            const nDigits = n.id.replace(/\D/g, "");
-            const nTail8  = nDigits.length >= 8 ? nDigits.slice(-8) : null;
-            if (nTail8 && updated.some(c => {
-              const t = c.id.replace(/\D/g, "").slice(-8);
-              return t.length >= 8 && t === nTail8;
-            })) continue;
-            updated.push(n); changed = true; precisamMsg.push(n.id);
-          }
-          if (!changed) return prev;
-          persistChats(updated);
-          return updated;
-        });
 
-        // Busca individual para chats com lastTs novo mas msg vazia (máx 5)
-        if (precisamMsg.length > 0) {
-          loadLastMessages(precisamMsg.slice(0, 5));
-        }
+          // Adiciona novos chats do R2 ainda não vistos
+          const prevIds    = new Set(prev.map(c => c.id));
+          const allPhones  = new Set(updated.map(c => c.id.replace(/\D/g,"")).filter(d => d.length >= 8));
+          for (const r2 of r2Res) {
+            if (!r2.id || prevIds.has(r2.id) || !_isValidNewChatId(r2.id)) continue;
+            const rDigits = r2.id.replace(/\D/g,"");
+            if (rDigits.length >= 8 && allPhones.has(rDigits.slice(-8))) continue;
+            const pn = r2.pushname || "";
+            const cleanId = r2.id.replace(/@.*$/, "");
+            changed = true;
+            updated.push({
+              id: r2.id, name: pn || cleanId, pushname: pn,
+              lastMsg: r2.lastMsg || "", lastTs: r2.lastTs ? new Date(r2.lastTs).toISOString() : null,
+              lastPatientTs: r2.lastPatientTs || null, unread: r2.unread || 0,
+              status: "open", assignedTo: null, tags: [], photoUrl: null,
+              avatar: (pn||cleanId||"??").slice(0,2).toUpperCase(), avatarColor: stringToColor(r2.id),
+            });
+            if (rDigits.length >= 8) allPhones.add(rDigits.slice(-8));
+          }
+
+          if (!changed) return prev;
+          const deduped = _dedupeChats(updated);
+          persistChats(deduped);
+          return deduped;
+        });
       } catch {}
-    }, 10000); // 10s — PartyKit cuida do tempo real; polling cobre chats novos e reconexão
+    }, 30000); // 30s — PartyKit cobre tempo real; polling cobre reconexão e multi-aba
     return () => clearInterval(iv);
   }, [sessionOk]);
 
@@ -2015,117 +1891,98 @@ export function useWAHA(operator) {
     if (queued > 0) console.log(`[lid-batch] ${queued} LIDs enfileirados para resolução`);
   }
 
-  // ── Resync leve (automático, a cada 5 min): limit=200 via proxy, sem reset de lastSync ──
+  // ── Resync leve (automático, a cada 5 min): R2 + MongoDB, sem WAHA ──
   async function _lightResync() {
     if (USE_MOCK) return;
-    const SESSION = import.meta.env.VITE_WAHA_SESSION || "default";
     try {
-      const [wahaRes, r2Res] = await Promise.all([
-        fetch(
-          `/api/waha?path=${encodeURIComponent(`/api/${SESSION}/chats`)}&limit=200`,
-          { headers: { "X-Internal-Key": ikey() } }
-        ).then(r => r.ok ? r.json() : []).catch(() => []),
+      const [r2Res, dbRes] = await Promise.all([
         fetch("/api/r2-data?type=chats", { headers: { "X-Internal-Key": ikey() } })
           .then(r => r.ok ? r.json() : []).catch(() => []),
+        fetch(`/api/db?action=chats`, { headers: { "X-Internal-Key": ikey() } })
+          .then(r => r.json()).catch(() => ({ chats: {} })),
       ]);
-      if (!Array.isArray(wahaRes)) return;
+      if (!Array.isArray(r2Res)) return;
 
+      const dbMeta       = dbRes?.chats || {};
       const lidCacheLight = readLidPhoneMap();
-      const r2Map = {};
-      for (const c of (Array.isArray(r2Res) ? r2Res : [])) {
-        r2Map[c.id] = c;
-        const ck = canonicalKey(c.id, lidCacheLight);
-        if (ck && ck !== c.id) r2Map[ck] = c;
-      }
-      const normalized = wahaRes.map(c => normalizeChat(c));
-      const overrides = readOverrides();
+      const overrides    = readOverrides();
 
       setChats(prev => {
         const prevMap = {};
         const prevByPhone = {};
-        for (const pc0 of prev) {
-          prevMap[pc0.id] = pc0;
-          const pc0k = canonicalKey(pc0.id, lidCacheLight);
-          if (pc0k) prevByPhone[pc0k] = pc0;
+        for (const pc of prev) {
+          prevMap[pc.id] = pc;
+          const ck = canonicalKey(pc.id, lidCacheLight);
+          if (ck) prevByPhone[ck] = pc;
         }
-        const merged  = normalized.map(n => {
-          const nck = canonicalKey(n.id, lidCacheLight);
-          const local   = prevMap[n.id] || (nck ? prevByPhone[nck] : undefined);
-          const r2      = r2Map[n.id] || (nck ? r2Map[nck] : undefined);
-          const isMuted = mutedChatsRef.current.has(n.id);
+        const r2Map = {};
+        for (const c of r2Res) {
+          if (!c.id) continue;
+          r2Map[c.id] = c;
+          const ck = canonicalKey(c.id, lidCacheLight);
+          if (ck && ck !== c.id) r2Map[ck] = c;
+        }
 
+        const merged = prev.map(c => {
+          const ck   = canonicalKey(c.id, lidCacheLight);
+          const r2   = r2Map[c.id] || (ck ? r2Map[ck] : undefined);
+          const meta = dbMeta[c.id] || dbMeta[c.id.replace(/\D/g,"")] || {};
+          if (!r2 && !meta.status) return c;
 
-
-          const wahaTsMs  = n.lastTs   ? new Date(n.lastTs).getTime()   : 0;
           const r2TsMs    = r2?.lastTs || 0;
-          const localTsMs = local?.lastTs ? new Date(local.lastTs).getTime() : 0;
-          const bestTsMs  = Math.max(wahaTsMs, r2TsMs, localTsMs);
-
-          const lastMsg = r2TsMs > wahaTsMs && r2TsMs > localTsMs && r2?.lastMsg ? r2.lastMsg
-            : wahaTsMs >= r2TsMs && wahaTsMs >= localTsMs && n.lastMsg           ? n.lastMsg
-            : local?.lastMsg || n.lastMsg || r2?.lastMsg || "";
-
-          const lastTs = bestTsMs ? new Date(bestTsMs).toISOString() : (n.lastTs || local?.lastTs);
-
-          const ov = nck ? overrides[nck] : overrides[n.id];
-          const r2LptMs = r2?.lastPatientTs ? new Date(r2.lastPatientTs).getTime() : 0;
+          const localTsMs = c.lastTs ? new Date(c.lastTs).getTime() : 0;
+          const isMuted   = mutedChatsRef.current.has(c.id);
+          const ov        = ck ? overrides[ck] : (overrides[c.id] || null);
+          const r2LptMs   = r2?.lastPatientTs ? new Date(r2.lastPatientTs).getTime() : 0;
           const ovResolved = ov?.resolvedAt && r2LptMs <= ov.resolvedAt;
-          const ovRead = ov?.readAt && r2LptMs <= ov.readAt;
-
-          const r2Lpt    = r2?.lastPatientTs ? new Date(r2.lastPatientTs).getTime() : null;
-          const localLpt = local?.lastPatientTs ? new Date(local.lastPatientTs).getTime() : null;
-          // Se local está "open" com lastPatientTs definido, R2 pode estar desatualizado —
-          // preserva o estado local para não apagar o timer de espera prematuramente.
-          const localIsOpen = local?.status === "open" && !!local?.lastPatientTs;
-          const lpt = isMuted || ovRead || ovResolved ? null
+          const ovRead     = ov?.readAt     && r2LptMs <= ov.readAt;
+          const closing    = lastMsgIsClosing(r2?.lastMsg || c.lastMsg);
+          const localIsOpen = c.status === "open" && !!c.lastPatientTs;
+          const lpt = isMuted || closing || ovRead || ovResolved ? null
             : localIsOpen
-              ? local.lastPatientTs  // confia no estado local (WebSocket/handleMsg já atualizou)
-              : r2?.lastPatientTs !== undefined
-                ? (r2Lpt ? new Date(Math.max(r2Lpt, localLpt || 0)).toISOString() : null)
-                : (local?.lastPatientTs ?? null);
-
-          // Chat é resolvido se: override ativo, lastMsg de fechamento, ou foi resolvido
-          // manualmente (status==="resolved") E não foi reaberto localmente pelo paciente.
-          const localReopened = local?.status === "open" && localLpt && localLpt > (r2LptMs || 0);
-          const isResolved = (!localReopened && local?.status === "resolved") || ovResolved || lastMsgIsClosing(lastMsg);
+              ? c.lastPatientTs
+              : (r2LptMs ? new Date(r2LptMs).toISOString() : null);
+          const isResolved = closing || ovResolved || (!localIsOpen && c.status === "resolved");
           const unread = isMuted || isResolved || !lpt || ovRead ? 0
-            : r2?.unread !== undefined
-              ? Math.max(r2.unread || 0, local?.unread || 0)
-              : (local?.unread ?? n.unread ?? 0);
+            : (r2?.unread !== undefined ? Math.max(r2.unread||0, c.unread||0) : c.unread);
 
           return {
-            ...(local || n),
-            lastMsg, lastTs, unread,
+            ...c,
+            lastMsg:       r2TsMs > localTsMs ? (r2.lastMsg || c.lastMsg) : c.lastMsg,
+            lastTime:      r2TsMs > localTsMs ? new Date(r2TsMs).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"}) : c.lastTime,
+            lastTs:        r2TsMs > localTsMs ? new Date(r2TsMs).toISOString() : c.lastTs,
             lastPatientTs: isResolved ? null : lpt,
-            status:     isResolved ? "resolved" : (local?.status ?? n.status),
-            assignedTo: local?.assignedTo ?? n.assignedTo,
-            tags:       local?.tags       ?? n.tags,
-            pushname:   n.pushname || local?.pushname || r2?.pushname,
+            unread,
+            status:        isResolved ? "resolved" : (meta.status || c.status),
+            assignedTo:    meta.assignedTo ?? c.assignedTo,
+            tags:          meta.tags       ?? c.tags,
+            pushname:      r2?.pushname || c.pushname,
           };
         });
-        // Chats do prev que não estão no resultado do WAHA — mantém localmente.
-        // Usa chave canônica para evitar duplicatas quando o mesmo contato aparece
-        // em formatos diferentes (@lid vs @c.us).
-        const mergedKeys = new Set();
-        for (const mc of merged) {
-          mergedKeys.add(mc.id);
-          const mck = canonicalKey(mc.id, lidCacheLight);
-          if (mck) mergedKeys.add(mck);
+
+        // Adiciona novos chats do R2 não presentes em prev
+        const mergedIds    = new Set(merged.map(c => c.id));
+        const mergedPhones = new Set(merged.map(c => c.id.replace(/\D/g,"")).filter(d => d.length >= 8));
+        for (const r2 of r2Res) {
+          if (!r2.id || mergedIds.has(r2.id) || !_isValidNewChatId(r2.id)) continue;
+          const rDigits = r2.id.replace(/\D/g,"");
+          if (rDigits.length >= 8 && mergedPhones.has(rDigits.slice(-8))) continue;
+          const pn = r2.pushname || "";
+          const cleanId = r2.id.replace(/@.*$/, "");
+          merged.push({
+            id: r2.id, name: pn || cleanId, pushname: pn,
+            lastMsg: r2.lastMsg || "", lastTs: r2.lastTs ? new Date(r2.lastTs).toISOString() : null,
+            lastPatientTs: r2.lastPatientTs || null, unread: r2.unread || 0,
+            status: "open", assignedTo: null, tags: [], photoUrl: null,
+            avatar: (pn||cleanId||"??").slice(0,2).toUpperCase(), avatarColor: stringToColor(r2.id),
+          });
         }
-        for (const pc of prev) {
-          const pck = canonicalKey(pc.id, lidCacheLight);
-          if (!mergedKeys.has(pc.id) && !(pck && mergedKeys.has(pck))) {
-            merged.push(pc);
-            mergedKeys.add(pc.id);
-            if (pck) mergedKeys.add(pck);
-          }
-        }
+
         const deduped = _dedupeChats(merged);
         persistChats(deduped);
         return deduped;
       });
 
-      // Dispara resolução em lote de todos os @lid do estado atual — throttled em useContacts
       _batchResolveLids();
     } catch (e) {
       console.error("[light-resync]", e.message);

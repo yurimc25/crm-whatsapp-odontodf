@@ -126,7 +126,7 @@ function isValidPhoneId(id) {
 // Tenta extrair número BR válido de IDs malformados
 // Ex: "5561999611055@c.us" → "5561999611055" (ok)
 // Ex: "276016157200564@c.us" → provavelmente grupo, retorna null
-function extractPhone(rawId) {
+export function extractPhone(rawId) {
   const cleanId = rawId.replace(/@.*$/, "").replace(/\D/g, "");
   if (!isValidPhoneId(cleanId)) return null;
   return cleanId;
@@ -442,7 +442,7 @@ const RE_DATA_FLEX  = /\b\d{1,2}[\s\/\-]\d{1,2}[\s\/\-]\d{2,4}\b/;
 const RE_TELEFONE   = /(?:\(?\d{2}\)?\s?)(?:9\s?\d{4}|\d{4})[\s\-]?\d{4}/;
 const RE_EMAIL      = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/;
 
-function stringToColor(str) {
+export function stringToColor(str) {
   const colors = ["#0d7d62","#1a5fa8","#b56a00","#c0412c","#5b3db8","#2d7d8c"];
   let hash = 0;
   for (let i = 0; i < str.length; i++) hash = str.charCodeAt(i) + ((hash << 5) - hash);
