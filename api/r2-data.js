@@ -10,8 +10,6 @@ import { r2Get, r2Put } from "./_r2.js";
 import { formidable } from "formidable";
 import fs from "fs";
 
-export const config = { api: { bodyParser: false } };
-
 function chatKey(chatId) {
   return "msgs/" + chatId.replace(/[^a-zA-Z0-9_-]/g, "_") + ".json";
 }
@@ -33,13 +31,17 @@ export default async function handler(req, res) {
   if (req.method === "POST" && type === "chats") {
     let body;
     try {
-      const raw = await new Promise((resolve, reject) => {
-        let data = "";
-        req.on("data", chunk => data += chunk);
-        req.on("end", () => resolve(data));
-        req.on("error", reject);
-      });
-      body = JSON.parse(raw);
+      if (req.body && typeof req.body === "object") {
+        body = req.body;
+      } else {
+        const raw = await new Promise((resolve, reject) => {
+          let data = "";
+          req.on("data", chunk => data += chunk);
+          req.on("end", () => resolve(data));
+          req.on("error", reject);
+        });
+        body = JSON.parse(raw);
+      }
     } catch {
       return res.status(400).json({ error: "JSON inválido" });
     }
@@ -84,14 +86,17 @@ export default async function handler(req, res) {
 
     let body;
     try {
-      // bodyParser desabilitado — lê raw body manualmente
-      const raw = await new Promise((resolve, reject) => {
-        let data = "";
-        req.on("data", chunk => data += chunk);
-        req.on("end", () => resolve(data));
-        req.on("error", reject);
-      });
-      body = JSON.parse(raw);
+      if (req.body && typeof req.body === "object") {
+        body = req.body;
+      } else {
+        const raw = await new Promise((resolve, reject) => {
+          let data = "";
+          req.on("data", chunk => data += chunk);
+          req.on("end", () => resolve(data));
+          req.on("error", reject);
+        });
+        body = JSON.parse(raw);
+      }
     } catch {
       return res.status(400).json({ error: "JSON inválido" });
     }
@@ -155,10 +160,14 @@ export default async function handler(req, res) {
 
     let body;
     try {
-      const raw = await new Promise((resolve, reject) => {
-        let d = ""; req.on("data", c => d += c); req.on("end", () => resolve(d)); req.on("error", reject);
-      });
-      body = JSON.parse(raw);
+      if (req.body && typeof req.body === "object") {
+        body = req.body;
+      } else {
+        const raw = await new Promise((resolve, reject) => {
+          let d = ""; req.on("data", c => d += c); req.on("end", () => resolve(d)); req.on("error", reject);
+        });
+        body = JSON.parse(raw);
+      }
     } catch { return res.status(400).json({ error: "JSON inválido" }); }
 
     const MAX_MSGS = 200;

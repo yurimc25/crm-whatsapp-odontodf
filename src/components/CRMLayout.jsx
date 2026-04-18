@@ -134,10 +134,37 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
   const { displayName, lidPhoneMap } = useContactsCtx();
 
   const {
-    chats, messages, loadMessages, loadOlderMessages, send, deleteMsg, editMsg,
+    chats, setChats, messages, loadMessages, loadOlderMessages, send, deleteMsg, editMsg,
     deleteChat, forwardChat, resolveChat, markRead, markUnread, searchMessages,
     resyncChats, syncChatsToR2, mutedChats, muteChat, unmuteChat, loading, error, wsStatus, myJid,
   } = useWAHA(operator);
+
+  const ikey = () => import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
+
+  async function handleMigrated(chatId) {
+    // Recarrega mensagens do R2 no ChatWindow
+    loadMessages(chatId);
+    // Busca o lastMsg atualizado do R2 e atualiza o chatlist
+    try {
+      const r = await fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`, {
+        headers: { "X-Internal-Key": ikey() },
+      });
+      if (!r.ok) return;
+      const msgs = await r.json();
+      if (!Array.isArray(msgs) || !msgs.length) return;
+      const last = msgs[msgs.length - 1];
+      const body = last.body || "";
+      const type = (last.type || "").toLowerCase();
+      const lastMsg = body || (type === "ptt" || type === "voice" || type.includes("audio") ? "🎵 Áudio"
+        : type.includes("image") || type === "sticker" ? "📷 Imagem"
+        : type.includes("video") ? "🎥 Vídeo"
+        : type.includes("document") ? "📎 Arquivo"
+        : type !== "chat" ? "📎 Mídia" : "");
+      setChats(prev => prev.map(c => c.id !== chatId ? c : {
+        ...c, lastMsg, lastTs: last.ts, fromMe: last.fromMe ?? false,
+      }));
+    } catch {}
+  }
 
   const perms = ROLE_PERMISSIONS[operator.role] || {};
 
@@ -472,6 +499,7 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
               onEditMsg={(msgId, text) => editMsg(activeChat.id, msgId, text)}
               canForwardToAdmin={perms.verAdmin}
               onLoadOlder={loadOlderMessages}
+              onMigrated={() => handleMigrated(activeChat.id)}
             />
           ) : (
             <div style={{

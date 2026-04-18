@@ -53,12 +53,37 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
 
   const { displayName, lidPhoneMap } = useContactsCtx();
   const {
-    chats, messages, loadMessages, loadOlderMessages, send,
+    chats, setChats, messages, loadMessages, loadOlderMessages, send,
     deleteMsg, editMsg, deleteChat, searchMessages,
     forwardChat, resolveChat, markRead, markUnread,
     resyncChats, syncChatsToR2, mutedChats, muteChat, unmuteChat,
     loading, error, wsStatus, myJid,
   } = useWAHA(operator);
+
+  const ikey = () => import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
+
+  async function handleMigrated(chatId) {
+    loadMessages(chatId);
+    try {
+      const r = await fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`, {
+        headers: { "X-Internal-Key": ikey() },
+      });
+      if (!r.ok) return;
+      const msgs = await r.json();
+      if (!Array.isArray(msgs) || !msgs.length) return;
+      const last = msgs[msgs.length - 1];
+      const body = last.body || "";
+      const type = (last.type || "").toLowerCase();
+      const lastMsg = body || (type === "ptt" || type === "voice" || type.includes("audio") ? "🎵 Áudio"
+        : type.includes("image") || type === "sticker" ? "📷 Imagem"
+        : type.includes("video") ? "🎥 Vídeo"
+        : type.includes("document") ? "📎 Arquivo"
+        : type !== "chat" ? "📎 Mídia" : "");
+      setChats(prev => prev.map(c => c.id !== chatId ? c : {
+        ...c, lastMsg, lastTs: last.ts, fromMe: last.fromMe ?? false,
+      }));
+    } catch {}
+  }
 
   const perms = ROLE_PERMISSIONS[operator.role] || {};
 
@@ -376,6 +401,7 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
             onLoadOlder={loadOlderMessages}
             onDeleteMsg={msgId => deleteMsg?.(activeChat.id, msgId)}
             onEditMsg={(msgId, newText) => editMsg?.(activeChat.id, msgId, newText)}
+            onMigrated={() => handleMigrated(activeChat.id)}
           />
         )}
 

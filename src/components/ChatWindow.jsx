@@ -182,7 +182,7 @@ function dayLabel(ts) {
 
 const _ikey = () => import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
 
-function MigrateChatButton({ chatId }) {
+function MigrateChatButton({ chatId, onDone }) {
   const [state, setState] = useState("idle"); // idle | running | done | error
   const [saved, setSaved] = useState(0);
 
@@ -198,6 +198,7 @@ function MigrateChatButton({ chatId }) {
       const result = await r.json();
       setSaved(result.saved || 0);
       setState("done");
+      onDone?.();
     } catch {
       setState("error");
     }
@@ -230,7 +231,7 @@ function MigrateChatButton({ chatId }) {
 export default function ChatWindow({
   chat, messages, operator, onSend, onForward, onResolve,
   onDeleteMsg, onEditMsg,
-  canForwardToAdmin, onLoadOlder
+  canForwardToAdmin, onLoadOlder, onMigrated
 }) {
   const [text, setText]               = useState("");
   const [sending, setSending]         = useState(false);
@@ -573,7 +574,7 @@ export default function ChatWindow({
         </div>
 
         {/* Migrar histórico deste chat para R2 */}
-        <MigrateChatButton chatId={chat.id} />
+        <MigrateChatButton chatId={chat.id} onDone={onMigrated} />
 
         {/* Encaminhar */}
         <div style={{ position:"relative" }}>
