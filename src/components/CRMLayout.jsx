@@ -359,10 +359,6 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
           {(operator.role === "gerente" || operator.role === "admin") && (
             <SyncDBButton onSync={syncChatsToR2} />
           )}
-          {/* Migração única do histórico do WAHA para R2 — gerente/admin */}
-          {(operator.role === "gerente" || operator.role === "admin") && (
-            <MigrateHistoryButton />
-          )}
         </div>
       </div>
 

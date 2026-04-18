@@ -180,6 +180,53 @@ function dayLabel(ts) {
   return `${weekday.charAt(0).toUpperCase()+weekday.slice(1)} - ${date}`;
 }
 
+const _ikey = () => import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
+
+function MigrateChatButton({ chatId }) {
+  const [state, setState] = useState("idle"); // idle | running | done | error
+  const [saved, setSaved] = useState(0);
+
+  async function run() {
+    setState("running"); setSaved(0);
+    try {
+      const r = await fetch("/api/r2-data?type=migrate-batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Internal-Key": _ikey() },
+        body: JSON.stringify({ chatIds: [chatId] }),
+      });
+      if (!r.ok) throw new Error(`Erro ${r.status}`);
+      const result = await r.json();
+      setSaved(result.saved || 0);
+      setState("done");
+    } catch {
+      setState("error");
+    }
+  }
+
+  const label = state === "idle"    ? "⬆ Sincronizar"
+              : state === "running" ? "⏳ Sincronizando…"
+              : state === "done"    ? `✓ ${saved} msgs`
+              : "✗ Erro";
+
+  const color = state === "done" ? "#4caf87" : state === "error" ? "#c0412c" : "#888";
+
+  return (
+    <button
+      title="Importa histórico deste chat do WAHA para a nuvem (R2)"
+      disabled={state === "running"}
+      onClick={state !== "running" ? run : undefined}
+      style={{
+        background: "transparent",
+        border: `1px solid ${color}33`,
+        borderRadius: 6, padding: "5px 8px",
+        color, fontSize: 11, cursor: state === "running" ? "wait" : "pointer",
+        whiteSpace: "nowrap", transition: "all .15s",
+      }}>
+      {label}
+    </button>
+  );
+}
+
 export default function ChatWindow({
   chat, messages, operator, onSend, onForward, onResolve,
   onDeleteMsg, onEditMsg,
@@ -524,6 +571,9 @@ export default function ChatWindow({
             </button>
           </div>
         </div>
+
+        {/* Migrar histórico deste chat para R2 */}
+        <MigrateChatButton chatId={chat.id} />
 
         {/* Encaminhar */}
         <div style={{ position:"relative" }}>
