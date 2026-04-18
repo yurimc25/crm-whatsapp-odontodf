@@ -41,7 +41,7 @@ function MigrateHistoryButton() {
     setProgress({ done: 0, total: 0, saved: 0 });
     try {
       // 1. Busca lista de chatIds no WAHA (via servidor)
-      const listRes = await fetch("/api/migrate-history", {
+      const listRes = await fetch("/api/r2-data?type=migrate-list", {
         headers: { "X-Internal-Key": ikey() },
       });
       if (!listRes.ok) throw new Error(`Erro ${listRes.status}`);
@@ -55,7 +55,7 @@ function MigrateHistoryButton() {
       const BATCH = 10;
       for (let i = 0; i < chatIds.length; i += BATCH) {
         const batch = chatIds.slice(i, i + BATCH);
-        const r = await fetch("/api/migrate-history", {
+        const r = await fetch("/api/r2-data?type=migrate-batch", {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-Internal-Key": ikey() },
           body: JSON.stringify({ chatIds: batch }),
@@ -358,6 +358,10 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
           {/* Sync forçado do chatlist para a base — gerente/admin */}
           {(operator.role === "gerente" || operator.role === "admin") && (
             <SyncDBButton onSync={syncChatsToR2} />
+          )}
+          {/* Migração única do histórico do WAHA para R2 — gerente/admin */}
+          {(operator.role === "gerente" || operator.role === "admin") && (
+            <MigrateHistoryButton />
           )}
         </div>
       </div>

@@ -1,8 +1,10 @@
 // api/r2-data.js
 // GET /api/r2-data?type=chats              → chats.json
 // GET /api/r2-data?type=msgs&chatId=...    → msgs/{chatId}.json
+// GET /api/r2-data?type=migrate-list       → lista chatIds do WAHA para migração
 // POST /api/r2-data?type=upload            → upload via JSON base64 (arquivos < 4MB)
 // POST /api/r2-data?type=upload-binary     → upload via FormData (arquivos grandes)
+// POST /api/r2-data?type=migrate-batch     → migra batch { chatIds: [...] } do WAHA → R2
 
 import { r2Get, r2Put } from "./_r2.js";
 import { formidable } from "formidable";
@@ -143,8 +145,110 @@ export default async function handler(req, res) {
     }
   }
 
+  // ── POST: migrate-batch ─────────────────────────────────────────
+  if (req.method === "POST" && type === "migrate-batch") {
+    const wahaUrl = process.env.WAHA_URL;
+    const wahaKey = process.env.WAHA_API_KEY;
+    const session = process.env.WAHA_SESSION || "default";
+    if (!wahaUrl) return res.status(500).json({ error: "WAHA_URL não configurado" });
+    const wahaHeaders = { "Content-Type": "application/json", ...(wahaKey ? { "X-Api-Key": wahaKey } : {}) };
+
+    let body;
+    try {
+      const raw = await new Promise((resolve, reject) => {
+        let d = ""; req.on("data", c => d += c); req.on("end", () => resolve(d)); req.on("error", reject);
+      });
+      body = JSON.parse(raw);
+    } catch { return res.status(400).json({ error: "JSON inválido" }); }
+
+    const MAX_MSGS = 200;
+    const BATCH_SIZE = 10;
+    const chatIds = Array.isArray(body?.chatIds) ? body.chatIds.slice(0, BATCH_SIZE) : [];
+    if (!chatIds.length) return res.status(200).json({ ok: true, processed: 0, saved: 0 });
+
+    const r2Json = async (k, def) => { try { const r = await r2Get(k); return r ? JSON.parse(r.buf.toString("utf8")) : def; } catch { return def; } };
+    const r2WriteJson = async (k, data) => r2Put(k, Buffer.from(JSON.stringify(data), "utf8"), "application/json");
+
+    let processed = 0, saved = 0;
+    const errors = [];
+    const chatsIndex = await r2Json("chats.json", []);
+    const chatsMap = {};
+    for (const c of chatsIndex) if (c.id) chatsMap[c.id] = c;
+    let chatsChanged = false;
+
+    for (const cid of chatIds) {
+      try {
+        const r = await fetch(`${wahaUrl}/api/${session}/chats/${encodeURIComponent(cid)}/messages?limit=200&downloadMedia=false`,
+          { headers: wahaHeaders, signal: AbortSignal.timeout(10000) });
+        if (!r.ok) { errors.push(cid); processed++; continue; }
+        const raw = await r.json();
+        if (!Array.isArray(raw) || !raw.length) { processed++; continue; }
+
+        const msgs = raw.map(m => {
+          const tsRaw = m.timestamp || m._data?.t || 0;
+          const tsMs  = tsRaw ? (tsRaw > 1e12 ? tsRaw : tsRaw * 1000) : 0;
+          const id    = m.id?._serialized || (typeof m.id === "string" ? m.id : null) || `msg-${tsMs}`;
+          return { id, chatId: cid, ts: tsMs, fromMe: m.fromMe ?? m._data?.fromMe ?? false,
+            body: m.body || m._data?.body || m.caption || m._data?.caption || "",
+            type: m.type || m._data?.type || "chat",
+            pushname: m.notifyName || m._data?.notifyName || "" };
+        }).filter(m => m.id && m.ts > 0);
+        if (!msgs.length) { processed++; continue; }
+        msgs.sort((a, b) => a.ts - b.ts);
+
+        const rKey = chatKey(cid);
+        const exist = await r2Json(rKey, []);
+        const existIds = new Set(exist.map(m => m.id));
+        const novas = msgs.filter(m => !existIds.has(m.id));
+        if (novas.length > 0) {
+          const merged = [...exist, ...novas].sort((a, b) => (a.ts||0) - (b.ts||0));
+          if (merged.length > MAX_MSGS) merged.splice(0, merged.length - MAX_MSGS);
+          await r2WriteJson(rKey, merged);
+          saved += novas.length;
+        }
+
+        const lastMsg = msgs[msgs.length - 1];
+        const entry = { id: cid, lastMsg: lastMsg.body || "", lastTs: lastMsg.ts, fromMe: lastMsg.fromMe,
+          pushname: lastMsg.pushname || chatsMap[cid]?.pushname || "",
+          lastPatientTs: chatsMap[cid]?.lastPatientTs ?? null, unread: chatsMap[cid]?.unread ?? 0 };
+        if (chatsMap[cid]) {
+          if (!chatsMap[cid].lastTs || lastMsg.ts > chatsMap[cid].lastTs) { chatsMap[cid] = { ...chatsMap[cid], ...entry }; chatsChanged = true; }
+        } else { chatsMap[cid] = entry; chatsChanged = true; }
+        processed++;
+      } catch (e) { errors.push(cid); processed++; }
+    }
+
+    if (chatsChanged) {
+      const updated = Object.values(chatsMap);
+      if (updated.length > 1000) updated.splice(1000);
+      await r2WriteJson("chats.json", updated);
+    }
+    return res.status(200).json({ ok: true, processed, saved, errors });
+  }
+
   // ── GET ──────────────────────────────────────────────────────────
   if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
+
+  // GET migrate-list
+  if (type === "migrate-list") {
+    const wahaUrl = process.env.WAHA_URL;
+    const wahaKey = process.env.WAHA_API_KEY;
+    const session = process.env.WAHA_SESSION || "default";
+    if (!wahaUrl) return res.status(500).json({ error: "WAHA_URL não configurado" });
+    try {
+      const r = await fetch(`${wahaUrl}/api/${session}/chats?limit=500`, {
+        headers: { "Content-Type": "application/json", ...(wahaKey ? { "X-Api-Key": wahaKey } : {}) },
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!r.ok) return res.status(r.status).json({ error: `WAHA ${r.status}` });
+      const chats = await r.json();
+      if (!Array.isArray(chats)) return res.status(200).json({ chatIds: [], total: 0 });
+      const chatIds = chats
+        .map(c => (c.id || "").replace(/:\d+(@\S+)?$/, ""))
+        .filter(id => id && !id.endsWith("@s.whatsapp.net") && !id.endsWith("@lid"));
+      return res.status(200).json({ chatIds, total: chatIds.length });
+    } catch (e) { return res.status(500).json({ error: e.message }); }
+  }
 
   try {
     if (type === "chats") {
