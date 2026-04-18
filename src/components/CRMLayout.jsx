@@ -30,6 +30,72 @@ const T = {
   bubbleMe:  "#1e3a2a",   // bolha minha mensagem
 };
 
+const ikey = () => import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
+
+function MigrateHistoryButton() {
+  const [state, setState] = useState("idle"); // idle | running | done | error
+  const [progress, setProgress] = useState({ done: 0, total: 0, saved: 0 });
+
+  async function run() {
+    setState("running");
+    setProgress({ done: 0, total: 0, saved: 0 });
+    try {
+      // 1. Busca lista de chatIds no WAHA (via servidor)
+      const listRes = await fetch("/api/migrate-history", {
+        headers: { "X-Internal-Key": ikey() },
+      });
+      if (!listRes.ok) throw new Error(`Erro ${listRes.status}`);
+      const { chatIds, total } = await listRes.json();
+      if (!chatIds?.length) { setState("done"); return; }
+      setProgress(p => ({ ...p, total }));
+
+      // 2. Processa em batches de 10
+      let done = 0;
+      let saved = 0;
+      const BATCH = 10;
+      for (let i = 0; i < chatIds.length; i += BATCH) {
+        const batch = chatIds.slice(i, i + BATCH);
+        const r = await fetch("/api/migrate-history", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Internal-Key": ikey() },
+          body: JSON.stringify({ chatIds: batch }),
+        });
+        if (!r.ok) continue;
+        const result = await r.json();
+        done  += result.processed || 0;
+        saved += result.saved     || 0;
+        setProgress({ done, total, saved });
+      }
+      setState("done");
+    } catch (e) {
+      console.error("[migrate]", e.message);
+      setState("error");
+    }
+  }
+
+  const label = state === "idle"    ? "⬆ Migrar histórico"
+              : state === "running" ? `⏳ ${progress.done}/${progress.total} chats…`
+              : state === "done"    ? `✓ ${progress.saved} msgs migradas`
+              : "✗ Erro — tentar de novo";
+
+  return (
+    <button
+      title="Importa mensagens do WAHA para a nuvem (R2). Use uma vez para migrar o histórico."
+      disabled={state === "running"}
+      onClick={state !== "running" ? run : undefined}
+      style={{
+        background: "transparent",
+        border: `1px solid ${state === "done" ? "#4caf87" : state === "error" ? "#c0412c" : "#333"}`,
+        borderRadius: 6, padding: "4px 8px",
+        color:  state === "done" ? "#4caf87" : state === "error" ? "#c0412c" : "#888",
+        fontSize: 11, cursor: state === "running" ? "wait" : "pointer",
+        transition: "all .15s", whiteSpace: "nowrap",
+      }}>
+      {label}
+    </button>
+  );
+}
+
 function SyncDBButton({ onSync }) {
   const [syncing, setSyncing] = useState(false);
   const [lastSync, setLastSync] = useState(null);
