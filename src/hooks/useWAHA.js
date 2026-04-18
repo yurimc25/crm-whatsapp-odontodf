@@ -77,9 +77,38 @@ const USE_MOCK    = import.meta.env.VITE_USE_MOCK === "true";
 const CHATS_KEY      = "waha_chats";
 const CHATS_TTL      = 30 * 24 * 60 * 60 * 1000; // 30 dias
 
-// Cache de mensagens apenas em memória — não usar localStorage (muito grande, quota exceeded)
-// Sobrevive re-renders mas NÃO sobrevive F5 (ok — carrega do WAHA ao abrir o chat)
-const _sessionMsgs = new Map(); // chatId → Message[]
+const _sessionMsgs = new Map(); // chatId → Message[] (in-memory, perde no F5)
+
+// Cache de mensagens no localStorage — persiste no F5, máx 15 chats × 60 msgs
+const MSGS_CACHE_KEY    = "crm_msgs_cache_v1";   // { order: string[], data: {[chatId]: msg[]} }
+const MSGS_CACHE_MAX    = 15;  // chats armazenados
+const MSGS_CACHE_LIMIT  = 60;  // msgs por chat
+function _readMsgsCache() {
+  try { return JSON.parse(localStorage.getItem(MSGS_CACHE_KEY) || "null") || { order: [], data: {} }; } catch { return { order: [], data: {} }; }
+}
+function _writeMsgsCache(cache) {
+  try { localStorage.setItem(MSGS_CACHE_KEY, JSON.stringify(cache)); } catch {}
+}
+function _cacheMsgs(chatId, msgs) {
+  try {
+    const cache = _readMsgsCache();
+    // Guarda só campos leves — sem media blob
+    cache.data[chatId] = msgs.slice(-MSGS_CACHE_LIMIT).map(m => ({
+      id: m.id, chatId: m.chatId, from: m.from, text: m.text,
+      type: m.type, ts: m.ts, time: m.time, hasMedia: m.hasMedia,
+      fromMe: m.fromMe, pushname: m.pushname,
+    }));
+    cache.order = [chatId, ...(cache.order || []).filter(id => id !== chatId)].slice(0, MSGS_CACHE_MAX);
+    // Evicta chats antigos
+    for (const id of Object.keys(cache.data)) {
+      if (!cache.order.includes(id)) delete cache.data[id];
+    }
+    _writeMsgsCache(cache);
+  } catch {}
+}
+function _getCachedMsgs(chatId) {
+  try { return _readMsgsCache().data[chatId] || null; } catch { return null; }
+}
 
 // Dedup global de handleMsg — evita duplo incremento de unread quando
 // PartyKit + polling processam a mesma mensagem
@@ -1031,6 +1060,7 @@ export function useWAHA(operator) {
         const semTmp  = removeTmp(existing, [msg]);
         const updated = sortMsgs([...semTmp, msg]);
         _sessionMsgs.set(effectiveId, updated);
+        _cacheMsgs(effectiveId, updated);
         return { ...prev, [effectiveId]: updated };
       });
 
@@ -1257,9 +1287,17 @@ export function useWAHA(operator) {
       }
     } catch {}
 
+    // 1. In-memory (sobrevive re-renders)
     const cached = _sessionMsgs.get(chatId);
     if (cached?.length) {
       setMessages(prev => ({ ...prev, [chatId]: cached }));
+    } else {
+      // 2. localStorage (sobrevive F5) — exibe imediatamente enquanto R2 carrega
+      const lsCached = _getCachedMsgs(chatId);
+      if (lsCached?.length) {
+        setMessages(prev => ({ ...prev, [chatId]: lsCached }));
+        _sessionMsgs.set(chatId, lsCached);
+      }
     }
 
     if (USE_MOCK) {
@@ -1268,7 +1306,7 @@ export function useWAHA(operator) {
     }
 
     try {
-      // Fonte primária: R2 (webhook-persistido — atualizado mesmo com CRM fechado)
+      // 3. R2 (fonte primária — atualizado mesmo com CRM fechado)
       const r2Raw = await fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`, {
         headers: { "X-Internal-Key": ikey() }
       }).then(r => r.ok ? r.json() : []).catch(() => []);
@@ -1287,6 +1325,7 @@ export function useWAHA(operator) {
         const wsExtras = existing.filter(m => !ids.has(m.id) && !m.id.startsWith("tmp-"));
         const merged   = sortMsgs([...r2Msgs, ...wsExtras]);
         _sessionMsgs.set(chatId, merged);
+        _cacheMsgs(chatId, merged);
         return { ...prev, [chatId]: merged };
       });
 
