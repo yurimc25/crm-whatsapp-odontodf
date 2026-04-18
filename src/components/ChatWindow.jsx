@@ -264,9 +264,10 @@ export default function ChatWindow({
     });
   }
 
-  const bottomRef   = useRef(null);
-  const scrollRef   = useRef(null);
-  const prevScrollH = useRef(0);
+  const bottomRef      = useRef(null);
+  const scrollRef      = useRef(null);
+  const prevScrollH    = useRef(0);
+  const scrollToChatId = useRef(null);
   const { displayInfo, addLocalContact, removeContact, lidPhoneMap } = useContactsCtx();
   const info = displayInfo(chat.id, chat.name, chat.pushname);
   const [photoUrl, setPhotoUrl] = useState(() => readPhotoCache()[chat.id] || chat.photoUrl || null);
@@ -290,12 +291,17 @@ export default function ChatWindow({
 
   useEffect(() => {
     setHasMore(true); setOldestDate(null); setLoadingMore(false);
-    setTimeout(() => bottomRef.current?.scrollIntoView({ behavior:"instant" }), 60);
+    scrollToChatId.current = chat.id;
   }, [chat.id]);
 
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
+    if (scrollToChatId.current) {
+      scrollToChatId.current = null;
+      bottomRef.current?.scrollIntoView({ behavior:"instant" });
+      return;
+    }
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 300;
     if (nearBottom) bottomRef.current?.scrollIntoView({ behavior:"instant" });
   }, [messages]);
