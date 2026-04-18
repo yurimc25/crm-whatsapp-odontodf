@@ -182,25 +182,59 @@ function dayLabel(ts) {
 
 const _ikey = () => import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
 
-function MigrateChatButton({ chatId, onDone }) {
+function MigrateChatButton({ chatId, localMsgs, onDone }) {
   const [state, setState] = useState("idle"); // idle | running | done | error
   const [saved, setSaved] = useState(0);
 
   async function run() {
     setState("running"); setSaved(0);
     try {
-      const r = await fetch("/api/r2-data?type=migrate-batch", {
+      if (!localMsgs?.length) { setState("done"); onDone?.(); return; }
+
+      // Converte mensagens locais (formato app) para formato R2
+      const r2Msgs = localMsgs
+        .filter(m => m.id && !m.id.startsWith("tmp-"))
+        .map(m => ({
+          id:       m.id,
+          chatId,
+          ts:       m.ts ? new Date(m.ts).getTime() : 0,
+          fromMe:   m.from === "operator",
+          body:     m.text || "",
+          type:     m.type || "chat",
+          pushname: m.pushname || "",
+        }))
+        .filter(m => m.ts > 0)
+        .sort((a, b) => a.ts - b.ts);
+
+      if (!r2Msgs.length) { setState("done"); onDone?.(); return; }
+
+      // Lê o que já existe no R2 e faz merge (dedup por id)
+      const existR = await fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`,
+        { headers: { "X-Internal-Key": _ikey() } });
+      const exist = existR.ok ? (await existR.json()) : [];
+      const existIds = new Set((Array.isArray(exist) ? exist : []).map(m => m.id));
+      const novas = r2Msgs.filter(m => !existIds.has(m.id));
+
+      const merged = [...(Array.isArray(exist) ? exist : []), ...novas]
+        .sort((a, b) => (a.ts||0) - (b.ts||0));
+      if (merged.length > 200) merged.splice(0, merged.length - 200);
+
+      // Salva mensagens no R2
+      await fetch(`/api/r2-data?type=msgs-save&chatId=${encodeURIComponent(chatId)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Internal-Key": _ikey() },
-        body: JSON.stringify({ chatIds: [chatId] }),
+        body: JSON.stringify(merged),
       });
-      const result = await r.json();
-      if (!r.ok) {
-        console.error("[migrate]", result);
-        throw new Error(result.error || `Erro ${r.status}`);
-      }
-      if (result.errors?.length) console.warn("[migrate] erros por chat:", result.errors);
-      setSaved(result.saved || 0);
+
+      // Atualiza lastMsg no chats.json
+      const last = merged[merged.length - 1];
+      await fetch("/api/r2-data?type=chats", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Internal-Key": _ikey() },
+        body: JSON.stringify([{ id: chatId, lastMsg: last.body || "", lastTs: last.ts, fromMe: last.fromMe }]),
+      });
+
+      setSaved(novas.length);
       setState("done");
       onDone?.();
     } catch (e) {
@@ -579,7 +613,7 @@ export default function ChatWindow({
         </div>
 
         {/* Migrar histórico deste chat para R2 */}
-        <MigrateChatButton chatId={chat.id} onDone={onMigrated} />
+        <MigrateChatButton chatId={chat.id} localMsgs={messages} onDone={onMigrated} />
 
         {/* Encaminhar */}
         <div style={{ position:"relative" }}>

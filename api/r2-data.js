@@ -27,6 +27,32 @@ export default async function handler(req, res) {
 
   const { type, chatId } = req.query;
 
+  // ── POST: salva array de mensagens para um chat (migração do frontend) ──
+  if (req.method === "POST" && type === "msgs-save" && chatId) {
+    let body;
+    try {
+      if (req.body && typeof req.body === "object") {
+        body = req.body;
+      } else {
+        const raw = await new Promise((resolve, reject) => {
+          let data = "";
+          req.on("data", chunk => data += chunk);
+          req.on("end", () => resolve(data));
+          req.on("error", reject);
+        });
+        body = JSON.parse(raw);
+      }
+    } catch { return res.status(400).json({ error: "JSON inválido" }); }
+
+    if (!Array.isArray(body)) return res.status(400).json({ error: "Esperado array de mensagens" });
+    try {
+      await r2Put(chatKey(chatId), Buffer.from(JSON.stringify(body), "utf8"), "application/json");
+      return res.status(200).json({ ok: true, count: body.length });
+    } catch (e) {
+      return res.status(500).json({ error: e.message });
+    }
+  }
+
   // ── POST: sync de chats (lista enriquecida para multi-usuário) ──
   if (req.method === "POST" && type === "chats") {
     let body;
