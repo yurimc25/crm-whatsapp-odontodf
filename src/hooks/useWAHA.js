@@ -49,27 +49,33 @@ function removeTmp(current, incoming) {
 }
 
 // Converte mensagem do R2 (formato webhook) para formato do app
-function _r2MediaLabel(type) {
-  if (!type) return "";
-  const t = type.toLowerCase();
-  if (t.includes("image") || t.includes("sticker")) return "📷 Imagem";
-  if (t.includes("video")) return "🎥 Vídeo";
-  if (t.includes("audio") || t.includes("ptt") || t.includes("voice")) return "🎵 Áudio";
-  return "📎 Arquivo";
-}
+
 function normalizeR2Message(m) {
   const tsMs = typeof m.ts === "number" ? m.ts : (m.ts ? new Date(m.ts).getTime() : 0);
-  const hasMedia = ["image","video","audio","voice","document","sticker","ptt"].includes((m.type||"").toLowerCase());
+  const t = (m.type || "").toLowerCase();
+  const hasMedia = ["image","video","audio","voice","document","sticker","ptt"].includes(t);
+  // Reconstrói objeto media mínimo para que MediaContent consiga buscar do WAHA via msgId
+  const media = hasMedia ? {
+    msgId:    m.id,
+    type:     t,
+    mimetype: t === "ptt" || t === "voice" ? "audio/ogg" :
+              t === "image"  ? "image/jpeg" :
+              t === "sticker"? "image/webp" :
+              t === "video"  ? "video/mp4"  :
+              t === "document" ? "application/octet-stream" : null,
+    url:      null,
+    thumbUrl: null,
+  } : null;
   return {
     id:       m.id,
     chatId:   m.chatId,
     from:     m.fromMe ? "operator" : "patient",
-    text:     m.body || (hasMedia ? _r2MediaLabel(m.type) : ""),
+    text:     m.body || "",  // sem label duplicado — MediaContent já exibe o player
     type:     m.type  || "chat",
     ts:       tsMs ? new Date(tsMs).toISOString() : null,
     time:     tsMs ? new Date(tsMs).toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" }) : "",
     hasMedia,
-    media:    null,
+    media,
   };
 }
 
