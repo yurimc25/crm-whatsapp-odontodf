@@ -74,14 +74,6 @@ function normalizeR2Message(m) {
 }
 
 const USE_MOCK    = import.meta.env.VITE_USE_MOCK === "true";
-const SCAN_HOUR_KEY  = "waha_scan_hour_at";   // varredura 5 dias — 1x/hora
-const SCAN_DAY_KEY   = "waha_scan_day_at";    // varredura 100 dias — 1x/dia
-function shouldRun(key, intervalMs) {
-  try { return Date.now() - parseInt(localStorage.getItem(key) || "0") > intervalMs; } catch { return true; }
-}
-function markRun(key) {
-  try { localStorage.setItem(key, String(Date.now())); } catch {}
-}
 const CHATS_KEY      = "waha_chats";
 const CHATS_TTL      = 30 * 24 * 60 * 60 * 1000; // 30 dias
 
@@ -482,7 +474,7 @@ export function useWAHA(operator) {
   const seenMsgIds      = useRef({});     // chatId → Set<id> — dedup fora de state updater
   const mutedChatsRef   = useRef(mutedChats);
   useEffect(() => { mutedChatsRef.current = mutedChats; }, [mutedChats]);
-  const { lookupPhone, lookupPhonePriority, searchByName, addLocalContact, resolveName, displayName, lidPhoneMap, resolveLidAsync, resolveGroupAsync: _resolveGroupAsync } = useContactsCtx();
+  const { lookupPhone, lookupPhonePriority, resolveName, displayName, lidPhoneMap, resolveLidAsync, resolveGroupAsync: _resolveGroupAsync } = useContactsCtx();
   const lidPhoneMapRef2 = useRef(lidPhoneMap);
   useEffect(() => { lidPhoneMapRef2.current = lidPhoneMap; }, [lidPhoneMap]);
   const displayNameRef = useRef(displayName);
@@ -967,79 +959,6 @@ export function useWAHA(operator) {
     }
   }
 
-  // ── Auto-sync contatos: busca chatlist direto no WAHA e resolve nomes ──
-  // Chats individuais (não grupos) sem contato mapeado são pesquisados por telefone/nome
-  async function autoSyncContacts(dias) {
-    if (USE_MOCK) return;
-    const SESSION = import.meta.env.VITE_WAHA_SESSION || "default";
-    const fromTs  = Math.floor((Date.now() - dias * 86400000) / 1000);
-
-    console.log(`[auto-sync] buscando chats dos últimos ${dias} dias direto no WAHA`);
-    let rawChats = [];
-    try {
-      const r = await fetch(
-        `/api/waha?path=${encodeURIComponent(`/api/${SESSION}/chats`)}&limit=500`,
-        { headers: { "X-Internal-Key": ikey() } }
-      );
-      if (!r.ok) return;
-      const all = await r.json();
-      if (!Array.isArray(all)) return;
-      rawChats = all.filter(c => {
-        const ts = c.lastMessage?.timestamp || c.lastMessage?.t || 0;
-        return !c.isGroup && (ts === 0 || ts >= fromTs);
-      });
-    } catch (e) {
-      console.error("[auto-sync] erro ao buscar chats:", e.message);
-      return;
-    }
-
-    const chats = rawChats.map(c => normalizeChat(c));
-    console.log(`[auto-sync] ${chats.length} chats para verificar (${dias} dias)`);
-
-    let found = 0;
-    for (let i = 0; i < chats.length; i += 3) {
-      const batch = chats.slice(i, i + 3);
-      await Promise.allSettled(batch.map(async (chat) => {
-        if (resolveName(chat.id, null)) return; // já tem nome
-        let ok = false;
-        try { ok = !!(await lookupPhone(chat.id).catch(() => null)); } catch {}
-        if (ok) { found++; return; }
-        const nome = chat.pushname || chat.name || null;
-        if (nome) {
-          try { ok = !!(await searchByName(nome).catch(() => false)); } catch {}
-          if (ok) { found++; }
-        }
-      }));
-      if (i + 3 < chats.length) await new Promise(r => setTimeout(r, 200));
-    }
-    console.log(`[auto-sync] concluído: ${found} novos contatos encontrados (${dias} dias)`);
-  }
-
-  // Varredura horária: últimos 5 dias
-  useEffect(() => {
-    if (!sessionOk || USE_MOCK) return;
-    function run() {
-      if (!shouldRun(SCAN_HOUR_KEY, 60 * 60 * 1000)) return;
-      markRun(SCAN_HOUR_KEY);
-      autoSyncContacts(5).catch(e => console.error("[auto-sync 5d]", e?.message));
-    }
-    run(); // executa imediatamente ao iniciar
-    const iv = setInterval(run, 60 * 60 * 1000); // a cada 1h
-    return () => clearInterval(iv);
-  }, [sessionOk]);
-
-  // Varredura diária: últimos 100 dias
-  useEffect(() => {
-    if (!sessionOk || USE_MOCK) return;
-    function run() {
-      if (!shouldRun(SCAN_DAY_KEY, 24 * 60 * 60 * 1000)) return;
-      markRun(SCAN_DAY_KEY);
-      autoSyncContacts(100).catch(e => console.error("[auto-sync 100d]", e?.message));
-    }
-    run(); // executa imediatamente ao iniciar (se passou 1 dia)
-    const iv = setInterval(run, 60 * 60 * 1000); // checa a cada hora se já passou 1 dia
-    return () => clearInterval(iv);
-  }, [sessionOk]);
 
   // ── 3. Tempo real: PartyKit → fallback polling WAHA ─────────────
   useEffect(() => {
@@ -1182,15 +1101,24 @@ export function useWAHA(operator) {
     handleMsgRef.current = handleMsg;
 
     function handleChatNew(payload) {
-      const newChat = normalizeChat(payload);
-      if (!newChat?.id) return;
+      const rawId = payload?.id || payload?.chatId || "";
+      const chatId = rawId.replace(/:\d+(@\S+)?$/, "");
+      if (!chatId) return;
+      const phone = extractPhone(chatId);
+      const color = stringToColor(phone || chatId);
+      const newChat = {
+        id: chatId, name: payload.name || payload.pushname || phone || chatId,
+        pushname: payload.pushname || "", phone, color,
+        lastMsg: "", lastTs: 0, unread: 0, lastPatientTs: null,
+        status: "open", assignedTo: null, tags: [],
+      };
       setChats(prev => {
-        if (prev.find(c => c.id === newChat.id)) return prev;
+        if (prev.find(c => c.id === chatId)) return prev;
         const updated = [newChat, ...prev];
         persistChats(updated);
         return updated;
       });
-      loadLastMessages([newChat.id]);
+      loadLastMessages([chatId]);
     }
 
     function dispatch(event, payload) {
@@ -1344,6 +1272,9 @@ export function useWAHA(operator) {
       const r2Raw = await fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`, {
         headers: { "X-Internal-Key": ikey() }
       }).then(r => r.ok ? r.json() : []).catch(() => []);
+
+      // Ignora se o usuário já trocou de chat enquanto aguardava o fetch
+      if (activeChatRef.current !== chatId) return;
 
       const r2Msgs = Array.isArray(r2Raw)
         ? sortMsgs(r2Raw.map(normalizeR2Message))
