@@ -445,16 +445,6 @@ function lastMsgIsClosing(lastMsg) {
   return isOperatorClosing(t) || isFarewell(t);
 }
 
-function detectAutoResolve(msgs) {
-  if (!msgs?.length) return false;
-  const last5 = msgs.slice(-5);
-  // Verifica se última mensagem do operador é de encerramento
-  const lastOp = [...last5].reverse().find(m => m.from === "operator");
-  if (lastOp && isOperatorClosing(lastOp.text)) return true;
-  // Verifica se última mensagem do paciente é despedida
-  const lastPatient = [...last5].reverse().find(m => m.from === "patient");
-  return lastPatient ? isFarewell(lastPatient.text) : false;
-}
 
 export function useWAHA(operator) {
   const [chats,    setChats]    = useState(() => {
@@ -1369,29 +1359,6 @@ export function useWAHA(operator) {
         return { ...prev, [chatId]: merged };
       });
 
-      // Atualiza metadata do chat (lastMsg, lastPatientTs)
-      const lastAny   = r2Msgs[r2Msgs.length - 1];
-      const lastOpIdx = r2Msgs.map(m => m.from).lastIndexOf("operator");
-      const lastPIdx  = r2Msgs.map(m => m.from).lastIndexOf("patient");
-      const semResp   = lastOpIdx === -1
-        ? r2Msgs.filter(m => m.from === "patient")
-        : r2Msgs.slice(lastOpIdx + 1).filter(m => m.from === "patient");
-      const ultimoFoiOp = lastOpIdx > lastPIdx || lastPIdx === -1;
-      const autoResolve = detectAutoResolve(r2Msgs);
-      const novoLPTs    = (ultimoFoiOp || autoResolve) ? null : (semResp[0]?.ts || null);
-
-      setChats(prev => {
-        const chat    = prev.find(c => c.id === chatId);
-        const updated = prev.map(c => c.id !== chatId ? c : {
-          ...c,
-          lastMsg:       lastAny?.text || c.lastMsg,
-          lastTime:      lastAny?.time || c.lastTime,
-          lastPatientTs: novoLPTs,
-          unread:        chat?.unread ?? 0,
-        });
-        persistChats(updated);
-        return updated;
-      });
     } catch (e) { console.error("loadMessages", e); }
   }, []);
 

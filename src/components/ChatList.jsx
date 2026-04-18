@@ -58,7 +58,7 @@ export default function ChatList({
 
   // Atualiza o timer "tempo sem resposta" a cada 30s
   useEffect(() => {
-    const iv = setInterval(() => setNow(Date.now()), 30000);
+    const iv = setInterval(() => setNow(Date.now()), 60000);
     return () => clearInterval(iv);
   }, []);
   const [codentalHits, setCodentalHits] = useState([]);
