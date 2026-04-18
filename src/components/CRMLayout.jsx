@@ -142,8 +142,6 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
   const ikey = () => import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
 
   async function handleMigrated(chatId) {
-    // Recarrega mensagens do R2 no ChatWindow
-    loadMessages(chatId);
     // Busca o lastMsg atualizado do R2 e atualiza o chatlist
     try {
       const r = await fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`, {

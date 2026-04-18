@@ -63,7 +63,6 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
   const ikey = () => import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
 
   async function handleMigrated(chatId) {
-    loadMessages(chatId);
     try {
       const r = await fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`, {
         headers: { "X-Internal-Key": ikey() },
