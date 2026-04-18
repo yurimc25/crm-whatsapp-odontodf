@@ -1501,7 +1501,16 @@ export function useWAHA(operator) {
     });
     persistChat(chatId, { lastPatientTs: null, unread: 0 });
     if (USE_MOCK) return;
-    try { await sendText(chatId, formatted); }
+    try {
+      await sendText(chatId, formatted);
+      // Sincroniza lastMsg do operador para R2 (webhook pode não receber message.any)
+      const nowTs = now.getTime();
+      fetch("/api/r2-data?type=chats", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Internal-Key": ikey() },
+        body: JSON.stringify([{ id: chatId, lastMsg: formatted, lastTs: nowTs, fromMe: true, lastPatientTs: null, unread: 0 }]),
+      }).catch(() => {});
+    }
     catch (e) {
       setMessages(prev => ({
         ...prev,

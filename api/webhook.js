@@ -123,15 +123,25 @@ async function r2WriteJson(key, data) {
   await r2Put(key, Buffer.from(JSON.stringify(data), "utf8"), "application/json");
 }
 
+function mediaLabel(type) {
+  const t = (type || "").toLowerCase();
+  if (t === "ptt" || t === "voice" || t.includes("audio")) return "🎵 Áudio";
+  if (t.includes("image") || t === "sticker") return "📷 Imagem";
+  if (t.includes("video")) return "🎥 Vídeo";
+  if (t.includes("document")) return "📎 Arquivo";
+  return "📎 Mídia";
+}
+
 // Atualiza chats.json com última msg + lastPatientTs + unread pré-computados
 async function updateChatsIndex(msg, msgs) {
   const chats = await r2Json("chats.json", []);
   const idx   = chats.findIndex(c => c.id === msg.chatId);
   const lpt   = computeLastPatientTs(msgs);
   const unread = computeUnread(msgs);
+  const lastMsg = msg.body || (msg.type && msg.type !== "chat" ? mediaLabel(msg.type) : "");
   const entry = {
     id:            msg.chatId,
-    lastMsg:       msg.body,
+    lastMsg,
     lastTs:        msg.ts,
     fromMe:        msg.fromMe,
     pushname:      msg.pushname || (idx >= 0 ? chats[idx].pushname : ""),
