@@ -2073,7 +2073,7 @@ export function useWAHA(operator) {
 
     async function uploadOne(m) {
       try {
-        const dlUrl = `/api/waha?path=${encodeURIComponent(`/api/${SESSION}/chats/${encodeURIComponent(m.chatId || chatId)}/messages/${m.wahaShortId}&downloadMedia=true`)}`;
+        const dlUrl = `/api/waha?path=${encodeURIComponent(`/api/${SESSION}/chats/${encodeURIComponent(m.chatId || chatId)}/messages/${m.wahaShortId}`)}&downloadMedia=true`;
         const dlRes = await fetch(dlUrl, { headers: { "X-Internal-Key": iKeyVal } });
         if (!dlRes.ok) { uploadFail++; return; }
         let buf, ct;
