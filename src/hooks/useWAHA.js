@@ -1523,6 +1523,8 @@ export function useWAHA(operator) {
       const parts = raw.split("_");
       return [...parts].reverse().find(p => !p.includes("@")) || raw;
     })();
+    // Prioriza wahaShortId (WAHA download-media) sobre shortMsgId (Baileys format)
+    const msgId = m.wahaShortId || shortMsgId;
     return {
       id:       m.id,
       chatId:   m.chatId,
@@ -1534,7 +1536,7 @@ export function useWAHA(operator) {
       hasMedia,
       pushname: m.pushname || "",
       media:    hasMedia ? {
-        msgId:    shortMsgId,
+        msgId,
         type:     t,
         mimetype: t === "ptt" || t === "voice" ? "audio/ogg" :
                   t === "image"   ? "image/jpeg" :
@@ -1635,21 +1637,28 @@ export function useWAHA(operator) {
 
       if (activeChatRef.token !== token) return;
 
-      // DEBUG: mostra IDs reais para diagnóstico
-      const r2SampleIds = r2Msgs.slice(0, 3).map(m => m.id);
-      const wahaSampleIds = wahaMsgs.slice(0, 3).map(m => m.id);
-      console.log(`[load-msgs] IDs-SAMPLE | R2=${JSON.stringify(r2SampleIds)} | WAHA=${JSON.stringify(wahaSampleIds)}`);
-
-      // Índice por ID curto (hex final) para fallback quando @lid ≠ @c.us no ID da mensagem
-      const wahaByShortId = new Map();
+      // Índice por ID exato
+      // Fallback por timestamp+direção: R2 e WAHA usam hexes diferentes no mesmo campo "id"
+      // (webhook salva IDs do formato @c.us/Baileys; getMessages retorna @lid/servidor)
+      // então a única forma de correlacionar é pelo segundo do timestamp + fromMe
+      const wahaByTs = new Map();
       for (const w of wahaMsgs) {
-        const short = String(w.id || "").split("_").reverse().find(p => !p.includes("@")) || w.id;
-        if (short) wahaByShortId.set(short, w);
+        if (!w.ts || !(w.hasMedia || w.media)) continue; // só indexa mensagens com mídia
+        const tsS = Math.floor(new Date(w.ts).getTime() / 1000);
+        const key = `${w.from}_${tsS}`;
+        if (!wahaByTs.has(key)) wahaByTs.set(key, w);
       }
-      const getWaha = (id) => wahaById.get(id) || (() => {
-        const short = String(id || "").split("_").reverse().find(p => !p.includes("@"));
-        return short ? wahaByShortId.get(short) : undefined;
-      })();
+      const getWaha = (id, m) => {
+        const byId = wahaById.get(id);
+        if (byId) return byId;
+        // Fallback: timestamp + direção (quando IDs têm formatos distintos)
+        if (m?.ts) {
+          const tsS = Math.floor(new Date(m.ts).getTime() / 1000);
+          const byTs = wahaByTs.get(`${m.from}_${tsS}`);
+          if (byTs) return byTs;
+        }
+        return undefined;
+      };
 
       setMessages(prev => {
         if (activeChatRef.token !== token) return prev;
@@ -1657,13 +1666,9 @@ export function useWAHA(operator) {
         const existIds = new Set(existing.map(m => m.id));
         const existMedia = existing.filter(m => m.hasMedia || m.media).length;
 
-        // DEBUG: mostra IDs do state atual (existing) para comparação
-        const existSampleIds = existing.slice(0, 3).map(m => m.id);
-        console.log(`[load-msgs] IDs-EXISTING | state=${JSON.stringify(existSampleIds)}`);
-
         // R2 é base para horário/texto — WAHA completa mídia ausente no R2
         const r2Merged = existing.filter(m => r2Ids.has(m.id)).map(m => {
-          const waha = getWaha(m.id);
+          const waha = getWaha(m.id, m);
           if (!waha) return m;
           const media    = m.media || (waha.hasMedia ? waha.media : null);
           const hasMedia = m.hasMedia || waha.hasMedia || false;
@@ -1676,7 +1681,7 @@ export function useWAHA(operator) {
         // Mensagens que não estão no R2 mas estão no state (WS/cache) — usa versão WAHA se disponível (tem mídia)
         const wsExtras = existing
           .filter(m => !r2Ids.has(m.id) && !m.id.startsWith("tmp-"))
-          .map(m => getWaha(m.id) || m);
+          .map(m => getWaha(m.id, m) || m);
 
         const merged     = sortMsgs([...r2Merged, ...wahaExtras, ...wsExtras]);
         const mergedMedia = merged.filter(m => m.hasMedia || m.media).length;
@@ -1684,6 +1689,31 @@ export function useWAHA(operator) {
         _sessionMsgs.set(chatId, merged);
         return { ...prev, [chatId]: merged };
       });
+
+      // Persiste mensagens enriquecidas de volta ao R2 (fire-and-forget)
+      // Garante que type/wahaShortId corretos sobrevivam ao próximo F5
+      const wahaMediaMsgs = wahaMsgs.filter(m => m.hasMedia || m.media);
+      if (wahaMediaMsgs.length > 0) {
+        const toSave = wahaMediaMsgs.map(m => {
+          const tsMs = m.ts ? new Date(m.ts).getTime() : 0;
+          return {
+            id:           m.id,
+            chatId:       m.chatId || chatId,
+            ts:           tsMs,
+            fromMe:       m.from === "operator",
+            body:         m.text || "",
+            type:         m.type || "chat",
+            pushname:     m.pushname || "",
+            wahaShortId:  m.media?.msgId || null,
+            mediaUrl:     m.media?.url && !m.media.url.startsWith("data:") ? m.media.url : null,
+          };
+        });
+        fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Internal-Key": ikey() },
+          body: JSON.stringify(toSave),
+        }).catch(() => {});
+      }
 
       // Atualiza metadata do chat usando lista final mesclada
       const allMsgs   = sortMsgs([...r2Msgs, ...wahaMsgs.filter(m => !r2Ids.has(m.id))]);

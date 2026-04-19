@@ -143,6 +143,61 @@ export default async function handler(req, res) {
     }
   }
 
+  // ── POST: salvar/enriquecer mensagens de um chat no R2 ─────────────
+  // Usado pelo frontend após merge WAHA para persistir type e wahaShortId de mídias
+  if (req.method === "POST" && type === "msgs") {
+    if (!chatId) return res.status(400).json({ error: "chatId obrigatório" });
+
+    let incoming;
+    try {
+      const raw = await new Promise((resolve, reject) => {
+        let data = "";
+        req.on("data", chunk => data += chunk);
+        req.on("end", () => resolve(data));
+        req.on("error", reject);
+      });
+      incoming = JSON.parse(raw);
+    } catch {
+      return res.status(400).json({ error: "JSON inválido" });
+    }
+
+    if (!Array.isArray(incoming)) return res.status(400).json({ error: "Esperado array de mensagens" });
+
+    try {
+      const existing = await r2Get(chatKey(chatId)).then(r =>
+        r ? JSON.parse(r.buf.toString("utf8")) : []
+      ).catch(() => []);
+
+      // Índice por ID para merge: incoming vence em type/wahaShortId/mediaUrl se tiver mídia
+      const existMap = {};
+      for (const m of existing) if (m.id) existMap[m.id] = m;
+
+      for (const m of incoming) {
+        if (!m.id) continue;
+        const ex = existMap[m.id];
+        if (!ex) {
+          existMap[m.id] = m;
+        } else {
+          // Atualiza apenas campos de mídia — não sobrescreve texto/ts do existente
+          existMap[m.id] = {
+            ...ex,
+            type:         m.type && m.type !== "chat" ? m.type : ex.type,
+            wahaShortId:  m.wahaShortId || ex.wahaShortId || null,
+            mediaUrl:     m.mediaUrl || ex.mediaUrl || null,
+          };
+        }
+      }
+
+      const merged = Object.values(existMap).sort((a, b) => (a.ts || 0) - (b.ts || 0));
+      const MAX = 200;
+      const trimmed = merged.length > MAX ? merged.slice(merged.length - MAX) : merged;
+      await r2Put(chatKey(chatId), Buffer.from(JSON.stringify(trimmed), "utf8"), "application/json");
+      return res.status(200).json({ ok: true, count: trimmed.length });
+    } catch (e) {
+      return res.status(500).json({ error: e.message });
+    }
+  }
+
   // ── GET ──────────────────────────────────────────────────────────
   if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
 
