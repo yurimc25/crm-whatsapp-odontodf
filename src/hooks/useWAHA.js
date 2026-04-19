@@ -1209,8 +1209,10 @@ export function useWAHA(operator) {
       const _findTarget = (list) => list.find(c => c.id === msgChatId)
         // @lid→@c.us: se sabemos o JID real, procura pelo @c.us (ou pelo @lid se o @c.us não está na lista)
         || (msgChatId.endsWith("@lid") && _lidToJid.has(msgChatId) ? list.find(c => c.id === _lidToJid.get(msgChatId)) : null)
-        // @c.us→@lid: mensagem chegou como @c.us mas o chat canônico pode ser @lid
+        // @c.us→@lid via _jidToLid (mapa reverso, populado ao resolver LID)
         || (_jidToLid.has(msgChatId) ? list.find(c => c.id === _jidToLid.get(msgChatId)) : null)
+        // @c.us→@lid via varredura reversa de _lidToJid (cobre race condition: LID resolvido mas _jidToLid ainda não populado)
+        || list.find(c => c.id.endsWith("@lid") && _lidToJid.get(c.id) === msgChatId)
         || list.find(c => { const t = c.id.replace(/\D/g, "").slice(-10); return t.length >= 8 && t === msgTail10; })
         || (msgTail8.length >= 8 ? list.find(c => { const t = c.id.replace(/\D/g, "").slice(-8); return t.length >= 8 && t === msgTail8; }) : null);
       const preTarget = _findTarget(_sessionChats.value || []);
@@ -1257,7 +1259,8 @@ export function useWAHA(operator) {
             tags:          [],
             photoUrl:      null,
           };
-          const updated = [newChat, ...prev];
+          // Aplica dedup imediatamente para mesclar com qualquer @lid/@c.us duplicado
+          const updated = _dedupeChats([newChat, ...prev]);
           persistChats(updated);
           return updated;
         }
