@@ -1550,6 +1550,10 @@ export function useWAHA(operator) {
   // ── 4. loadMessages — abre ChatWindow: R2 primeiro, WAHA completa ──
   const loadMessages = useCallback(async (chatId) => {
     activeChatRef.current = chatId;
+    // Token único por chamada — evita que chamadas concorrentes (mobile: crm:open-chat)
+    // sobrescrevam o state com dados de uma execução anterior/paralela
+    const token = Date.now() + Math.random();
+    activeChatRef.token = token;
     delete seenMsgIds.current[chatId];
     try {
       const existing = resolveName(chatId, null);
@@ -1581,56 +1585,48 @@ export function useWAHA(operator) {
         ? sortMsgs(r2Raw.map(normalizeR2Msg))
         : [];
 
-      if (r2Msgs.length > 0) {
+      const r2Ids = new Set(r2Msgs.map(m => m.id));
+
+      if (r2Msgs.length > 0 && activeChatRef.token === token) {
         setMessages(prev => {
-          const wsExtras = (prev[chatId] || []).filter(m =>
-            !r2Msgs.some(r => r.id === m.id) && !m.id.startsWith("tmp-")
-          );
-          const merged = sortMsgs([...r2Msgs, ...wsExtras]);
+          if (activeChatRef.token !== token) return prev; // chamada mais nova assumiu
+          const prevMsgs = prev[chatId] || [];
+          const prevById = new Map(prevMsgs.map(m => [m.id, m]));
+          // R2 para horário/texto — preserva mídia do cache se R2 não tem
+          const r2WithMedia = r2Msgs.map(m => {
+            const cached = prevById.get(m.id);
+            if (!cached) return m;
+            return (cached.media || cached.hasMedia)
+              ? { ...m, media: cached.media, hasMedia: cached.hasMedia, type: cached.type || m.type }
+              : m;
+          });
+          const wsExtras = prevMsgs.filter(m => !r2Ids.has(m.id) && !m.id.startsWith("tmp-"));
+          const merged = sortMsgs([...r2WithMedia, ...wsExtras]);
           _sessionMsgs.set(chatId, merged);
           return { ...prev, [chatId]: merged };
         });
       }
 
       // ── 3. WAHA: completa com mensagens que R2 não tem ──
-      if (activeChatRef.current !== chatId) return;
-      const raw        = await getMessages(chatId, 60);
-      const wahaMsgs   = sortMsgs(raw.map(normalizeMessage));
-      const r2Ids      = new Set(r2Msgs.map(m => m.id));
-
-      // [DEBUG] Compara R2 vs WAHA para mensagens com mídia — remove após diagnóstico
-      const wahaMediaMsgs = wahaMsgs.filter(m => m.hasMedia || m.media);
-      const r2MediaMsgs   = r2Msgs.filter(m => m.hasMedia || m.media);
-      if (wahaMediaMsgs.length || r2MediaMsgs.length) {
-        console.group(`[debug-media] chat=${chatId}`);
-        console.log(`R2 msgs com mídia (${r2MediaMsgs.length}):`,  r2MediaMsgs.map(m => ({ id: m.id, type: m.type, hasMedia: m.hasMedia, media: m.media })));
-        console.log(`WAHA msgs com mídia (${wahaMediaMsgs.length}):`, wahaMediaMsgs.map(m => ({ id: m.id, type: m.type, hasMedia: m.hasMedia, media: m.media })));
-        // Mensagens que existem nos dois — mostra o que R2 tem vs WAHA
-        const emAmbos = wahaMediaMsgs.filter(w => r2Ids.has(w.id));
-        if (emAmbos.length) {
-          console.log(`[debug-media] em ambos (${emAmbos.length}):`);
-          emAmbos.forEach(w => {
-            const r = r2Msgs.find(m => m.id === w.id);
-            console.log(`  id=${w.id}`, { R2: r?.media, WAHA: w.media });
-          });
-        }
-        console.groupEnd();
-      }
-
+      if (activeChatRef.current !== chatId || activeChatRef.token !== token) return;
+      const raw      = await getMessages(chatId, 60);
+      const wahaMsgs = sortMsgs(raw.map(normalizeMessage));
       const wahaById = new Map(wahaMsgs.map(m => [m.id, m]));
 
+      if (activeChatRef.token !== token) return; // outra chamada assumiu
+
       setMessages(prev => {
-        const existing  = prev[chatId] || [];
-        const existIds  = new Set(existing.map(m => m.id));
+        if (activeChatRef.token !== token) return prev;
+        const existing = prev[chatId] || [];
+        const existIds = new Set(existing.map(m => m.id));
 
         // R2 é base para horário/texto — WAHA completa mídia ausente no R2
         const r2Merged = existing.filter(m => r2Ids.has(m.id)).map(m => {
           const waha = wahaById.get(m.id);
           if (!waha) return m;
-          // Se R2 não tem mídia mas WAHA tem, usa mídia do WAHA
-          const media = m.media || (waha.hasMedia ? waha.media : null);
+          const media    = m.media || (waha.hasMedia ? waha.media : null);
           const hasMedia = m.hasMedia || waha.hasMedia || false;
-          const type  = (hasMedia && m.type === "chat") ? (waha.type || m.type) : m.type;
+          const type     = (hasMedia && m.type === "chat") ? (waha.type || m.type) : m.type;
           return { ...m, media, hasMedia, type };
         });
 
