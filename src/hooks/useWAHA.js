@@ -1564,10 +1564,20 @@ export function useWAHA(operator) {
       }
     } catch {}
 
+    const dbg = (step, info) => console.log(`[load-msgs] ${step} | chat=${chatId.replace(/@.*/,'')} | ${info}`);
+    const lastTs = (msgs) => {
+      if (!msgs?.length) return "vazio";
+      const last = msgs[msgs.length - 1];
+      return `${msgs.length} msgs | última: ${last?.time || last?.ts?.slice(11,16) || "?"} | id=...${String(last?.id||"").slice(-8)}`;
+    };
+
     // ── 1. Memória: exibe imediatamente se já carregou antes ──
     const cached = _sessionMsgs.get(chatId);
     if (cached?.length) {
+      dbg("1-MEM", `usando cache memória → ${lastTs(cached)}`);
       setMessages(prev => ({ ...prev, [chatId]: cached }));
+    } else {
+      dbg("1-MEM", "sem cache em memória");
     }
 
     if (USE_MOCK) {
@@ -1586,12 +1596,15 @@ export function useWAHA(operator) {
         : [];
 
       const r2Ids = new Set(r2Msgs.map(m => m.id));
+      const r2Media = r2Msgs.filter(m => m.hasMedia || m.media).length;
+      dbg("2-R2", `${lastTs(r2Msgs)} | com mídia=${r2Media} | token=${activeChatRef.token === token ? "ok" : "EXPIRADO"}`);
 
       if (r2Msgs.length > 0 && activeChatRef.token === token) {
         setMessages(prev => {
-          if (activeChatRef.token !== token) return prev; // chamada mais nova assumiu
+          if (activeChatRef.token !== token) return prev;
           const prevMsgs = prev[chatId] || [];
           const prevById = new Map(prevMsgs.map(m => [m.id, m]));
+          const prevMedia = prevMsgs.filter(m => m.hasMedia || m.media).length;
           // R2 para horário/texto — preserva mídia do cache se R2 não tem
           const r2WithMedia = r2Msgs.map(m => {
             const cached = prevById.get(m.id);
@@ -1602,23 +1615,31 @@ export function useWAHA(operator) {
           });
           const wsExtras = prevMsgs.filter(m => !r2Ids.has(m.id) && !m.id.startsWith("tmp-"));
           const merged = sortMsgs([...r2WithMedia, ...wsExtras]);
+          const mergedMedia = merged.filter(m => m.hasMedia || m.media).length;
+          console.log(`[load-msgs] 2-R2-SET | prev.mídia=${prevMedia} → merged.mídia=${mergedMedia} | wsExtras=${wsExtras.length}`);
           _sessionMsgs.set(chatId, merged);
           return { ...prev, [chatId]: merged };
         });
       }
 
       // ── 3. WAHA: completa com mensagens que R2 não tem ──
-      if (activeChatRef.current !== chatId || activeChatRef.token !== token) return;
+      if (activeChatRef.current !== chatId || activeChatRef.token !== token) {
+        dbg("3-WAHA", "ABORTADO — token expirado ou chat trocado");
+        return;
+      }
       const raw      = await getMessages(chatId, 60);
       const wahaMsgs = sortMsgs(raw.map(normalizeMessage));
       const wahaById = new Map(wahaMsgs.map(m => [m.id, m]));
+      const wahaMedia = wahaMsgs.filter(m => m.hasMedia || m.media).length;
+      dbg("3-WAHA", `${lastTs(wahaMsgs)} | com mídia=${wahaMedia} | token=${activeChatRef.token === token ? "ok" : "EXPIRADO"}`);
 
-      if (activeChatRef.token !== token) return; // outra chamada assumiu
+      if (activeChatRef.token !== token) return;
 
       setMessages(prev => {
         if (activeChatRef.token !== token) return prev;
         const existing = prev[chatId] || [];
         const existIds = new Set(existing.map(m => m.id));
+        const existMedia = existing.filter(m => m.hasMedia || m.media).length;
 
         // R2 é base para horário/texto — WAHA completa mídia ausente no R2
         const r2Merged = existing.filter(m => r2Ids.has(m.id)).map(m => {
@@ -1633,6 +1654,8 @@ export function useWAHA(operator) {
         const wahaExtras = wahaMsgs.filter(m => !r2Ids.has(m.id) && !existIds.has(m.id));
         const wsExtras   = existing.filter(m => !r2Ids.has(m.id) && !wahaById.has(m.id) && !m.id.startsWith("tmp-"));
         const merged     = sortMsgs([...r2Merged, ...wahaExtras, ...wsExtras]);
+        const mergedMedia = merged.filter(m => m.hasMedia || m.media).length;
+        console.log(`[load-msgs] 3-WAHA-SET | exist=${existing.length}(mídia=${existMedia}) r2Merged=${r2Merged.length} wahaExtras=${wahaExtras.length} wsExtras=${wsExtras.length} → final=${merged.length}(mídia=${mergedMedia})`);
         _sessionMsgs.set(chatId, merged);
         return { ...prev, [chatId]: merged };
       });
