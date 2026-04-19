@@ -1961,7 +1961,13 @@ export function useWAHA(operator) {
 
   // ── Sincroniza mídias do WAHA para o R2 (forçado pelo operador) ──
   const syncMediaToR2 = useCallback(async (chatId) => {
-    const wahaChatId = getWahaChatId(chatId);
+    const wahaChatId = chatId.endsWith("@lid") ? (
+      (() => {
+        const lidOnly = chatId.replace(/@lid$/, "");
+        const phone = (() => { try { return JSON.parse(localStorage.getItem("lid_phone_map") || "{}")[lidOnly]?.phone; } catch { return null; } })();
+        return phone ? phone + "@c.us" : chatId;
+      })()
+    ) : chatId;
     const raw = await getMessages(wahaChatId, 60).catch(() => []);
     const wahaMsgs = sortMsgs(raw.map(normalizeMessage));
     const toSave = wahaMsgs
