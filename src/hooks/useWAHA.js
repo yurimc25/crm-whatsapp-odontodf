@@ -323,14 +323,33 @@ function _dedupeChats(chats) {
       };
     }
   }
-  // Segunda passagem: mescla @lid com @c.us conhecido via _lidToJid
-  // Preserva ambos os IDs em aliasIds para que loadMessages busque os dois no R2
+  // Segunda passagem: mescla @lid com @c.us — usa _lidToJid OU lid_phone_map
+  const lidPhoneMap = readLidPhoneMap();
   const byId = new Map(deduped.map((c, i) => [c.id, i]));
   const toRemoveIdxs = new Set();
   for (let i = 0; i < deduped.length; i++) {
     const chat = deduped[i];
     if (!chat.id.endsWith("@lid")) continue;
-    const jid = _lidToJid.get(chat.id);
+    // Resolve @lid → @c.us: primeiro via mapa em memória, depois via lid_phone_map
+    let jid = _lidToJid.get(chat.id);
+    if (!jid) {
+      const lidOnly = chat.id.replace(/@lid$/, "");
+      const info    = lidPhoneMap[lidOnly];
+      if (info?.phone) {
+        const phone = info.phone.replace(/\D/g, "");
+        // Encontra @c.us na lista com mesmo phone (tail-8)
+        for (const [cid, idx] of byId) {
+          if (!cid.endsWith("@c.us") || toRemoveIdxs.has(idx)) continue;
+          if (cid.replace(/@.*$/, "").replace(/\D/g, "").slice(-8) === phone.slice(-8)) {
+            jid = cid;
+            // Popula mapas em memória para próximas buscas
+            _lidToJid.set(chat.id, jid);
+            _jidToLid.set(jid, chat.id);
+            break;
+          }
+        }
+      }
+    }
     if (!jid || !byId.has(jid)) continue;
     const cusIdx = byId.get(jid);
     if (toRemoveIdxs.has(cusIdx)) continue;
@@ -1212,13 +1231,57 @@ export function useWAHA(operator) {
       const msgDigits = msgChatId.replace(/\D/g, "");
       const msgTail10 = msgDigits.slice(-10);
       const msgTail8  = msgDigits.slice(-8);
+      // Lê lid_phone_map uma vez para os lookups abaixo (localStorage síncrono, OK por mensagem)
+      const _lidPhoneMap = readLidPhoneMap();
+
+      // Dado um @c.us, tenta encontrar o @lid correspondente via lid_phone_map
+      // e popula os mapas bidirecionais para futuras buscas rápidas
+      const _resolveViaPhoneMap = (cusChatId, lst) => {
+        if (!cusChatId.endsWith("@c.us")) return null;
+        const phone = cusChatId.replace(/@.*$/, "").replace(/\D/g, "");
+        if (phone.length < 8) return null;
+        for (const [lidOnly, info] of Object.entries(_lidPhoneMap)) {
+          if (!info.phone) continue;
+          if (info.phone.replace(/\D/g, "").slice(-8) !== phone.slice(-8)) continue;
+          const lidFull = lidOnly + "@lid";
+          const found   = lst.find(c => c.id === lidFull);
+          if (found) {
+            _lidToJid.set(lidFull, cusChatId);
+            _jidToLid.set(cusChatId, lidFull);
+            return found;
+          }
+        }
+        return null;
+      };
+
+      // Dado um @lid, tenta encontrar o @c.us correspondente via lid_phone_map
+      const _resolvelidViaPhoneMap = (lid, lst) => {
+        if (!lid.endsWith("@lid")) return null;
+        const lidOnly = lid.replace(/@lid$/, "");
+        const info    = _lidPhoneMap[lidOnly];
+        if (!info?.phone) return null;
+        const phone = info.phone.replace(/\D/g, "");
+        const found = lst.find(c => c.id.endsWith("@c.us") &&
+          c.id.replace(/@.*$/, "").replace(/\D/g, "").slice(-8) === phone.slice(-8));
+        if (found) {
+          _lidToJid.set(lid, found.id);
+          _jidToLid.set(found.id, lid);
+        }
+        return found || null;
+      };
+
       const _findTarget = (list) => list.find(c => c.id === msgChatId)
-        // @lid→@c.us: se sabemos o JID real, procura pelo @c.us (ou pelo @lid se o @c.us não está na lista)
+        // @lid→@c.us via mapa em memória
         || (msgChatId.endsWith("@lid") && _lidToJid.has(msgChatId) ? list.find(c => c.id === _lidToJid.get(msgChatId)) : null)
-        // @c.us→@lid via _jidToLid (mapa reverso, populado ao resolver LID)
+        // @c.us→@lid via mapa reverso em memória
         || (_jidToLid.has(msgChatId) ? list.find(c => c.id === _jidToLid.get(msgChatId)) : null)
-        // @c.us→@lid via varredura reversa de _lidToJid (cobre race condition: LID resolvido mas _jidToLid ainda não populado)
+        // @c.us→@lid via varredura de _lidToJid (cobre race condition entre maps)
         || list.find(c => c.id.endsWith("@lid") && _lidToJid.get(c.id) === msgChatId)
+        // @c.us→@lid via lid_phone_map (independe de mensagens @lid anteriores nesta sessão)
+        || _resolveViaPhoneMap(msgChatId, list)
+        // @lid→@c.us via lid_phone_map (quando _lidToJid ainda não tem o mapeamento)
+        || _resolvelidViaPhoneMap(msgChatId, list)
+        // Tail digits fallback (funciona para @c.us vs @c.us, falha para @lid vs @c.us)
         || list.find(c => { const t = c.id.replace(/\D/g, "").slice(-10); return t.length >= 8 && t === msgTail10; })
         || (msgTail8.length >= 8 ? list.find(c => { const t = c.id.replace(/\D/g, "").slice(-8); return t.length >= 8 && t === msgTail8; }) : null);
       const preTarget = _findTarget(_sessionChats.value || []);
