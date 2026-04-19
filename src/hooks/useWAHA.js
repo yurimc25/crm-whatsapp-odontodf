@@ -95,12 +95,12 @@ function _isValidChatId(id) {
 }
 
 // Versão mais estrita para NOVOS chats adicionados por fontes externas (R2, polling)
-// Ainda rejeita @lid e >13 dígitos @c.us (phantom de resolução incorreta)
+// Rejeita @s.whatsapp.net e >13 dígitos @c.us (phantom de resolução incorreta)
+// @lid é aceito — servidor salva com @lid quando resolução LID falha
 function _isValidNewChatId(id) {
   if (!id) return false;
   if (id.endsWith("@s.whatsapp.net")) return false;
-  if (id.endsWith("@lid")) return false;
-  if (!id.endsWith("@g.us")) {
+  if (!id.endsWith("@g.us") && !id.endsWith("@lid")) {
     const digits = id.replace(/\D/g, "");
     if (digits.length > 13) return false;
   }

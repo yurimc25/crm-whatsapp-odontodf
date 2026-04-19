@@ -217,12 +217,15 @@ export default async function handler(req, res) {
     let resolvedPayload = payload;
     if (event === "message" || event === "message.any") {
       const rawMsg = normalizeMsg(payload);
+      console.log(`[webhook] ${event} chatId=${rawMsg.chatId} fromMe=${rawMsg.fromMe}`);
       if (rawMsg.chatId && rawMsg.chatId.endsWith("@lid")) {
         const jid = await resolveLidToJid(rawMsg.chatId, session || "default");
         if (jid) {
           // Injeta chatId resolvido no payload para R2 e PartyKit receberem @c.us
           resolvedPayload = { ...payload, chatId: jid, from: jid };
           console.log(`[webhook] @lid resolvido no payload: ${rawMsg.chatId} → ${jid}`);
+        } else {
+          console.warn(`[webhook] @lid não resolvido: ${rawMsg.chatId} — salvando no R2 com @lid`);
         }
       }
     }
@@ -232,8 +235,9 @@ export default async function handler(req, res) {
     if (r2Enabled) {
       if (event === "message" || event === "message.any") {
         const msg = normalizeMsg(resolvedPayload);
-        // Não persiste mensagens com chatId ainda em @lid (não é número real)
-        if (msg.chatId && !msg.chatId.endsWith("@lid") && !msg.chatId.endsWith("@s.whatsapp.net")) {
+        // Persiste SEMPRE, exceto mensagens do servidor WhatsApp (@s.whatsapp.net)
+        // Mensagens @lid que não foram resolvidas são salvas com @lid — o frontend trata
+        if (msg.chatId && !msg.chatId.endsWith("@s.whatsapp.net")) {
           saveMessage(msg)
             .then(msgs => updateChatsIndex(msg, msgs))
             .catch(e => console.warn("[r2] save/updateChats:", e.message));
@@ -241,8 +245,9 @@ export default async function handler(req, res) {
       } else if (event === "chat.new") {
         // Garante que o chat existe no índice mesmo sem mensagem ainda
         const rawId = (payload.id || payload.chatId || "").replace(/:\d+(@\S+)?$/, "");
-        const chatId = rawId.endsWith("@lid") ? null : rawId; // ignora @lid
+        const chatId = rawId.endsWith("@s.whatsapp.net") ? null : rawId;
         if (chatId) {
+          console.log(`[webhook] chat.new: ${chatId}`);
           r2Json("chats.json", []).then(chats => {
             if (!chats.find(c => c.id === chatId)) {
               chats.unshift({ id: chatId, lastMsg: "", lastTs: Date.now(), fromMe: false });
