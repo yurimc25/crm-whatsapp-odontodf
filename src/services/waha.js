@@ -83,14 +83,28 @@ export async function getChats() {
   return allChats;
 }
 
-export async function getMessages(chatId, limit = 20) {
+export async function getMessages(chatId, limit = 20, offset = 0) {
   const id = encodeURIComponent(chatId);
   const r = await fetch(
-    `${WAHA_URL}/api/${SESSION}/chats/${id}/messages?limit=${limit}&downloadMedia=false`,
+    `${WAHA_URL}/api/${SESSION}/chats/${id}/messages?limit=${limit}&offset=${offset}&downloadMedia=false`,
     { headers: headers() }
   );
   if (!r.ok) throw new Error(`WAHA getMessages: ${r.status}`);
   return r.json();
+}
+
+// Busca todas as mensagens disponíveis via paginação (até maxTotal)
+export async function getMessagesPaged(chatId, pageSize = 60, maxTotal = 300) {
+  const all = [];
+  let offset = 0;
+  while (all.length < maxTotal) {
+    const batch = await getMessages(chatId, pageSize, offset).catch(() => []);
+    if (!Array.isArray(batch) || batch.length === 0) break;
+    all.push(...batch);
+    if (batch.length < pageSize) break; // última página
+    offset += pageSize;
+  }
+  return all.slice(0, maxTotal);
 }
 
 export async function sendText(chatId, text) {

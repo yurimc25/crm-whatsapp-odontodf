@@ -9,7 +9,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useContactsCtx } from "../App";
 import {
-  getChats, getMessages, sendText, getSessionStatus,
+  getChats, getMessages, getMessagesPaged, sendText, getSessionStatus,
   normalizeChat, normalizeMessage,
   deleteMessage as wahaDeleteMessage, editMessage as wahaEditMessage,
 } from "../services/waha";
@@ -1980,8 +1980,9 @@ export function useWAHA(operator) {
       })()
     ) : chatId;
 
-    const raw = await getMessages(wahaChatId, 60).catch(() => []);
+    const raw = await getMessagesPaged(wahaChatId, 60, 300).catch(() => []);
     const wahaMsgs = sortMsgs(raw.map(normalizeMessage));
+    console.log(`[sync-media] WAHA paginado: ${wahaMsgs.length} mensagens (até 300)`);
 
     // Índice WAHA por timestamp+fromMe para enriquecer mensagens existentes
     const wahaById = new Map(wahaMsgs.map(w => [w.id, w]));

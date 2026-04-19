@@ -307,12 +307,10 @@ export default function ChatWindow({
     if (nearBottom) bottomRef.current?.scrollIntoView({ behavior:"instant" });
   }, [messages]);
 
-  const handleScroll = useCallback(async () => {
-    const el = scrollRef.current;
-    if (!el || loadingMore || !hasMore || !onLoadOlder) return;
-    if (el.scrollTop > 80) return;
+  const loadOlderNow = useCallback(async () => {
+    if (loadingMore || !hasMore || !onLoadOlder) return;
     setLoadingMore(true);
-    prevScrollH.current = el.scrollHeight;
+    prevScrollH.current = scrollRef.current?.scrollHeight || 0;
     const result = await onLoadOlder(chat.id, messages);
     if (result?.hasMore === false) setHasMore(false);
     requestAnimationFrame(() => {
@@ -321,6 +319,12 @@ export default function ChatWindow({
       setLoadingMore(false);
     });
   }, [loadingMore, hasMore, onLoadOlder, chat.id, messages]);
+
+  const handleScroll = useCallback(async () => {
+    const el = scrollRef.current;
+    if (!el || el.scrollTop > 80) return;
+    loadOlderNow();
+  }, [loadOlderNow]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -582,11 +586,26 @@ export default function ChatWindow({
             Carregando mensagens anteriores...
           </div>
         )}
+        {!loadingMore && hasMore && onLoadOlder && messages.length > 0 && (
+          <div style={{ textAlign:"center", padding:"8px 0", marginBottom:4 }}>
+            <button
+              onClick={loadOlderNow}
+              style={{
+                background:"transparent", border:`1px solid ${T.border}`,
+                borderRadius:6, padding:"5px 14px", color:T.sub, fontSize:11,
+                cursor:"pointer", transition:"all .15s",
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background=T.hover; e.currentTarget.style.color=T.text; }}
+              onMouseLeave={e => { e.currentTarget.style.background="transparent"; e.currentTarget.style.color=T.sub; }}>
+              ⬆ Carregar mensagens mais antigas
+            </button>
+          </div>
+        )}
         {!loadingMore && !hasMore && messages.length > 0 && (
           <div style={{ textAlign:"center", padding:"8px 0 4px",
             color:"#444", fontSize:11, fontStyle:"italic",
             borderBottom:`1px solid ${T.border}22`, marginBottom:8 }}>
-            Não foi possível localizar mensagens mais antigas
+            Início da conversa
           </div>
         )}
         {messages.length === 0 && !loadingMore && (
