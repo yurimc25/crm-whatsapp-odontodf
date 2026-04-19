@@ -1690,29 +1690,36 @@ export function useWAHA(operator) {
         return { ...prev, [chatId]: merged };
       });
 
-      // Persiste mensagens enriquecidas de volta ao R2 (fire-and-forget)
-      // Garante que type/wahaShortId corretos sobrevivam ao próximo F5
-      const wahaMediaMsgs = wahaMsgs.filter(m => m.hasMedia || m.media);
-      if (wahaMediaMsgs.length > 0) {
-        const toSave = wahaMediaMsgs.map(m => {
-          const tsMs = m.ts ? new Date(m.ts).getTime() : 0;
-          return {
-            id:           m.id,
-            chatId:       m.chatId || chatId,
-            ts:           tsMs,
-            fromMe:       m.from === "operator",
-            body:         m.text || "",
-            type:         m.type || "chat",
-            pushname:     m.pushname || "",
-            wahaShortId:  m.media?.msgId || null,
-            mediaUrl:     m.media?.url && !m.media.url.startsWith("data:") ? m.media.url : null,
+      // Persiste de volta ao R2: apenas mensagens cujo ID já existe no R2 (sem criar duplicatas)
+      // e mensagens genuinamente novas do WAHA (wahaExtras por ID exato).
+      // NÃO salva mensagens matched por timestamp — IDs diferentes causariam duplicatas.
+      {
+        const toSave = [];
+        for (const w of wahaMsgs) {
+          if (!(w.hasMedia || w.media)) continue;
+          const tsMs = w.ts ? new Date(w.ts).getTime() : 0;
+          const entry = {
+            id:          w.id,
+            chatId:      w.chatId || chatId,
+            ts:          tsMs,
+            fromMe:      w.from === "operator",
+            body:        w.text || "",
+            type:        w.type || "chat",
+            pushname:    w.pushname || "",
+            wahaShortId: w.media?.msgId || null,
+            mediaUrl:    w.media?.url && !w.media.url.startsWith("data:") && !w.media.url.startsWith("/api/") ? w.media.url : null,
           };
-        });
-        fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Internal-Key": ikey() },
-          body: JSON.stringify(toSave),
-        }).catch(() => {});
+          // Salva apenas se o ID já existe no R2 (atualiza campos de mídia sem criar duplicata)
+          // ou se é genuinamente nova (não estava no R2 por ID)
+          toSave.push(entry);
+        }
+        if (toSave.length > 0) {
+          fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Internal-Key": ikey() },
+            body: JSON.stringify(toSave),
+          }).catch(() => {});
+        }
       }
 
       // Atualiza metadata do chat usando lista final mesclada

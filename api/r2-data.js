@@ -168,23 +168,49 @@ export default async function handler(req, res) {
         r ? JSON.parse(r.buf.toString("utf8")) : []
       ).catch(() => []);
 
-      // Índice por ID para merge: incoming vence em type/wahaShortId/mediaUrl se tiver mídia
       const existMap = {};
       for (const m of existing) if (m.id) existMap[m.id] = m;
 
+      // Índice por timestamp+fromMe para match quando IDs têm formatos diferentes
+      // (webhook usa @c.us/Baileys hex; WAHA getMessages usa @lid/servidor hex)
+      const existByTs = new Map();
+      for (const m of existing) {
+        const tsS = Math.floor((m.ts || 0) / 1000);
+        const key = `${m.fromMe ? 1 : 0}_${tsS}`;
+        if (!existByTs.has(key)) existByTs.set(key, m);
+      }
+
       for (const m of incoming) {
         if (!m.id) continue;
+        const mediaFields = {
+          type:        m.type && m.type !== "chat" ? m.type : undefined,
+          wahaShortId: m.wahaShortId || undefined,
+          mediaUrl:    m.mediaUrl || undefined,
+        };
+
         const ex = existMap[m.id];
-        if (!ex) {
-          existMap[m.id] = m;
-        } else {
-          // Atualiza apenas campos de mídia — não sobrescreve texto/ts do existente
+        if (ex) {
+          // ID exato encontrado — atualiza campos de mídia sem criar duplicata
           existMap[m.id] = {
             ...ex,
-            type:         m.type && m.type !== "chat" ? m.type : ex.type,
-            wahaShortId:  m.wahaShortId || ex.wahaShortId || null,
-            mediaUrl:     m.mediaUrl || ex.mediaUrl || null,
+            type:        mediaFields.type        || ex.type,
+            wahaShortId: mediaFields.wahaShortId || ex.wahaShortId || null,
+            mediaUrl:    mediaFields.mediaUrl    || ex.mediaUrl    || null,
           };
+        } else {
+          // Sem match por ID — tenta por timestamp+fromMe para evitar duplicata
+          const tsS = Math.floor((m.ts || 0) / 1000);
+          const byTs = existByTs.get(`${m.fromMe ? 1 : 0}_${tsS}`);
+          if (byTs) {
+            // Atualiza o registro R2 existente com type/wahaShortId do WAHA
+            existMap[byTs.id] = {
+              ...byTs,
+              type:        mediaFields.type        || byTs.type,
+              wahaShortId: mediaFields.wahaShortId || byTs.wahaShortId || null,
+              mediaUrl:    mediaFields.mediaUrl    || byTs.mediaUrl    || null,
+            };
+          }
+          // Sem match algum: não adiciona (evita duplicatas de sistema de IDs diferente)
         }
       }
 
