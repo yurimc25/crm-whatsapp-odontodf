@@ -13,10 +13,13 @@ export const config = { api: { bodyParser: false } };
 function chatKey(chatId) {
   return "msgs/" + chatId.replace(/[^a-zA-Z0-9_-]/g, "_") + ".json";
 }
+function mediaKey(msgId) {
+  return "media/" + String(msgId).replace(/[^a-zA-Z0-9_-]/g, "_");
+}
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Internal-Key");
   if (req.method === "OPTIONS") return res.status(200).end();
 
@@ -226,6 +229,24 @@ export default async function handler(req, res) {
     }
   }
 
+  // ── PUT: upload permanente de binário de mídia ───────────────────
+  // PUT /api/r2-data?type=media&msgId=xxx  (body = ArrayBuffer, Content-Type = mimetype)
+  if (req.method === "PUT" && type === "media") {
+    const { msgId } = req.query;
+    if (!msgId) return res.status(400).json({ error: "msgId obrigatório" });
+    try {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const buf = Buffer.concat(chunks);
+      if (buf.length === 0) return res.status(400).json({ error: "body vazio" });
+      const ct = req.headers["content-type"] || "application/octet-stream";
+      await r2Put(mediaKey(msgId), buf, ct);
+      return res.status(200).json({ ok: true, size: buf.length });
+    } catch (e) {
+      return res.status(500).json({ error: e.message });
+    }
+  }
+
   // ── GET ──────────────────────────────────────────────────────────
   if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
 
@@ -242,6 +263,16 @@ export default async function handler(req, res) {
       if (!r) return res.status(200).json([]);
       res.setHeader("Cache-Control", "no-store");
       return res.status(200).json(JSON.parse(r.buf.toString("utf8")));
+    }
+
+    if (type === "media") {
+      const { msgId } = req.query;
+      if (!msgId) return res.status(400).json({ error: "msgId obrigatório" });
+      const r = await r2Get(mediaKey(msgId));
+      if (!r) return res.status(404).json({ error: "não encontrado" });
+      res.setHeader("Content-Type", r.contentType || "application/octet-stream");
+      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      return res.status(200).send(r.buf);
     }
 
     return res.status(400).json({ error: "type inválido" });

@@ -1688,7 +1688,9 @@ export function useWAHA(operator) {
           if (!waha) return m;
           const media    = m.media || (waha.hasMedia ? waha.media : null);
           const hasMedia = m.hasMedia || waha.hasMedia || false;
-          const type     = (hasMedia && m.type === "chat") ? (waha.type || m.type) : m.type;
+          // WAHA type é autoritativo para mídia — corrige tipo errado salvo no R2 (ex: "image" em vez de "document")
+          const wahaType = waha.type && waha.type !== "text" && waha.type !== "chat" ? waha.type : null;
+          const type     = wahaType || m.type;
           return { ...m, media, hasMedia, type };
         });
 
@@ -2015,8 +2017,10 @@ export function useWAHA(operator) {
       return {
         ...m,
         hasMedia: true,
-        // NOWEB retorna type="text" mesmo para mídias — usa media.type que tem o tipo real
-        type:     (waha.media?.type && waha.media.type !== "text") ? waha.media.type : (m.type === "chat" || m.type === "text" ? (waha.type === "text" ? "image" : waha.type) : m.type),
+        // WAHA type/media.type é autoritativo — corrige tipos errados do R2 (ex: PDF salvo como "image")
+        type:     (waha.media?.type && waha.media.type !== "text") ? waha.media.type
+                : (waha.type && waha.type !== "text" && waha.type !== "chat") ? waha.type
+                : m.type,
         media:    { ...(m.media || {}), ...waha.media, url: waha.media.url || m.media?.url || null },
       };
     });

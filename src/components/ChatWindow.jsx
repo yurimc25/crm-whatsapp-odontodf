@@ -975,6 +975,7 @@ function MessageBubble({ msg, currentOperator, onContextMenu, onOcrResult }) {
             <MediaContent
               media={msg.media}
               msgId={msg.media.msgId || msg.id}
+              r2MsgId={msg.id}
               chatId={msg.chatId}
               chatSession={import.meta.env.VITE_WAHA_SESSION || "default"}
               onOcrResult={onOcrResult}
@@ -1114,7 +1115,7 @@ function MsgContextMenu({ msg, x, y, isOwn, onClose, onReply, onEdit, onDelete, 
 }
 
 // ── Renderizador de mídia ──────────────────────────────────────────
-function MediaContent({ media, msgId, chatId, chatSession, onOcrResult }) {
+function MediaContent({ media, msgId, r2MsgId, chatId, chatSession, onOcrResult }) {
   const [lightbox,     setLightbox]    = useState(false);
   const [fullUrl,      setFullUrl]     = useState(null);
   const [downloading,  setDownload]    = useState(false);
@@ -1246,6 +1247,26 @@ function MediaContent({ media, msgId, chatId, chatSession, onOcrResult }) {
         setMediaBlobInMemory(msgId, url);
         console.log(`[media] OK msgId=${msgId} bytes=${result.buf.byteLength} type=${result.ct}`);
         if (!onCancelled?.()) setFullUrl(url);
+
+        // Upload permanente ao R2 (fire-and-forget) — sobrevive aos 7 dias do WAHA
+        if (msgId && !proxiedUrl?.includes("/api/r2-data?type=media")) {
+          const r2MediaUrl = `/api/r2-data?type=media&msgId=${encodeURIComponent(msgId)}`;
+          fetch(r2MediaUrl, {
+            method: "PUT",
+            body: result.buf,
+            headers: { "Content-Type": result.ct, "X-Internal-Key": iKey },
+          }).then(async ur => {
+            if (!ur.ok) return;
+            // Atualiza metadados da mensagem no R2 com a URL permanente
+            if (chatId && r2MsgId) {
+              fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "X-Internal-Key": iKey },
+                body: JSON.stringify([{ id: r2MsgId, chatId, mediaUrl: r2MediaUrl }]),
+              }).catch(() => {});
+            }
+          }).catch(() => {});
+        }
       });
     } catch (e) {
       console.error(`[media] fetch error ${msgId}:`, e?.message || e);
