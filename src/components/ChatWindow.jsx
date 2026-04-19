@@ -1244,6 +1244,7 @@ function MediaContent({ media, msgId, chatId, chatSession, onOcrResult }) {
         const url  = URL.createObjectURL(blob);
         blobUrlRef.current = url;
         setMediaBlobInMemory(msgId, url);
+        console.log(`[media] OK msgId=${msgId} bytes=${result.buf.byteLength} type=${result.ct}`);
         if (!onCancelled?.()) setFullUrl(url);
       });
     } catch (e) {
