@@ -146,7 +146,7 @@ async function _autoSaveMediaToR2(msg, setMessages) {
   const SESSION    = import.meta.env.VITE_WAHA_SESSION || "default";
   const ikey       = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
   const chatId     = msg.chatId;
-  const wahaChatId = (_lidToJid.get(chatId)) || chatId;
+  const wahaChatId = getWahaChatId(chatId);
 
   // Endpoint correto WAHA para baixar mídia: /messages/{id}/download-media
   // Tenta shortId e fullId, com @c.us e @lid, nessa ordem
@@ -267,8 +267,14 @@ const _lidFailed = new Set(); // LIDs onde resolução falhou esta sessão (não
 
 // Exportado para ChatWindow usar na URL de download de mídia do WAHA
 // Retorna o @c.us se o chatId for @lid com mapeamento conhecido, senão retorna o próprio chatId
+// Consulta _lidToJid (in-memory) e depois lid_phone_map (localStorage) para sobreviver ao F5
 export function getWahaChatId(chatId) {
-  return (chatId?.endsWith("@lid") && _lidToJid.get(chatId)) || chatId || "";
+  if (!chatId?.endsWith("@lid")) return chatId || "";
+  const jid = _lidToJid.get(chatId);
+  if (jid) return jid;
+  const lidOnly = chatId.replace(/@lid$/, "");
+  const phone = readLidPhoneMap()?.[lidOnly]?.phone;
+  return phone ? phone + "@c.us" : chatId;
 }
 // Retorna o @lid canônico para um @c.us (ou null se não houver)
 export function getLidForJid(jid) {
@@ -1108,10 +1114,12 @@ export function useWAHA(operator) {
     if (!semFoto.length) return;
 
     async function fetchPhoto(chatId) {
-      const id = encodeURIComponent(chatId);
+      const wahaId = getWahaChatId(chatId);
+      if (!wahaId) return null;
+      const id = encodeURIComponent(wahaId);
       try {
         const r = await fetch(
-          `/api/waha?path=/api/contacts/profile-picture&contactId=${id}&session=${SESSION}`,
+          `/api/waha?path=/api/${SESSION}/contacts/profile-picture&contactId=${id}&session=${SESSION}`,
           { headers: { "X-Internal-Key": ikey() } }
         );
         if (!r.ok) return null;
@@ -1161,7 +1169,8 @@ export function useWAHA(operator) {
       await Promise.allSettled(batch.map(async (chatId) => {
         try {
           const SESSION = import.meta.env.VITE_WAHA_SESSION || "default";
-          const id = encodeURIComponent(chatId);
+          const wahaLastId = getWahaChatId(chatId);
+          const id = encodeURIComponent(wahaLastId);
           const r  = await fetch(
             `/api/waha?path=/api/${SESSION}/chats/${id}/messages&limit=10&downloadMedia=false`,
             { headers: { "X-Internal-Key": ikey() } }
@@ -1655,7 +1664,8 @@ export function useWAHA(operator) {
   // ── 5. loadOlderMessages — paginação por janelas de 10 dias ───
   const loadOlderMessages = useCallback(async (chatId, currentMsgs) => {
     const SESSION = import.meta.env.VITE_WAHA_SESSION || "default";
-    const id      = encodeURIComponent(chatId);
+    const wahaChatId = getWahaChatId(chatId);
+    const id      = encodeURIComponent(wahaChatId);
 
     const oldestMsg = (currentMsgs || [])[0];
     const oldestTs  = oldestMsg?.ts
@@ -1718,7 +1728,8 @@ export function useWAHA(operator) {
       if (!chatId) return;
       try {
         const SESSION = import.meta.env.VITE_WAHA_SESSION || "default";
-        const id  = encodeURIComponent(chatId);
+        const wahaPollId = getWahaChatId(chatId);
+        const id  = encodeURIComponent(wahaPollId);
         const r   = await fetch(
           `/api/waha?path=/api/${SESSION}/chats/${id}/messages&limit=10&downloadMedia=false`,
           { headers: { "X-Internal-Key": ikey() } }
