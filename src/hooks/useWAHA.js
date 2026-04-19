@@ -1985,33 +1985,46 @@ export function useWAHA(operator) {
       return wahaByTs.get(`${m.from}_${Math.floor(new Date(m.ts).getTime() / 1000)}`);
     })();
 
-    // Enriquece state atual imediatamente — usuário vê mídias sem reload
-    setMessages(prev => {
-      const current = prev[chatId] || [];
-      if (!current.length) return prev;
-      const enriched = current.map(m => {
-        if (m.hasMedia && m.media?.url) return m; // já tem URL, mantém
-        const waha = findWaha(m);
-        if (!waha?.media) return m;
-        return {
-          ...m,
-          hasMedia: true,
-          type:     waha.type || m.type,
-          media:    { ...waha.media, ...( m.media || {} ), url: waha.media.url || m.media?.url || null },
-        };
-      });
-      // Adiciona mensagens WAHA genuinamente novas (não estavam no state)
-      const currentIds = new Set(current.map(m => m.id));
-      const extras = wahaMsgs.filter(w => !currentIds.has(w.id));
-      const merged = sortMsgs([...enriched, ...extras]);
-      _sessionMsgs.set(chatId, merged);
-      return { ...prev, [chatId]: merged };
+    // Enriquece mensagens existentes no state (preserva IDs do R2)
+    const current = _sessionMsgs.get(chatId) || [];
+    const enriched = current.map(m => {
+      if (m.hasMedia && m.media?.url) return m;
+      const waha = findWaha(m);
+      if (!waha?.media) return m;
+      return {
+        ...m,
+        hasMedia: true,
+        type:     waha.type || m.type,
+        media:    { ...(m.media || {}), ...waha.media, url: waha.media.url || m.media?.url || null },
+      };
     });
+    // Mensagens WAHA genuinamente novas (não estavam no state)
+    const currentIds = new Set(current.map(m => m.id));
+    const extras = wahaMsgs.filter(w => !currentIds.has(w.id));
+    const merged = sortMsgs([...enriched, ...extras]);
 
-    // Persiste no R2 em background
-    const toSave = wahaMsgs
-      .filter(w => w.hasMedia || w.media)
-      .map(w => ({
+    // Atualiza state imediatamente — usuário vê mídias sem reload
+    _sessionMsgs.set(chatId, merged);
+    setMessages(prev => ({ ...prev, [chatId]: merged }));
+
+    // Persiste no R2: usa IDs das mensagens já enriquecidas (IDs do R2 → match exato no endpoint)
+    const toSave = enriched
+      .filter(m => m.hasMedia || m.media)
+      .map(m => ({
+        id:          m.id,            // ID original do R2 — match exato no endpoint
+        chatId,
+        ts:          m.ts ? new Date(m.ts).getTime() : 0,
+        fromMe:      m.from === "operator",
+        body:        m.text || "",
+        type:        m.type || "chat",
+        pushname:    m.pushname || "",
+        wahaShortId: m.media?.msgId || null,
+        mediaUrl:    m.media?.url && !m.media.url.startsWith("data:") ? m.media.url : null,
+      }));
+    // Adiciona também as mensagens novas do WAHA (IDs WAHA, sem duplicata no R2)
+    for (const w of extras) {
+      if (!(w.hasMedia || w.media)) continue;
+      toSave.push({
         id:          w.id,
         chatId,
         ts:          w.ts ? new Date(w.ts).getTime() : 0,
@@ -2021,7 +2034,8 @@ export function useWAHA(operator) {
         pushname:    w.pushname || "",
         wahaShortId: w.media?.msgId || null,
         mediaUrl:    w.media?.url && !w.media.url.startsWith("data:") ? w.media.url : null,
-      }));
+      });
+    }
     if (toSave.length > 0) {
       fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`, {
         method: "POST",
