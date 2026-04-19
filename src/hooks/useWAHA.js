@@ -1968,8 +1968,47 @@ export function useWAHA(operator) {
         return phone ? phone + "@c.us" : chatId;
       })()
     ) : chatId;
+
     const raw = await getMessages(wahaChatId, 60).catch(() => []);
     const wahaMsgs = sortMsgs(raw.map(normalizeMessage));
+
+    // Índice WAHA por timestamp+fromMe para enriquecer mensagens existentes
+    const wahaById = new Map(wahaMsgs.map(w => [w.id, w]));
+    const wahaByTs = new Map();
+    for (const w of wahaMsgs) {
+      if (!w.ts) continue;
+      const key = `${w.from}_${Math.floor(new Date(w.ts).getTime() / 1000)}`;
+      if (!wahaByTs.has(key)) wahaByTs.set(key, w);
+    }
+    const findWaha = (m) => wahaById.get(m.id) || (() => {
+      if (!m.ts) return undefined;
+      return wahaByTs.get(`${m.from}_${Math.floor(new Date(m.ts).getTime() / 1000)}`);
+    })();
+
+    // Enriquece state atual imediatamente — usuário vê mídias sem reload
+    setMessages(prev => {
+      const current = prev[chatId] || [];
+      if (!current.length) return prev;
+      const enriched = current.map(m => {
+        if (m.hasMedia && m.media?.url) return m; // já tem URL, mantém
+        const waha = findWaha(m);
+        if (!waha?.media) return m;
+        return {
+          ...m,
+          hasMedia: true,
+          type:     waha.type || m.type,
+          media:    { ...waha.media, ...( m.media || {} ), url: waha.media.url || m.media?.url || null },
+        };
+      });
+      // Adiciona mensagens WAHA genuinamente novas (não estavam no state)
+      const currentIds = new Set(current.map(m => m.id));
+      const extras = wahaMsgs.filter(w => !currentIds.has(w.id));
+      const merged = sortMsgs([...enriched, ...extras]);
+      _sessionMsgs.set(chatId, merged);
+      return { ...prev, [chatId]: merged };
+    });
+
+    // Persiste no R2 em background
     const toSave = wahaMsgs
       .filter(w => w.hasMedia || w.media)
       .map(w => ({
@@ -1984,17 +2023,15 @@ export function useWAHA(operator) {
         mediaUrl:    w.media?.url && !w.media.url.startsWith("data:") ? w.media.url : null,
       }));
     if (toSave.length > 0) {
-      await fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`, {
+      fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Internal-Key": ikey() },
         body: JSON.stringify(toSave),
       }).catch(() => {});
     }
-    // Força reload completo para exibir as mídias atualizadas
-    _sessionMsgs.delete(chatId);
-    await loadMessages(chatId);
+
     return toSave.length;
-  }, [loadMessages]);
+  }, []);
 
   // ── Apagar/editar mensagem ────────────────────────────────────
   const deleteMsg = useCallback(async (chatId, msgId) => {
