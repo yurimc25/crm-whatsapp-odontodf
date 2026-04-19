@@ -1540,6 +1540,10 @@ function MediaContent({ media, msgId, r2MsgId, chatId, chatSession, onOcrResult 
 
   return (
     <>
+      {isPdf && fullUrl && (
+        <PdfThumbnail blobUrl={fullUrl}
+          onClick={() => setPdfLightbox(true)} />
+      )}
       <div
         draggable
         onDragStart={e => {
@@ -1608,6 +1612,51 @@ function MediaContent({ media, msgId, r2MsgId, chatId, chatSession, onOcrResult 
         </div>
       )}
     </>
+  );
+}
+
+// ── Thumbnail da primeira página do PDF ───────────────────────────
+function PdfThumbnail({ blobUrl, onClick }) {
+  const canvasRef = useRef(null);
+  const [ready, setReady] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    if (!blobUrl) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const pdfjsLib = await import("pdfjs-dist");
+        pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+          "pdfjs-dist/build/pdf.worker.min.mjs",
+          import.meta.url
+        ).toString();
+        const pdf = await pdfjsLib.getDocument(blobUrl).promise;
+        const page = await pdf.getPage(1);
+        if (cancelled) return;
+        const viewport = page.getViewport({ scale: 1 });
+        const targetW = 220;
+        const scale = targetW / viewport.width;
+        const scaled = page.getViewport({ scale });
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        canvas.width  = scaled.width;
+        canvas.height = scaled.height;
+        await page.render({ canvasContext: canvas.getContext("2d"), viewport: scaled }).promise;
+        if (!cancelled) setReady(true);
+      } catch { if (!cancelled) setFailed(true); }
+    })();
+    return () => { cancelled = true; };
+  }, [blobUrl]);
+
+  if (failed) return null;
+  return (
+    <div onClick={onClick} style={{ cursor: onClick ? "pointer" : "default",
+      borderRadius:"6px 6px 0 0", overflow:"hidden", background:"#1a1a1a",
+      display:"flex", alignItems:"center", justifyContent:"center", minHeight: ready ? 0 : 80 }}>
+      <canvas ref={canvasRef} style={{ display: ready ? "block" : "none", width:"100%", maxWidth:220 }} />
+      {!ready && !failed && <div style={{ color:"#555", fontSize:11, padding:8 }}>⏳</div>}
+    </div>
   );
 }
 
