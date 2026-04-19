@@ -1539,13 +1539,14 @@ export function useWAHA(operator) {
       pushname: m.pushname || "",
       media:    hasMedia ? {
         msgId,
-        type:     MEDIA_TYPES.includes(t) ? t : "image", // fallback "image" quando type="text" mas tem mídia
+        type:     MEDIA_TYPES.includes(t) ? t : "document", // fallback "document" — NOWEB armazena type="text" p/ arquivos
         mimetype: t === "audio" || t === "ptt" || t === "voice" ? "audio/ogg" :
                   t === "image"   ? "image/jpeg" :
                   t === "sticker" ? "image/webp" :
                   t === "video"   ? "video/mp4"  :
                   t === "document"? "application/octet-stream" :
                   m.mediaUrl?.includes("video") ? "video/mp4" :
+                  m.mediaUrl?.includes("/api/r2-data") ? "application/octet-stream" :
                   "image/jpeg",
         url:      m.mediaUrl || null,
         thumbUrl: null,
@@ -2106,6 +2107,17 @@ export function useWAHA(operator) {
         });
         if (!upRes.ok) { uploadFail++; return; }
         m.mediaUrl = r2MediaUrl;
+        // Corrige tipo a partir do content-type real baixado do WAHA
+        const resolvedType = ct.includes("pdf") || (ct.startsWith("application/") && !ct.includes("octet-stream")) ? "document"
+                           : ct.startsWith("video/") ? "video"
+                           : ct.startsWith("audio/") ? "audio"
+                           : ct === "image/webp" ? "sticker"
+                           : ct.startsWith("image/") ? "image"
+                           : m.type;
+        if (resolvedType !== m.type) {
+          console.log(`[sync-media] tipo corrigido: ${m.type} → ${resolvedType} (${ct})`);
+          m.type = resolvedType;
+        }
         uploadOk++;
         console.log(`[sync-media] ✅ R2 upload ${uploadOk}: ${m.wahaShortId.slice(-8)} ${Math.round(buf.byteLength/1024)}KB ${ct}`);
       } catch (e) {
@@ -2119,6 +2131,27 @@ export function useWAHA(operator) {
       await Promise.all(pending.slice(i, i + 3).map(uploadOne));
     }
     console.log(`[sync-media] uploads R2: ${uploadOk} ok / ${uploadFail} falhas`);
+
+    // Atualiza state com R2 URLs e tipos corrigidos pelos uploads
+    if (uploadOk > 0) {
+      // Reconstrói merged com toSave atualizado (mediaUrl + type corretos pós-upload)
+      const toSaveById = new Map(toSave.map(m => [m.id, m]));
+      const finalMerged = merged.map(m => {
+        const saved = toSaveById.get(m.id);
+        if (!saved) return m;
+        const r2Url = saved.mediaUrl?.includes("/api/r2-data?type=media") ? saved.mediaUrl : null;
+        return {
+          ...m,
+          type: saved.type || m.type,
+          media: m.media
+            ? { ...m.media, type: saved.type || m.media?.type, url: r2Url || m.media?.url }
+            : null,
+        };
+      });
+      _sessionMsgs.set(chatId, finalMerged);
+      setMessages(prev => ({ ...prev, [chatId]: finalMerged }));
+      console.log(`[sync-media] state atualizado com ${uploadOk} R2 URLs`);
+    }
 
     // Limpa flags de falha permanente para mídias que o WAHA confirmou existirem
     // (podem ter sido marcadas como falhas em tentativas anteriores com IDs diferentes)

@@ -1153,15 +1153,21 @@ function MediaContent({ media, msgId, r2MsgId, chatId, chatSession, onOcrResult 
   const proxiedUrl = media.url || null;
   const urlToFetch = proxiedUrl || downloadPath;  // downloadPath é o principal
 
-  const isImage = media.type === "image" || media.type === "sticker" ||
-                  (media.mimetype || "").startsWith("image/");
-  const isVideo = media.type === "video" || (media.mimetype || "").startsWith("video/");
+  // Detecta documento/PDF antes de isImage — NOWEB às vezes envia type="image" para PDFs
+  const isDocument = media.type === "document" ||
+    (media.mimetype || "").includes("pdf") ||
+    ((media.mimetype || "").startsWith("application/") && !(media.mimetype || "").includes("octet-stream")) ||
+    /\.(pdf|doc|docx|xls|xlsx|ppt|pptx)$/i.test(media.filename || "");
+
+  const isImage = !isDocument && (media.type === "image" || media.type === "sticker" ||
+                  (media.mimetype || "").startsWith("image/"));
+  const isVideo = !isDocument && (media.type === "video" || (media.mimetype || "").startsWith("video/"));
   const isAudio = media.type === "audio" || media.type === "voice" ||
                   (media.mimetype || "").startsWith("audio/");
 
   // Mimetype correto — NOWEB às vezes não traz
   const mimeHint = media.mimetype ||
-    (isImage ? "image/jpeg" : isVideo ? "video/mp4" : isAudio ? "audio/ogg" : "application/octet-stream");
+    (isImage ? "image/jpeg" : isVideo ? "video/mp4" : isAudio ? "audio/ogg" : isDocument ? "application/pdf" : "application/octet-stream");
 
   const thumbSrc = media.thumbUrl || null;
   // Debug inicial: mostra quais URLs estarão disponíveis para fetch
@@ -1498,7 +1504,7 @@ function MediaContent({ media, msgId, r2MsgId, chatId, chatSession, onOcrResult 
 
   // ── Documento ───────────────────────────────────────────────
   const filename = media.filename || "arquivo";
-  const isPdf = mimeHint.includes("pdf") || filename.toLowerCase().endsWith(".pdf");
+  const isPdf = isDocument && (mimeHint.includes("pdf") || filename.toLowerCase().endsWith(".pdf") || mimeHint === "application/pdf");
 
   function handleDocDownload() {
     if (fullUrl) {
