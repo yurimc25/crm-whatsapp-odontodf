@@ -148,21 +148,20 @@ async function _autoSaveMediaToR2(msg, setMessages) {
   const chatId     = msg.chatId;
   const wahaChatId = (_lidToJid.get(chatId)) || chatId;
 
-  // Constrói lista de URLs a tentar em ordem:
-  // 1. shortId (hex) com @c.us
-  // 2. shortId com chatId original (se @lid)
-  // 3. ID completo serializado da mensagem com @c.us (fallback para engines que precisam do ID completo)
-  // 4. ID completo com chatId original
-  const shortId   = encodeURIComponent(media.msgId);
-  const fullId    = msg.id && msg.id !== media.msgId ? encodeURIComponent(msg.id) : null;
-  const cusE      = encodeURIComponent(wahaChatId);
-  const origE     = encodeURIComponent(chatId);
+  // Endpoint correto WAHA para baixar mídia: /messages/{id}/download-media
+  // Tenta shortId e fullId, com @c.us e @lid, nessa ordem
+  const shortId = encodeURIComponent(media.msgId);
+  const fullId  = msg.id && msg.id !== media.msgId ? encodeURIComponent(msg.id) : null;
+  const cusE    = encodeURIComponent(wahaChatId);
+  const origE   = encodeURIComponent(chatId);
 
   const dlUrls = [
-    `/api/waha?path=/api/${SESSION}/chats/${cusE}/messages/${shortId}&downloadMedia=true`,
-    wahaChatId !== chatId ? `/api/waha?path=/api/${SESSION}/chats/${origE}/messages/${shortId}&downloadMedia=true` : null,
-    fullId ? `/api/waha?path=/api/${SESSION}/chats/${cusE}/messages/${fullId}&downloadMedia=true` : null,
-    fullId && wahaChatId !== chatId ? `/api/waha?path=/api/${SESSION}/chats/${origE}/messages/${fullId}&downloadMedia=true` : null,
+    `/api/waha?path=/api/${SESSION}/chats/${cusE}/messages/${shortId}/download-media`,
+    wahaChatId !== chatId ? `/api/waha?path=/api/${SESSION}/chats/${origE}/messages/${shortId}/download-media` : null,
+    fullId ? `/api/waha?path=/api/${SESSION}/chats/${cusE}/messages/${fullId}/download-media` : null,
+    fullId && wahaChatId !== chatId ? `/api/waha?path=/api/${SESSION}/chats/${origE}/messages/${fullId}/download-media` : null,
+    // Fallback: /api/files/ direto
+    `/api/waha?path=/api/files/${SESSION}/${media.msgId}`,
   ].filter(Boolean);
 
   try {
@@ -170,16 +169,31 @@ async function _autoSaveMediaToR2(msg, setMessages) {
       const r = await fetch(url, { headers: { "X-Internal-Key": ikey }, cache: "no-store" });
       if (!r.ok) return null;
       const ct = r.headers.get("content-type") || "";
+      // Se retornou JSON, pode ser o objeto de mensagem (endpoint antigo com downloadMedia=true)
+      // ou um erro — tenta extrair media.url do JSON como fallback
       if (ct.includes("application/json")) {
         const json = await r.json().catch(() => null);
-        const mUrl = json?.media?.url;
+        if (!json) return null;
+        // Pode ter mediaData.data (base64) ou media.url para download direto
+        if (json?.mediaData?.data) {
+          const base64 = json.mediaData.data;
+          const mime   = json.mediaData.mimetype || media.mimetype || "application/octet-stream";
+          const bin    = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+          return { buf: bin.buffer, mime };
+        }
+        const mUrl = json?.media?.url || json?.url;
         if (!mUrl) return null;
-        const r2 = await fetch(`/api/waha?path=${encodeURIComponent(mUrl)}`, {
-          headers: { "X-Internal-Key": ikey }, cache: "no-store" });
+        const proxyUrl = mUrl.startsWith("http")
+          ? `/api/waha?path=${encodeURIComponent(mUrl)}`
+          : `/api/waha?path=${encodeURIComponent(mUrl)}`;
+        const r2 = await fetch(proxyUrl, { headers: { "X-Internal-Key": ikey }, cache: "no-store" });
         if (!r2.ok) return null;
         return { buf: await r2.arrayBuffer(), mime: r2.headers.get("content-type") || media.mimetype || "application/octet-stream" };
       }
-      return { buf: await r.arrayBuffer(), mime: ct || media.mimetype || "application/octet-stream" };
+      // Binário direto (caso esperado para /download-media e /api/files/)
+      const buf = await r.arrayBuffer();
+      if (!buf.byteLength) return null;
+      return { buf, mime: ct || media.mimetype || "application/octet-stream" };
     }
 
     let result = null;
