@@ -70,7 +70,7 @@ function normalizeR2Message(m) {
               t === "sticker"? "image/webp" :
               t === "video"  ? "video/mp4"  :
               t === "document" ? "application/octet-stream" : null,
-    url:      null,
+    url:      m.mediaUrl || null,
     thumbUrl: null,
   } : null;
   return {

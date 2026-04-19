@@ -192,7 +192,9 @@ function MigrateChatButton({ chatId, localMsgs, onDone }) {
       if (!localMsgs?.length) { setState("done"); onDone?.(); return; }
 
       // Converte mensagens locais (formato app) para formato R2
-      const r2Msgs = localMsgs
+      // Para mensagens com mídia, tenta subir o binário para o R2 e salva a URL
+      const ikey = _ikey();
+      const baseList = localMsgs
         .filter(m => m.id && !m.id.startsWith("tmp-"))
         .map(m => ({
           id:       m.id,
@@ -202,15 +204,54 @@ function MigrateChatButton({ chatId, localMsgs, onDone }) {
           body:     m.text || "",
           type:     m.type || "chat",
           pushname: m.pushname || "",
+          _media:   m.media || null,
         }))
         .filter(m => m.ts > 0)
         .sort((a, b) => a.ts - b.ts);
+
+      // Upload de mídias disponíveis localmente
+      const r2Msgs = await Promise.all(baseList.map(async m => {
+        const { _media, ...r2m } = m;
+        if (!_media?.msgId) return r2m;
+        // Já tem URL no R2 — nada a fazer
+        if (_media.url && _media.url.startsWith("http")) return { ...r2m, mediaUrl: _media.url };
+        // Tenta obter binário do cache
+        let b64 = null;
+        const blobUrl = getMediaBlobInMemory(_media.msgId);
+        if (blobUrl) {
+          try {
+            const resp = await fetch(blobUrl);
+            const buf  = await resp.arrayBuffer();
+            b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+          } catch {}
+        }
+        if (!b64) {
+          const dataUri = getMediaFromStorage(_media.msgId);
+          if (dataUri) b64 = dataUri.split(",")[1] || null;
+        }
+        if (!b64) return r2m;
+        // Sobe para R2
+        try {
+          const ext = (_media.mimetype || "").split("/")[1]?.split(";")[0] || "bin";
+          const filename = `${_media.msgId}.${ext}`;
+          const up = await fetch("/api/r2-data?type=upload", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Internal-Key": ikey },
+            body: JSON.stringify({ filename, mimetype: _media.mimetype || "application/octet-stream", data: b64 }),
+          });
+          if (up.ok) {
+            const { url } = await up.json();
+            return { ...r2m, mediaUrl: url };
+          }
+        } catch {}
+        return r2m;
+      }));
 
       if (!r2Msgs.length) { setState("done"); onDone?.(); return; }
 
       // Lê o que já existe no R2 e faz merge (dedup por id)
       const existR = await fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`,
-        { headers: { "X-Internal-Key": _ikey() } });
+        { headers: { "X-Internal-Key": ikey } });
       const exist = existR.ok ? (await existR.json()) : [];
       const existIds = new Set((Array.isArray(exist) ? exist : []).map(m => m.id));
       const novas = r2Msgs.filter(m => !existIds.has(m.id));
@@ -222,7 +263,7 @@ function MigrateChatButton({ chatId, localMsgs, onDone }) {
       // Salva mensagens no R2
       await fetch(`/api/r2-data?type=msgs-save&chatId=${encodeURIComponent(chatId)}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-Internal-Key": _ikey() },
+        headers: { "Content-Type": "application/json", "X-Internal-Key": ikey },
         body: JSON.stringify(merged),
       });
 
@@ -230,7 +271,7 @@ function MigrateChatButton({ chatId, localMsgs, onDone }) {
       const last = merged[merged.length - 1];
       await fetch("/api/r2-data?type=chats", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-Internal-Key": _ikey() },
+        headers: { "Content-Type": "application/json", "X-Internal-Key": ikey },
         body: JSON.stringify([{ id: chatId, lastMsg: last.body || "", lastTs: last.ts, fromMe: last.fromMe }]),
       });
 
