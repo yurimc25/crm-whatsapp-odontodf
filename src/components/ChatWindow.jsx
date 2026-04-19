@@ -1246,6 +1246,18 @@ function MediaContent({ media, msgId, r2MsgId, chatId, chatSession, onOcrResult 
           setDownload(false); return;
         }
         if (!result.buf || result.buf.byteLength === 0) { setError(true); setDownload(false); return; }
+        // Se pensávamos que era imagem mas o content-type real é documento/PDF, corrige renderização
+        if (isImage && result.ct && !result.ct.startsWith("image/")) {
+          console.log(`[media] tipo real é ${result.ct} mas media.type="image" — renderizando como documento`);
+          const docBlob = new Blob([result.buf], { type: result.ct });
+          const docUrl = URL.createObjectURL(docBlob);
+          blobUrlRef.current = docUrl;
+          setMediaBlobInMemory(msgId, docUrl);
+          setR2IsDoc(true);
+          if (!onCancelled?.()) setFullUrl(docUrl);
+          setDownload(false);
+          return;
+        }
         const blob = new Blob([result.buf], { type: result.ct });
         // Salva base64 no localStorage para imagens pequenas (zero request no próximo F5)
         if (isImage) {
@@ -1330,18 +1342,10 @@ function MediaContent({ media, msgId, r2MsgId, chatId, chatSession, onOcrResult 
                 objectFit:"cover", borderRadius:8, display:"block",
                 filter: (!fullUrl && thumbSrc) ? "blur(4px)" : "none",
                 transition:"filter .4s" }}
-              onError={async () => {
-                // Se a URL é do R2 e a imagem não carregou, checa o content-type real
-                if (displaySrc?.includes("/api/r2-data?type=media")) {
-                  try {
-                    const h = await fetch(displaySrc, { method: "HEAD", headers: { "X-Internal-Key": iKey || "" } });
-                    const ct = h.headers.get("content-type") || "";
-                    if (ct.includes("pdf") || (ct.startsWith("application/") && !ct.includes("octet-stream"))) {
-                      setR2IsDoc(true);
-                      return;
-                    }
-                  } catch {}
-                }
+              onError={() => {
+                // Blob foi carregado mas <img> não conseguiu renderizar
+                // (ex: PDF salvo com type="image" no R2)
+                // r2IsDoc será setado pelo _doFetch se o content-type real não for imagem
                 setError(true);
               }} />
           ) : (
@@ -1365,7 +1369,7 @@ function MediaContent({ media, msgId, r2MsgId, chatId, chatSession, onOcrResult 
           {error && (
             <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", gap:8 }}>
               <div style={{ background:"rgba(0,0,0,.6)", padding:"6px 10px", borderRadius:6, color:"#e57373" }}>⚠️ Erro ao carregar</div>
-              <button onClick={e => { e.stopPropagation(); setError(false); fetchMedia(); }}
+              <button onClick={e => { e.stopPropagation(); setError(false); try { localStorage.removeItem(MEDIA_CACHE_PREFIX + msgId + "_fail"); } catch {} fetchMedia(); }}
                 style={{ fontSize:12, color:T.accent, background:"transparent", border:`1px solid ${T.accent}`, borderRadius:6, padding:"6px 10px", cursor:"pointer" }}>
                 Tentar novamente
               </button>
