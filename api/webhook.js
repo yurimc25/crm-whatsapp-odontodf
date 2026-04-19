@@ -102,7 +102,8 @@ function normalizeMsg(payload) {
     : null;
 
   return { id, chatId, ts: tsMs, fromMe, body, type, pushname,
-           ...(wahaShortId ? { wahaShortId } : {}) };
+           ...(wahaShortId ? { wahaShortId } : {}),
+           ...(mimetype ? { mimetype } : {}) };
 }
 
 // Resolve @lid → JID @c.us real via API de contatos do WAHA (server-side).

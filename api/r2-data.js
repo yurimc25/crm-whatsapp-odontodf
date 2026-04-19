@@ -189,6 +189,7 @@ export default async function handler(req, res) {
           type:        m.type && m.type !== "chat" ? m.type : undefined,
           wahaShortId: m.wahaShortId || undefined,
           mediaUrl:    m.mediaUrl || undefined,
+          mimetype:    m.mimetype || undefined,
         };
 
         const ex = existMap[m.id];
@@ -200,6 +201,7 @@ export default async function handler(req, res) {
             type:        mediaFields.type        || ex.type,
             wahaShortId: mediaFields.wahaShortId || ex.wahaShortId || null,
             mediaUrl:    mediaFields.mediaUrl    || ex.mediaUrl    || null,
+            mimetype:    mediaFields.mimetype    || ex.mimetype    || null,
           };
         } else {
           // Sem match por ID — tenta por timestamp+fromMe para evitar duplicata
@@ -213,6 +215,7 @@ export default async function handler(req, res) {
               type:        mediaFields.type        || byTs.type,
               wahaShortId: mediaFields.wahaShortId || byTs.wahaShortId || null,
               mediaUrl:    mediaFields.mediaUrl    || byTs.mediaUrl    || null,
+              mimetype:    mediaFields.mimetype    || byTs.mimetype    || null,
             };
           }
           // Sem match algum: não adiciona (evita duplicatas de sistema de IDs diferente)

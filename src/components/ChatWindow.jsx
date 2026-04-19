@@ -1120,6 +1120,8 @@ function MediaContent({ media, msgId, r2MsgId, chatId, chatSession, onOcrResult 
   const [fullUrl,      setFullUrl]     = useState(null);
   const [downloading,  setDownload]    = useState(false);
   const [error,        setError]       = useState(false);
+  // Quando imagem R2 falha de carregar e o content-type real indica documento/PDF
+  const [r2IsDoc,      setR2IsDoc]     = useState(false);
   // Audio transcription state — persiste em localStorage por msgId para sobreviver troca de chat
   // Usa apenas msgId como chave (globalmente único por mensagem WhatsApp)
   // chatId é redundante e pode ser undefined em alguns caminhos de normalização
@@ -1154,7 +1156,8 @@ function MediaContent({ media, msgId, r2MsgId, chatId, chatSession, onOcrResult 
   const urlToFetch = proxiedUrl || downloadPath;  // downloadPath é o principal
 
   // Detecta documento/PDF antes de isImage — NOWEB às vezes envia type="image" para PDFs
-  const isDocument = media.type === "document" ||
+  const isDocument = r2IsDoc ||
+    media.type === "document" ||
     (media.mimetype || "").includes("pdf") ||
     ((media.mimetype || "").startsWith("application/") && !(media.mimetype || "").includes("octet-stream")) ||
     /\.(pdf|doc|docx|xls|xlsx|ppt|pptx)$/i.test(media.filename || "");
@@ -1326,7 +1329,21 @@ function MediaContent({ media, msgId, r2MsgId, chatId, chatSession, onOcrResult 
               style={{ width:"100%", maxWidth:260, maxHeight:200,
                 objectFit:"cover", borderRadius:8, display:"block",
                 filter: (!fullUrl && thumbSrc) ? "blur(4px)" : "none",
-                transition:"filter .4s" }} />
+                transition:"filter .4s" }}
+              onError={async () => {
+                // Se a URL é do R2 e a imagem não carregou, checa o content-type real
+                if (displaySrc?.includes("/api/r2-data?type=media")) {
+                  try {
+                    const h = await fetch(displaySrc, { method: "HEAD", headers: { "X-Internal-Key": iKey || "" } });
+                    const ct = h.headers.get("content-type") || "";
+                    if (ct.includes("pdf") || (ct.startsWith("application/") && !ct.includes("octet-stream"))) {
+                      setR2IsDoc(true);
+                      return;
+                    }
+                  } catch {}
+                }
+                setError(true);
+              }} />
           ) : (
             <div style={{ width:200, height:100, background:"#2a2a2a", borderRadius:8,
               display:"flex", alignItems:"center", justifyContent:"center",

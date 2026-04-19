@@ -1540,14 +1540,15 @@ export function useWAHA(operator) {
       media:    hasMedia ? {
         msgId,
         type:     MEDIA_TYPES.includes(t) ? t : "document", // fallback "document" — NOWEB armazena type="text" p/ arquivos
-        mimetype: t === "audio" || t === "ptt" || t === "voice" ? "audio/ogg" :
+        mimetype: m.mimetype ||
+                  (t === "audio" || t === "ptt" || t === "voice" ? "audio/ogg" :
                   t === "image"   ? "image/jpeg" :
                   t === "sticker" ? "image/webp" :
                   t === "video"   ? "video/mp4"  :
                   t === "document"? "application/octet-stream" :
                   m.mediaUrl?.includes("video") ? "video/mp4" :
                   m.mediaUrl?.includes("/api/r2-data") ? "application/octet-stream" :
-                  "image/jpeg",
+                  "image/jpeg"),
         url:      m.mediaUrl || null,
         thumbUrl: null,
       } : null,
@@ -2054,6 +2055,7 @@ export function useWAHA(operator) {
         pushname:    m.pushname || "",
         wahaShortId: m.media?.msgId || null,
         mediaUrl:    m.media?.url && !m.media.url.startsWith("data:") ? m.media.url : null,
+        mimetype:    m.media?.mimetype || null,
       }));
     // Adiciona também as mensagens novas do WAHA (IDs WAHA, sem duplicata no R2)
     for (const w of extras) {
@@ -2068,6 +2070,7 @@ export function useWAHA(operator) {
         pushname:    w.pushname || "",
         wahaShortId: w.media?.msgId || null,
         mediaUrl:    w.media?.url && !w.media.url.startsWith("data:") ? w.media.url : null,
+        mimetype:    w.media?.mimetype || null,
       });
     }
     console.log(`[sync-media] waha=${wahaMsgs.length} enriquecidas=${enriched.filter(m=>m.hasMedia||m.media).length} extras=${extras.length} toSave=${toSave.length}`);
@@ -2107,6 +2110,7 @@ export function useWAHA(operator) {
         });
         if (!upRes.ok) { uploadFail++; return; }
         m.mediaUrl = r2MediaUrl;
+        m.mimetype = ct || m.mimetype || null;
         // Corrige tipo a partir do content-type real baixado do WAHA
         const resolvedType = ct.includes("pdf") || (ct.startsWith("application/") && !ct.includes("octet-stream")) ? "document"
                            : ct.startsWith("video/") ? "video"
@@ -2144,7 +2148,7 @@ export function useWAHA(operator) {
           ...m,
           type: saved.type || m.type,
           media: m.media
-            ? { ...m.media, type: saved.type || m.media?.type, url: r2Url || m.media?.url }
+            ? { ...m.media, type: saved.type || m.media?.type, mimetype: saved.mimetype || m.media?.mimetype, url: r2Url || m.media?.url }
             : null,
         };
       });
