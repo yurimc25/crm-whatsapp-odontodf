@@ -193,6 +193,7 @@ export default async function handler(req, res) {
           // ID exato encontrado — atualiza campos de mídia sem criar duplicata
           existMap[m.id] = {
             ...ex,
+            chatId:      ex.chatId      || chatId,
             type:        mediaFields.type        || ex.type,
             wahaShortId: mediaFields.wahaShortId || ex.wahaShortId || null,
             mediaUrl:    mediaFields.mediaUrl    || ex.mediaUrl    || null,
@@ -205,6 +206,7 @@ export default async function handler(req, res) {
             // Atualiza o registro R2 existente com type/wahaShortId do WAHA
             existMap[byTs.id] = {
               ...byTs,
+              chatId:      byTs.chatId    || chatId,
               type:        mediaFields.type        || byTs.type,
               wahaShortId: mediaFields.wahaShortId || byTs.wahaShortId || null,
               mediaUrl:    mediaFields.mediaUrl    || byTs.mediaUrl    || null,

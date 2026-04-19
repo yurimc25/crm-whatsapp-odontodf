@@ -1228,6 +1228,7 @@ function MediaContent({ media, msgId, chatId, chatSession, onOcrResult }) {
           if (onCancelled?.()) return;
         }
         if (!result.ok) {
+          console.log(`[media] FALHA msgId=${msgId} status=${result.status} url=${urlToFetch?.slice(0,80)}`);
           if (result.status === 404) { markMediaFailed(msgId); }
           else setError(true);
           setDownload(false); return;
@@ -1260,7 +1261,8 @@ function MediaContent({ media, msgId, chatId, chatSession, onOcrResult }) {
   // Auto-carrega imagem e áudio (com fila e cache)
   useEffect(() => {
     if (!isImage && !isAudio) return;
-    if (!urlToFetch || fullUrl) return;
+    if (!urlToFetch) { console.log(`[media] SEM urlToFetch msgId=${msgId} chatId=${chatId} proxiedUrl=${!!proxiedUrl} downloadPath=${!!downloadPath}`); return; }
+    if (fullUrl) return;
     let cancelled = false;
 
     async function autoLoad() {

@@ -1599,7 +1599,7 @@ export function useWAHA(operator) {
       }).then(r => r.ok ? r.json() : []).catch(() => []);
 
       const r2Msgs = Array.isArray(r2Raw)
-        ? sortMsgs(r2Raw.map(normalizeR2Msg))
+        ? sortMsgs(r2Raw.map(m => normalizeR2Msg(m.chatId ? m : { chatId, ...m })))
         : [];
 
       const r2Ids = new Set(r2Msgs.map(m => m.id));
