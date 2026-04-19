@@ -1556,6 +1556,7 @@ export function useWAHA(operator) {
     // sobrescrevam o state com dados de uma execução anterior/paralela
     const token = Date.now() + Math.random();
     activeChatRef.token = token;
+    console.log(`[load-msgs] OPEN chatId=${chatId}`);
     delete seenMsgIds.current[chatId];
     try {
       const existing = resolveName(chatId, null);
@@ -1619,6 +1620,8 @@ export function useWAHA(operator) {
           const merged = sortMsgs([...r2WithMedia, ...wsExtras]);
           const mergedMedia = merged.filter(m => m.hasMedia || m.media).length;
           console.log(`[load-msgs] 2-R2-SET | prev.mídia=${prevMedia} → merged.mídia=${mergedMedia} | wsExtras=${wsExtras.length}`);
+          const r2MediaSample = merged.filter(m => m.hasMedia||m.media).slice(0,3).map(m=>`id=...${String(m.id||"").slice(-10)} type=${m.type} url=${m.media?.url?"sim":"não"}`);
+          if (r2MediaSample.length) console.log(`[load-msgs] 2-R2-SET mídias:`, r2MediaSample);
           _sessionMsgs.set(chatId, merged);
           return { ...prev, [chatId]: merged };
         });
@@ -1686,6 +1689,8 @@ export function useWAHA(operator) {
         const merged     = sortMsgs([...r2Merged, ...wahaExtras, ...wsExtras]);
         const mergedMedia = merged.filter(m => m.hasMedia || m.media).length;
         console.log(`[load-msgs] 3-WAHA-SET | exist=${existing.length}(mídia=${existMedia}) r2Merged=${r2Merged.length} wahaExtras=${wahaExtras.length} wsExtras=${wsExtras.length} → final=${merged.length}(mídia=${mergedMedia})`);
+        const finalMediaSample = merged.filter(m => m.hasMedia||m.media).slice(0,3).map(m=>`id=...${String(m.id||"").slice(-10)} type=${m.type} url=${m.media?.url?"sim":"não"}`);
+        if (finalMediaSample.length) console.log(`[load-msgs] 3-WAHA-SET mídias:`, finalMediaSample);
         _sessionMsgs.set(chatId, merged);
         return { ...prev, [chatId]: merged };
       });
@@ -1961,6 +1966,7 @@ export function useWAHA(operator) {
 
   // ── Sincroniza mídias do WAHA para o R2 (forçado pelo operador) ──
   const syncMediaToR2 = useCallback(async (chatId) => {
+    console.log(`[sync-media] chatId=${chatId}`);
     const wahaChatId = chatId.endsWith("@lid") ? (
       (() => {
         const lidOnly = chatId.replace(/@lid$/, "");
@@ -2036,12 +2042,20 @@ export function useWAHA(operator) {
         mediaUrl:    w.media?.url && !w.media.url.startsWith("data:") ? w.media.url : null,
       });
     }
+    console.log(`[sync-media] waha=${wahaMsgs.length} enriquecidas=${enriched.filter(m=>m.hasMedia||m.media).length} extras=${extras.length} toSave=${toSave.length}`);
+    console.log(`[sync-media] toSave ids:`, toSave.map(m => `${m.id.slice(-12)} type=${m.type} url=${m.mediaUrl ? 'sim' : 'não'} wahaId=${m.wahaShortId?.slice(-8)||'null'}`));
+
     if (toSave.length > 0) {
       fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Internal-Key": ikey() },
         body: JSON.stringify(toSave),
-      }).catch(() => {});
+      })
+        .then(r => r.json())
+        .then(j => console.log(`[sync-media] R2 response:`, j))
+        .catch(e => console.error(`[sync-media] R2 error:`, e));
+    } else {
+      console.log(`[sync-media] nada para salvar no R2`);
     }
 
     return toSave.length;
