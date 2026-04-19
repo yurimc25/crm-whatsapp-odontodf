@@ -1635,15 +1635,35 @@ export function useWAHA(operator) {
 
       if (activeChatRef.token !== token) return;
 
+      // DEBUG: mostra IDs reais para diagnóstico
+      const r2SampleIds = r2Msgs.slice(0, 3).map(m => m.id);
+      const wahaSampleIds = wahaMsgs.slice(0, 3).map(m => m.id);
+      console.log(`[load-msgs] IDs-SAMPLE | R2=${JSON.stringify(r2SampleIds)} | WAHA=${JSON.stringify(wahaSampleIds)}`);
+
+      // Índice por ID curto (hex final) para fallback quando @lid ≠ @c.us no ID da mensagem
+      const wahaByShortId = new Map();
+      for (const w of wahaMsgs) {
+        const short = String(w.id || "").split("_").reverse().find(p => !p.includes("@")) || w.id;
+        if (short) wahaByShortId.set(short, w);
+      }
+      const getWaha = (id) => wahaById.get(id) || (() => {
+        const short = String(id || "").split("_").reverse().find(p => !p.includes("@"));
+        return short ? wahaByShortId.get(short) : undefined;
+      })();
+
       setMessages(prev => {
         if (activeChatRef.token !== token) return prev;
         const existing = prev[chatId] || [];
         const existIds = new Set(existing.map(m => m.id));
         const existMedia = existing.filter(m => m.hasMedia || m.media).length;
 
+        // DEBUG: mostra IDs do state atual (existing) para comparação
+        const existSampleIds = existing.slice(0, 3).map(m => m.id);
+        console.log(`[load-msgs] IDs-EXISTING | state=${JSON.stringify(existSampleIds)}`);
+
         // R2 é base para horário/texto — WAHA completa mídia ausente no R2
         const r2Merged = existing.filter(m => r2Ids.has(m.id)).map(m => {
-          const waha = wahaById.get(m.id);
+          const waha = getWaha(m.id);
           if (!waha) return m;
           const media    = m.media || (waha.hasMedia ? waha.media : null);
           const hasMedia = m.hasMedia || waha.hasMedia || false;
@@ -1651,8 +1671,13 @@ export function useWAHA(operator) {
           return { ...m, media, hasMedia, type };
         });
 
+        // Mensagens só no WAHA e não vistas antes
         const wahaExtras = wahaMsgs.filter(m => !r2Ids.has(m.id) && !existIds.has(m.id));
-        const wsExtras   = existing.filter(m => !r2Ids.has(m.id) && !wahaById.has(m.id) && !m.id.startsWith("tmp-"));
+        // Mensagens que não estão no R2 mas estão no state (WS/cache) — usa versão WAHA se disponível (tem mídia)
+        const wsExtras = existing
+          .filter(m => !r2Ids.has(m.id) && !m.id.startsWith("tmp-"))
+          .map(m => getWaha(m.id) || m);
+
         const merged     = sortMsgs([...r2Merged, ...wahaExtras, ...wsExtras]);
         const mergedMedia = merged.filter(m => m.hasMedia || m.media).length;
         console.log(`[load-msgs] 3-WAHA-SET | exist=${existing.length}(mídia=${existMedia}) r2Merged=${r2Merged.length} wahaExtras=${wahaExtras.length} wsExtras=${wsExtras.length} → final=${merged.length}(mídia=${mergedMedia})`);
