@@ -56,7 +56,7 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
     chats, messages, loadMessages, loadOlderMessages, send,
     deleteMsg, editMsg, deleteChat, searchMessages,
     forwardChat, resolveChat, markRead, markUnread,
-    resyncChats, syncChatsToR2, mutedChats, muteChat, unmuteChat,
+    resyncChats, syncChatsToR2, syncMediaToR2, mutedChats, muteChat, unmuteChat,
     loading, error, wsStatus, myJid,
   } = useWAHA(operator);
 
@@ -374,6 +374,7 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
             onResolve={() => resolveChat(activeChat.id)}
             canForwardToAdmin={perms.verAdmin}
             onLoadOlder={loadOlderMessages}
+            onSyncMedia={syncMediaToR2}
             onDeleteMsg={msgId => deleteMsg?.(activeChat.id, msgId)}
             onEditMsg={(msgId, newText) => editMsg?.(activeChat.id, msgId, newText)}
           />

@@ -183,11 +183,12 @@ function dayLabel(ts) {
 export default function ChatWindow({
   chat, messages, operator, onSend, onForward, onResolve,
   onDeleteMsg, onEditMsg,
-  canForwardToAdmin, onLoadOlder
+  canForwardToAdmin, onLoadOlder, onSyncMedia
 }) {
   const [text, setText]               = useState("");
   const [sending, setSending]         = useState(false);
   const [showForward, setShowForward] = useState(false);
+  const [syncingMedia, setSyncingMedia] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore]         = useState(true);
   const [oldestDate, setOldestDate]   = useState(null);
@@ -531,6 +532,27 @@ export default function ChatWindow({
             </div>
           )}
         </div>
+
+        {/* Sincronizar mídias do WAHA para R2 */}
+        {onSyncMedia && (
+          <button
+            onClick={async () => {
+              setSyncingMedia(true);
+              try { await onSyncMedia(chat.id); } finally { setSyncingMedia(false); }
+            }}
+            disabled={syncingMedia}
+            title="Recarrega mídias direto do WAHA e salva no R2"
+            style={{
+              background:"transparent", border:`1px solid ${T.border}`,
+              borderRadius:6, padding:"5px 10px", color:T.sub, fontSize:11,
+              cursor: syncingMedia ? "default" : "pointer", transition:"all .15s",
+              opacity: syncingMedia ? 0.6 : 1,
+            }}
+            onMouseEnter={e => { if (!syncingMedia) { e.currentTarget.style.background=T.hover; e.currentTarget.style.color=T.text; }}}
+            onMouseLeave={e => { e.currentTarget.style.background="transparent"; e.currentTarget.style.color=T.sub; }}>
+            {syncingMedia ? "⏳ Sincronizando..." : "🔄 Sync mídias"}
+          </button>
+        )}
 
         {/* Marcar respondido — NÃO bloqueia input, NÃO fecha chat */}
         <button onClick={onResolve} style={{

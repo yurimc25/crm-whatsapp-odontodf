@@ -1959,6 +1959,37 @@ export function useWAHA(operator) {
     }
   }, []);
 
+  // ── Sincroniza mídias do WAHA para o R2 (forçado pelo operador) ──
+  const syncMediaToR2 = useCallback(async (chatId) => {
+    const wahaChatId = getWahaChatId(chatId);
+    const raw = await getMessages(wahaChatId, 60).catch(() => []);
+    const wahaMsgs = sortMsgs(raw.map(normalizeMessage));
+    const toSave = wahaMsgs
+      .filter(w => w.hasMedia || w.media)
+      .map(w => ({
+        id:          w.id,
+        chatId,
+        ts:          w.ts ? new Date(w.ts).getTime() : 0,
+        fromMe:      w.from === "operator",
+        body:        w.text || "",
+        type:        w.type || "chat",
+        pushname:    w.pushname || "",
+        wahaShortId: w.media?.msgId || null,
+        mediaUrl:    w.media?.url && !w.media.url.startsWith("data:") ? w.media.url : null,
+      }));
+    if (toSave.length > 0) {
+      await fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Internal-Key": ikey() },
+        body: JSON.stringify(toSave),
+      }).catch(() => {});
+    }
+    // Força reload completo para exibir as mídias atualizadas
+    _sessionMsgs.delete(chatId);
+    await loadMessages(chatId);
+    return toSave.length;
+  }, [loadMessages]);
+
   // ── Apagar/editar mensagem ────────────────────────────────────
   const deleteMsg = useCallback(async (chatId, msgId) => {
     try { await wahaDeleteMessage(chatId, msgId); } catch {}
@@ -2132,6 +2163,7 @@ export function useWAHA(operator) {
     searchMessages,
     resyncChats,
     syncChatsToR2: _syncChatsToR2,
+    syncMediaToR2,
     mutedChats,
     muteChat,
     unmuteChat,
