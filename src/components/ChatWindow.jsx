@@ -1122,6 +1122,7 @@ function MediaContent({ media, msgId, r2MsgId, chatId, chatSession, onOcrResult 
   const [error,        setError]       = useState(false);
   // Quando imagem R2 falha de carregar e o content-type real indica documento/PDF
   const [r2IsDoc,      setR2IsDoc]     = useState(false);
+  const [r2MimeType,   setR2MimeType]  = useState(null);
   // Audio transcription state — persiste em localStorage por msgId para sobreviver troca de chat
   // Usa apenas msgId como chave (globalmente único por mensagem WhatsApp)
   // chatId é redundante e pode ser undefined em alguns caminhos de normalização
@@ -1168,8 +1169,10 @@ function MediaContent({ media, msgId, r2MsgId, chatId, chatSession, onOcrResult 
   const isAudio = media.type === "audio" || media.type === "voice" ||
                   (media.mimetype || "").startsWith("audio/");
 
-  // Mimetype correto — NOWEB às vezes não traz
-  const mimeHint = media.mimetype ||
+  // Mimetype correto — r2MimeType tem prioridade quando detectado via _doFetch
+  const mimeHint = r2MimeType ||
+    (r2IsDoc ? "application/pdf" : null) ||
+    media.mimetype ||
     (isImage ? "image/jpeg" : isVideo ? "video/mp4" : isAudio ? "audio/ogg" : isDocument ? "application/pdf" : "application/octet-stream");
 
   const thumbSrc = media.thumbUrl || null;
@@ -1254,6 +1257,7 @@ function MediaContent({ media, msgId, r2MsgId, chatId, chatSession, onOcrResult 
           blobUrlRef.current = docUrl;
           setMediaBlobInMemory(msgId, docUrl);
           setR2IsDoc(true);
+          setR2MimeType(result.ct);
           if (!onCancelled?.()) setFullUrl(docUrl);
           setDownload(false);
           return;
