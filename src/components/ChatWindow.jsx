@@ -1219,6 +1219,8 @@ function MediaContent({ media, msgId, r2MsgId, chatId, chatSession, onOcrResult 
 
     setDownload(true);
     setError(false);
+    const srcLabel = proxiedUrl?.includes("/api/r2-data?type=media") ? "R2" : "WAHA";
+    console.log(`[media] baixando de ${srcLabel} msgId=${msgId}`);
     try {
       await mediaQueue(async () => {
         if (onCancelled?.()) return;
@@ -1256,14 +1258,15 @@ function MediaContent({ media, msgId, r2MsgId, chatId, chatSession, onOcrResult 
             body: result.buf,
             headers: { "Content-Type": result.ct, "X-Internal-Key": iKey },
           }).then(async ur => {
-            if (!ur.ok) return;
+            if (!ur.ok) { console.warn(`[r2-media] FALHA upload msgId=${msgId} status=${ur.status}`); return; }
+            console.log(`[r2-media] ✅ upload OK msgId=${msgId} bytes=${result.buf.byteLength} type=${result.ct}`);
             // Atualiza metadados da mensagem no R2 com a URL permanente
             if (chatId && r2MsgId) {
               fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json", "X-Internal-Key": iKey },
                 body: JSON.stringify([{ id: r2MsgId, chatId, mediaUrl: r2MediaUrl }]),
-              }).catch(() => {});
+              }).then(r => r.json()).then(j => console.log(`[r2-media] ✅ metadata salvo msgId=${msgId}`, j)).catch(() => {});
             }
           }).catch(() => {});
         }

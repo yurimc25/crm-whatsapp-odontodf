@@ -2063,7 +2063,55 @@ export function useWAHA(operator) {
       });
     }
     console.log(`[sync-media] waha=${wahaMsgs.length} enriquecidas=${enriched.filter(m=>m.hasMedia||m.media).length} extras=${extras.length} toSave=${toSave.length}`);
-    console.log(`[sync-media] toSave ids:`, toSave.map(m => `${m.id.slice(-12)} type=${m.type} url=${m.mediaUrl ? 'sim' : 'não'} wahaId=${m.wahaShortId?.slice(-8)||'null'}`));
+
+    // ── Download + upload permanente pro R2 (3 concurrent) ──────────
+    const SESSION = import.meta.env.VITE_WAHA_SESSION || "default";
+    const iKeyVal = ikey();
+    const pending = toSave.filter(m => m.wahaShortId && !m.mediaUrl?.includes("/api/r2-data?type=media"));
+    console.log(`[sync-media] iniciando upload R2: ${pending.length} mídias`);
+    let uploadOk = 0, uploadFail = 0;
+
+    async function uploadOne(m) {
+      try {
+        const dlUrl = `/api/waha?path=${encodeURIComponent(`/api/${SESSION}/chats/${encodeURIComponent(m.chatId || chatId)}/messages/${m.wahaShortId}&downloadMedia=true`)}`;
+        const dlRes = await fetch(dlUrl, { headers: { "X-Internal-Key": iKeyVal } });
+        if (!dlRes.ok) { uploadFail++; return; }
+        let buf, ct;
+        const contentType = dlRes.headers.get("content-type") || "";
+        if (contentType.includes("application/json")) {
+          const json = await dlRes.json().catch(() => null);
+          const mediaUrlRaw = json?.media?.url;
+          if (!mediaUrlRaw) { uploadFail++; return; }
+          const proxied = `/api/waha?path=${encodeURIComponent(mediaUrlRaw)}`;
+          const r2 = await fetch(proxied, { headers: { "X-Internal-Key": iKeyVal } });
+          if (!r2.ok) { uploadFail++; return; }
+          buf = await r2.arrayBuffer();
+          ct = r2.headers.get("content-type") || contentType;
+        } else {
+          buf = await dlRes.arrayBuffer();
+          ct = contentType;
+        }
+        if (!buf || buf.byteLength === 0) { uploadFail++; return; }
+        const r2MediaUrl = `/api/r2-data?type=media&msgId=${encodeURIComponent(m.wahaShortId)}`;
+        const upRes = await fetch(r2MediaUrl, {
+          method: "PUT", body: buf,
+          headers: { "Content-Type": ct, "X-Internal-Key": iKeyVal },
+        });
+        if (!upRes.ok) { uploadFail++; return; }
+        m.mediaUrl = r2MediaUrl;
+        uploadOk++;
+        console.log(`[sync-media] ✅ R2 upload ${uploadOk}: ${m.wahaShortId.slice(-8)} ${Math.round(buf.byteLength/1024)}KB ${ct}`);
+      } catch (e) {
+        uploadFail++;
+        console.warn(`[sync-media] erro upload ${m.wahaShortId?.slice(-8)}:`, e.message);
+      }
+    }
+
+    // Processa em lotes de 3
+    for (let i = 0; i < pending.length; i += 3) {
+      await Promise.all(pending.slice(i, i + 3).map(uploadOne));
+    }
+    console.log(`[sync-media] uploads R2: ${uploadOk} ok / ${uploadFail} falhas`);
 
     // Limpa flags de falha permanente para mídias que o WAHA confirmou existirem
     // (podem ter sido marcadas como falhas em tentativas anteriores com IDs diferentes)
