@@ -190,11 +190,35 @@ function MigrateChatButton({ chatId, localMsgs, onDone }) {
   async function run() {
     setState("running"); setSaved(0);
     try {
-      if (!localMsgs?.length) { setState("done"); onDone?.(); return; }
-
-      // Converte mensagens locais (formato app) para formato R2
-      // Para mensagens com mídia, tenta subir o binário para o R2 e salva a URL
       const ikey = _ikey();
+
+      // Coleta todos os IDs relacionados a este chat (canonical + aliases)
+      const altId = getLidForJid(chatId);
+      const allChatIds = [...new Set([chatId, altId].filter(Boolean))];
+
+      // Lê R2 de TODOS os IDs (canonical + aliases) e mescla por id
+      const r2Arrays = await Promise.all(
+        allChatIds.map(cid =>
+          fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(cid)}`, { headers: { "X-Internal-Key": ikey } })
+            .then(r => r.ok ? r.json() : []).catch(() => [])
+        )
+      );
+      const r2ById = new Map();
+      for (const arr of r2Arrays) {
+        for (const m of (Array.isArray(arr) ? arr : [])) {
+          if (!m.id) continue;
+          const existing = r2ById.get(m.id);
+          // Prefere a versão com mediaUrl
+          if (!existing || (!existing.mediaUrl && m.mediaUrl)) r2ById.set(m.id, m);
+        }
+      }
+
+      if (!localMsgs?.length) {
+        // Nenhuma msg local mas leu R2 — nada a sincronizar
+        setState("done"); onDone?.(); return;
+      }
+
+      // Converte msgs locais para formato R2, fazendo upload de mídias disponíveis
       const baseList = localMsgs
         .filter(m => m.id && !m.id.startsWith("tmp-"))
         .map(m => ({
@@ -210,19 +234,21 @@ function MigrateChatButton({ chatId, localMsgs, onDone }) {
         .filter(m => m.ts > 0)
         .sort((a, b) => a.ts - b.ts);
 
-      // Upload de mídias disponíveis localmente
-      const r2Msgs = await Promise.all(baseList.map(async m => {
+      const localR2Msgs = await Promise.all(baseList.map(async m => {
         const { _media, ...r2m } = m;
+
+        // Já tem URL persistida no R2 ou na msg local
+        const existingUrl = r2ById.get(m.id)?.mediaUrl || (_media?.url?.startsWith("http") ? _media.url : null);
+        if (existingUrl) return { ...r2m, mediaUrl: existingUrl };
+
         if (!_media?.msgId) return r2m;
-        // Já tem URL no R2 — nada a fazer
-        if (_media.url && _media.url.startsWith("http")) return { ...r2m, mediaUrl: _media.url };
-        // Tenta obter binário do cache
+
+        // Tenta subir binário do cache de memória ou localStorage
         let b64 = null;
         const blobUrl = getMediaBlobInMemory(_media.msgId);
         if (blobUrl) {
           try {
-            const resp = await fetch(blobUrl);
-            const buf  = await resp.arrayBuffer();
+            const buf = await fetch(blobUrl).then(r => r.arrayBuffer());
             b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
           } catch {}
         }
@@ -231,52 +257,58 @@ function MigrateChatButton({ chatId, localMsgs, onDone }) {
           if (dataUri) b64 = dataUri.split(",")[1] || null;
         }
         if (!b64) return r2m;
-        // Sobe para R2
+
         try {
           const ext = (_media.mimetype || "").split("/")[1]?.split(";")[0] || "bin";
-          const filename = `${_media.msgId}.${ext}`;
           const up = await fetch("/api/r2-data?type=upload", {
             method: "POST",
             headers: { "Content-Type": "application/json", "X-Internal-Key": ikey },
-            body: JSON.stringify({ filename, mimetype: _media.mimetype || "application/octet-stream", data: b64 }),
+            body: JSON.stringify({ filename: `${_media.msgId}.${ext}`, mimetype: _media.mimetype || "application/octet-stream", data: b64 }),
           });
           if (up.ok) {
             const { url } = await up.json();
-            return { ...r2m, mediaUrl: url };
+            if (url) return { ...r2m, mediaUrl: url };
           }
         } catch {}
         return r2m;
       }));
 
-      if (!r2Msgs.length) { setState("done"); onDone?.(); return; }
+      // Merge: local vence para msgs novas; para msgs existentes, prefere versão com mediaUrl
+      let changed = 0;
+      for (const m of localR2Msgs) {
+        const existing = r2ById.get(m.id);
+        if (!existing) {
+          r2ById.set(m.id, m);
+          changed++;
+        } else if (m.mediaUrl && !existing.mediaUrl) {
+          r2ById.set(m.id, { ...existing, mediaUrl: m.mediaUrl });
+          changed++;
+        }
+      }
 
-      // Lê o que já existe no R2 e faz merge (dedup por id)
-      const existR = await fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`,
-        { headers: { "X-Internal-Key": ikey } });
-      const exist = existR.ok ? (await existR.json()) : [];
-      const existIds = new Set((Array.isArray(exist) ? exist : []).map(m => m.id));
-      const novas = r2Msgs.filter(m => !existIds.has(m.id));
+      if (!changed) { setState("done"); onDone?.(); return; }
 
-      const merged = [...(Array.isArray(exist) ? exist : []), ...novas]
-        .sort((a, b) => (a.ts||0) - (b.ts||0));
+      const merged = [...r2ById.values()].sort((a, b) => (a.ts||0) - (b.ts||0));
       if (merged.length > 200) merged.splice(0, merged.length - 200);
 
-      // Salva mensagens no R2 (também no alias @lid/@c.us se houver)
+      // Salva em todos os IDs do chat
       const saveBody = JSON.stringify(merged);
       const saveOpts = { method: "POST", headers: { "Content-Type": "application/json", "X-Internal-Key": ikey }, body: saveBody };
-      await fetch(`/api/r2-data?type=msgs-save&chatId=${encodeURIComponent(chatId)}`, saveOpts);
-      const altId = getLidForJid(chatId); // @c.us → @lid alias
-      if (altId) fetch(`/api/r2-data?type=msgs-save&chatId=${encodeURIComponent(altId)}`, saveOpts).catch(() => {});
+      await Promise.all(
+        allChatIds.map(cid =>
+          fetch(`/api/r2-data?type=msgs-save&chatId=${encodeURIComponent(cid)}`, saveOpts).catch(() => {})
+        )
+      );
 
-      // Atualiza lastMsg no chats.json
+      // Atualiza chats.json
       const last = merged[merged.length - 1];
       await fetch("/api/r2-data?type=chats", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Internal-Key": ikey },
         body: JSON.stringify([{ id: chatId, lastMsg: last.body || "", lastTs: last.ts, fromMe: last.fromMe }]),
-      });
+      }).catch(() => {});
 
-      setSaved(novas.length);
+      setSaved(changed);
       setState("done");
       onDone?.();
     } catch (e) {
