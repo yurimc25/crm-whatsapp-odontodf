@@ -1598,6 +1598,25 @@ export function useWAHA(operator) {
       const wahaMsgs   = sortMsgs(raw.map(normalizeMessage));
       const r2Ids      = new Set(r2Msgs.map(m => m.id));
 
+      // [DEBUG] Compara R2 vs WAHA para mensagens com mídia — remove após diagnóstico
+      const wahaMediaMsgs = wahaMsgs.filter(m => m.hasMedia || m.media);
+      const r2MediaMsgs   = r2Msgs.filter(m => m.hasMedia || m.media);
+      if (wahaMediaMsgs.length || r2MediaMsgs.length) {
+        console.group(`[debug-media] chat=${chatId}`);
+        console.log(`R2 msgs com mídia (${r2MediaMsgs.length}):`,  r2MediaMsgs.map(m => ({ id: m.id, type: m.type, hasMedia: m.hasMedia, media: m.media })));
+        console.log(`WAHA msgs com mídia (${wahaMediaMsgs.length}):`, wahaMediaMsgs.map(m => ({ id: m.id, type: m.type, hasMedia: m.hasMedia, media: m.media })));
+        // Mensagens que existem nos dois — mostra o que R2 tem vs WAHA
+        const emAmbos = wahaMediaMsgs.filter(w => r2Ids.has(w.id));
+        if (emAmbos.length) {
+          console.log(`[debug-media] em ambos (${emAmbos.length}):`);
+          emAmbos.forEach(w => {
+            const r = r2Msgs.find(m => m.id === w.id);
+            console.log(`  id=${w.id}`, { R2: r?.media, WAHA: w.media });
+          });
+        }
+        console.groupEnd();
+      }
+
       setMessages(prev => {
         const existing  = prev[chatId] || [];
         const existIds  = new Set(existing.map(m => m.id));
