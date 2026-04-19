@@ -792,7 +792,6 @@ export function useWAHA(operator) {
           : raw);
       console.log(`[waha] ${filtered.length} chats após filtro de data`);
 
-      const dbMeta = dbRes?.chats || {};
       // R2: mapa indexado por id E por dígitos de telefone (webhook usa @lid, WAHA usa @c.us)
       const r2Map  = {};
       if (Array.isArray(r2Res)) {
