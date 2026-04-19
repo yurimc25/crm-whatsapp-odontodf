@@ -4,7 +4,7 @@
 import { r2Get, r2Put } from "./_r2.js";
 
 const RELEVANT = new Set(["message", "message.any", "chat.new", "message.revoked"]);
-const MAX_MSGS_PER_CHAT = 200; // máximo de mensagens guardadas por conversa no R2
+const MAX_MSGS_PER_CHAT = 200;
 
 // Chave R2 segura para um chatId (ex: "556198...@c.us" → "msgs/556198___c_us.json")
 function chatKey(chatId) {
@@ -33,15 +33,12 @@ function isFarewell(text) {
 function computeLastPatientTs(msgs) {
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i];
-    if (!m.fromMe) { // fromMe=false → paciente
-      return isFarewell(m.body) ? null : m.ts;
-    }
-    if (m.fromMe) return null; // operador respondeu — sem timer
+    if (!m.fromMe) return isFarewell(m.body) ? null : m.ts;
+    if (m.fromMe) return null;
   }
   return null;
 }
 function computeUnread(msgs) {
-  // Se não há timer pendente, não há não-lidos
   if (computeLastPatientTs(msgs) === null) return 0;
   let count = 0;
   for (let i = msgs.length - 1; i >= 0; i--) {
@@ -52,7 +49,7 @@ function computeUnread(msgs) {
 }
 
 // Normaliza payload WAHA para objeto enxuto.
-// Prefere @c.us em vez de @lid — @lid é ID interno do WhatsApp, não é número de telefone.
+// Retorna null se não for possível extrair chatId válido (não @s.whatsapp.net).
 function normalizeMsg(payload) {
   const tsRaw = payload.timestamp || payload._data?.t || 0;
   const tsMs  = tsRaw ? (tsRaw > 1e12 ? tsRaw : tsRaw * 1000) : Date.now();
@@ -62,11 +59,14 @@ function normalizeMsg(payload) {
     .filter(Boolean)
     .map(s => s.replace(/:\d+(@\S+)?$/, ""));
 
-  // Prefere candidato @c.us; fallback para o primeiro disponível (pode ser @lid)
+  // Prefere @c.us/@g.us; aceita @lid; descarta @s.whatsapp.net
   const chatId = candidates.find(s => s.endsWith("@c.us") || s.endsWith("@g.us"))
     || candidates.find(s => !s.endsWith("@s.whatsapp.net"))
     || candidates[0]
     || "";
+
+  // Se chatId ainda é @s.whatsapp.net ou vazio → retorna null para evitar descarte silencioso
+  if (!chatId || chatId.endsWith("@s.whatsapp.net")) return null;
 
   const id       = payload.id || payload.key?.id || `msg-${tsMs}`;
   const fromMe   = payload.fromMe ?? payload._data?.fromMe ?? false;
@@ -74,7 +74,7 @@ function normalizeMsg(payload) {
     || payload.caption || payload._data?.caption || "";
   const pushname = payload.notifyName || payload._data?.notifyName || "";
 
-  // Detecta tipo real de mídia (NOWEB pode retornar type="image" para documentos, etc.)
+  // Detecta tipo real de mídia
   const rawType  = payload.type || payload._data?.type || "chat";
   const msgData  = payload._data?.message || {};
   const mimetype = payload.media?.mimetype
@@ -93,7 +93,6 @@ function normalizeMsg(payload) {
      : rawType)
     : rawType;
 
-  // Extrai wahaShortId para o endpoint de download de mídia
   const MEDIA_TYPES = new Set(["image","video","audio","voice","document","sticker","ptt"]);
   const hasMedia = payload.hasMedia === true || MEDIA_TYPES.has(type);
   const rawId    = payload.id || null;
@@ -107,7 +106,6 @@ function normalizeMsg(payload) {
 }
 
 // Resolve @lid → JID @c.us real via API de contatos do WAHA (server-side).
-// Necessário para contas WhatsApp totalmente migradas para LID (Linked ID).
 async function resolveLidToJid(lid, session) {
   const wahaUrl = process.env.WAHA_URL;
   if (!wahaUrl) return null;
@@ -179,12 +177,23 @@ async function updateChatsIndex(msg, msgs) {
 async function saveMessage(msg) {
   const key  = chatKey(msg.chatId);
   const msgs = await r2Json(key, []);
-  if (msgs.find(m => m.id === msg.id)) return msgs; // duplicata
+  if (msgs.find(m => m.id === msg.id)) return msgs; // duplicata por ID
   msgs.push(msg);
   msgs.sort((a, b) => a.ts - b.ts);
   if (msgs.length > MAX_MSGS_PER_CHAT) msgs.splice(0, msgs.length - MAX_MSGS_PER_CHAT);
   await r2WriteJson(key, msgs);
   return msgs;
+}
+
+// Marca mensagem como revogada no histórico do R2
+async function revokeMessage(chatId, msgId) {
+  if (!chatId || !msgId) return;
+  const key  = chatKey(chatId);
+  const msgs = await r2Json(key, []);
+  const idx  = msgs.findIndex(m => m.id === msgId);
+  if (idx < 0) return; // não encontrada — sem ação
+  msgs[idx] = { ...msgs[idx], revoked: true, body: "" };
+  await r2WriteJson(key, msgs);
 }
 
 export default async function handler(req, res) {
@@ -209,56 +218,69 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true, skipped: event || "empty" });
     }
 
-    // ── Resolve @lid → @c.us (se necessário) ─────────────────────────────
-    // @lid (Linked ID) é um ID interno do WhatsApp — não é número de telefone.
-    // Contas migradas enviam mensagens com @lid em vez de @c.us.
-    // Precisamos resolver antes de persistir no R2 e encaminhar ao PartyKit,
-    // para que o frontend roteie a mensagem para o chat @c.us correto.
-    let resolvedPayload = payload;
+    const r2Enabled = !!(process.env.R2_ACCOUNT_ID && process.env.R2_ACCESS_KEY_ID && process.env.R2_BUCKET_NAME);
+
+    // ── message / message.any ─────────────────────────────────────────────
     if (event === "message" || event === "message.any") {
       const rawMsg = normalizeMsg(payload);
-      console.log(`[webhook] ${event} chatId=${rawMsg.chatId} fromMe=${rawMsg.fromMe}`);
-      if (rawMsg.chatId && rawMsg.chatId.endsWith("@lid")) {
-        const jid = await resolveLidToJid(rawMsg.chatId, session || "default");
-        if (jid) {
-          // Injeta chatId resolvido no payload para R2 e PartyKit receberem @c.us
-          resolvedPayload = { ...payload, chatId: jid, from: jid };
-          console.log(`[webhook] @lid resolvido no payload: ${rawMsg.chatId} → ${jid}`);
-        } else {
-          console.warn(`[webhook] @lid não resolvido: ${rawMsg.chatId} — salvando no R2 com @lid`);
-        }
-      }
-    }
 
-    // ── Persiste no R2 (fire-and-forget — não bloqueia resposta) ──────────
-    const r2Enabled = !!(process.env.R2_ACCOUNT_ID && process.env.R2_ACCESS_KEY_ID && process.env.R2_BUCKET_NAME);
-    if (r2Enabled) {
-      if (event === "message" || event === "message.any") {
-        const msg = normalizeMsg(resolvedPayload);
-        // Persiste SEMPRE, exceto mensagens do servidor WhatsApp (@s.whatsapp.net)
-        // Mensagens @lid que não foram resolvidas são salvas com @lid — o frontend trata
-        if (msg.chatId && !msg.chatId.endsWith("@s.whatsapp.net")) {
-          saveMessage(msg)
-            .then(msgs => updateChatsIndex(msg, msgs))
+      if (!rawMsg) {
+        // chatId era @s.whatsapp.net ou vazio — ignorar (são mensagens do servidor WA)
+        console.log(`[webhook] ${event} descartado: chatId inválido (payload.chatId=${payload.chatId || "?"} from=${payload.from || "?"})`);
+        // Ainda encaminha ao PartyKit para debug em tempo real
+      } else {
+        console.log(`[webhook] ${event} chatId=${rawMsg.chatId} fromMe=${rawMsg.fromMe} type=${rawMsg.type}`);
+
+        // Tenta resolver @lid → @c.us antes de persistir
+        let finalMsg = rawMsg;
+        if (rawMsg.chatId.endsWith("@lid")) {
+          const jid = await resolveLidToJid(rawMsg.chatId, session || "default");
+          if (jid) {
+            finalMsg = { ...rawMsg, chatId: jid };
+            console.log(`[webhook] @lid resolvido: ${rawMsg.chatId} → ${jid}`);
+          } else {
+            console.warn(`[webhook] @lid não resolvido: ${rawMsg.chatId} — mantendo @lid no R2`);
+          }
+        }
+
+        // Persiste no R2 — sempre, independente de @lid ou formato
+        if (r2Enabled) {
+          saveMessage(finalMsg)
+            .then(msgs => updateChatsIndex(finalMsg, msgs))
             .catch(e => console.warn("[r2] save/updateChats:", e.message));
         }
-      } else if (event === "chat.new") {
-        // Garante que o chat existe no índice mesmo sem mensagem ainda
-        const rawId = (payload.id || payload.chatId || "").replace(/:\d+(@\S+)?$/, "");
-        const chatId = rawId.endsWith("@s.whatsapp.net") ? null : rawId;
-        if (chatId) {
-          console.log(`[webhook] chat.new: ${chatId}`);
-          r2Json("chats.json", []).then(chats => {
-            if (!chats.find(c => c.id === chatId)) {
-              chats.unshift({ id: chatId, lastMsg: "", lastTs: Date.now(), fromMe: false });
-              return r2WriteJson("chats.json", chats);
-            }
-          }).catch(() => {});
-        }
       }
     }
 
-    // ── Encaminha ao PartyKit ─────────────────────────────────────────────
+    // ── message.revoked ───────────────────────────────────────────────────
+    if (event === "message.revoked") {
+      // payload pode ter antes/depois ou direto o id e chatId
+      const msgId  = payload.before?.id || payload.id || payload.key?.id;
+      const rawId  = (payload.before?.chatId || payload.chatId || payload.key?.remoteJid || "")
+        .replace(/:\d+(@\S+)?$/, "");
+      const chatId = rawId.endsWith("@s.whatsapp.net") ? null : rawId;
+      console.log(`[webhook] message.revoked chatId=${chatId} msgId=${msgId}`);
+      if (r2Enabled && chatId && msgId) {
+        revokeMessage(chatId, msgId).catch(e => console.warn("[r2] revoke:", e.message));
+      }
+    }
+
+    // ── chat.new ──────────────────────────────────────────────────────────
+    if (event === "chat.new") {
+      const rawId  = (payload.id || payload.chatId || "").replace(/:\d+(@\S+)?$/, "");
+      const chatId = rawId.endsWith("@s.whatsapp.net") ? null : rawId;
+      console.log(`[webhook] chat.new chatId=${chatId}`);
+      if (r2Enabled && chatId) {
+        r2Json("chats.json", []).then(chats => {
+          if (!chats.find(c => c.id === chatId)) {
+            chats.unshift({ id: chatId, lastMsg: "", lastTs: Date.now(), fromMe: false });
+            return r2WriteJson("chats.json", chats);
+          }
+        }).catch(e => console.warn("[r2] chat.new:", e.message));
+      }
+    }
+
+    // ── Encaminha ao PartyKit (sempre, para tempo real) ───────────────────
     const partyHost = process.env.PARTYKIT_HOST;
     if (!partyHost) {
       console.warn("[webhook] PARTYKIT_HOST não configurado");
@@ -272,8 +294,7 @@ export default async function handler(req, res) {
         "Content-Type": "application/json",
         "x-internal-key": process.env.INTERNAL_API_KEY || "@Deuse10",
       },
-      // Encaminha payload com @lid já resolvido (se aplicável)
-      body: JSON.stringify({ event, payload: resolvedPayload, session: session || "default" }),
+      body: JSON.stringify({ event, payload, session: session || "default" }),
     });
 
     if (!r.ok) {
