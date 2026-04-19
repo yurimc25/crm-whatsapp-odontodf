@@ -1512,11 +1512,45 @@ export function useWAHA(operator) {
     setWsStatus("connected");
   }, []);
 
-  // ── 4. loadMessages — abre ChatWindow: últimas 60 msgs ────────
+  // Converte mensagem do R2 (formato webhook) para formato do app
+  function normalizeR2Msg(m) {
+    const tsMs = typeof m.ts === "number" ? m.ts : (m.ts ? new Date(m.ts).getTime() : 0);
+    const t    = (m.type || "").toLowerCase();
+    const hasMedia = ["image","video","audio","voice","document","sticker","ptt"].includes(t);
+    const shortMsgId = (() => {
+      const raw = m.id;
+      if (typeof raw !== "string" || !raw.includes("_")) return raw;
+      const parts = raw.split("_");
+      return [...parts].reverse().find(p => !p.includes("@")) || raw;
+    })();
+    return {
+      id:       m.id,
+      chatId:   m.chatId,
+      from:     m.fromMe ? "operator" : "patient",
+      text:     m.body || "",
+      type:     m.type || "chat",
+      ts:       tsMs ? new Date(tsMs).toISOString() : null,
+      time:     tsMs ? new Date(tsMs).toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" }) : "",
+      hasMedia,
+      pushname: m.pushname || "",
+      media:    hasMedia ? {
+        msgId:    shortMsgId,
+        type:     t,
+        mimetype: t === "ptt" || t === "voice" ? "audio/ogg" :
+                  t === "image"   ? "image/jpeg" :
+                  t === "sticker" ? "image/webp" :
+                  t === "video"   ? "video/mp4"  :
+                  t === "document"? "application/octet-stream" : null,
+        url:      m.mediaUrl || null,
+        thumbUrl: null,
+      } : null,
+    };
+  }
+
+  // ── 4. loadMessages — abre ChatWindow: R2 primeiro, WAHA completa ──
   const loadMessages = useCallback(async (chatId) => {
     activeChatRef.current = chatId;
-    delete seenMsgIds.current[chatId]; // reseta dedup para nova poll começar do zero
-    // Busca contato on-demand com prioridade (ignora cache de sessão)
+    delete seenMsgIds.current[chatId];
     try {
       const existing = resolveName(chatId, null);
       if (!existing && typeof lookupPhonePriority === "function") {
@@ -1525,9 +1559,8 @@ export function useWAHA(operator) {
         }).catch(() => {});
       }
     } catch {}
-    // Não zera unread ao abrir — só zera quando o operador enviar uma resposta
 
-    // ── Cache em memória: exibe imediatamente se já carregou antes ──
+    // ── 1. Memória: exibe imediatamente se já carregou antes ──
     const cached = _sessionMsgs.get(chatId);
     if (cached?.length) {
       setMessages(prev => ({ ...prev, [chatId]: cached }));
@@ -1538,61 +1571,65 @@ export function useWAHA(operator) {
       return;
     }
 
-    // ── R2: mescla mensagens persistidas pelo webhook ────────────
-    // Roda em paralelo com o WAHA para não atrasar, aplica ao finalizar
-    const r2MsgsPromise = fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`, {
-      headers: { "X-Internal-Key": ikey() }
-    }).then(r => r.ok ? r.json() : []).catch(() => []);
-
     try {
-      const [raw, r2Raw] = await Promise.all([getMessages(chatId, 60), r2MsgsPromise]);
-      const normalized = sortMsgs(raw.map(normalizeMessage));
+      // ── 2. R2: fonte primária — horários e mídias confiáveis ──
+      const r2Raw = await fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`, {
+        headers: { "X-Internal-Key": ikey() }
+      }).then(r => r.ok ? r.json() : []).catch(() => []);
+
+      const r2Msgs = Array.isArray(r2Raw)
+        ? sortMsgs(r2Raw.map(normalizeR2Msg))
+        : [];
+
+      if (r2Msgs.length > 0) {
+        setMessages(prev => {
+          const wsExtras = (prev[chatId] || []).filter(m =>
+            !r2Msgs.some(r => r.id === m.id) && !m.id.startsWith("tmp-")
+          );
+          const merged = sortMsgs([...r2Msgs, ...wsExtras]);
+          _sessionMsgs.set(chatId, merged);
+          return { ...prev, [chatId]: merged };
+        });
+      }
+
+      // ── 3. WAHA: completa com mensagens que R2 não tem ──
+      if (activeChatRef.current !== chatId) return;
+      const raw        = await getMessages(chatId, 60);
+      const wahaMsgs   = sortMsgs(raw.map(normalizeMessage));
+      const r2Ids      = new Set(r2Msgs.map(m => m.id));
 
       setMessages(prev => {
-        const existing = prev[chatId] || [];
-        const ids      = new Set(normalized.map(m => m.id));
-
-        // Mescla mensagens do R2 (persistidas pelo webhook) que o WAHA não retornou
-        const r2Extras = Array.isArray(r2Raw)
-          ? r2Raw
-              .filter(m => !ids.has(m.id) && m.chatId === chatId)
-              .map(m => ({
-                id:     m.id,
-                chatId: m.chatId,
-                from:   m.fromMe ? "operator" : "patient",
-                text:   m.body || "",
-                type:   m.type || "chat",
-                ts:     m.ts ? new Date(m.ts).toISOString() : null,
-                time:   m.ts ? new Date(m.ts).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "",
-              }))
-          : [];
-
-        const wsExtras = existing.filter(m => !ids.has(m.id) && !m.id.startsWith("tmp-"));
-        const merged   = sortMsgs([...normalized, ...r2Extras, ...wsExtras]);
+        const existing  = prev[chatId] || [];
+        const existIds  = new Set(existing.map(m => m.id));
+        // R2 é a base — WAHA só adiciona o que o R2 não tem
+        // Para mensagens que ambos têm: R2 vence (horário e mídia confiáveis)
+        const wahaExtras = wahaMsgs.filter(m => !r2Ids.has(m.id) && !existIds.has(m.id));
+        const wsExtras   = existing.filter(m => !r2Ids.has(m.id) && !wahaMsgs.some(w => w.id === m.id) && !m.id.startsWith("tmp-"));
+        const merged     = sortMsgs([...existing.filter(m => r2Ids.has(m.id)), ...wahaExtras, ...wsExtras]);
         _sessionMsgs.set(chatId, merged);
         return { ...prev, [chatId]: merged };
       });
 
-      // Atualiza metadata do chat
-      const lastAny   = normalized[normalized.length - 1];
-      const lastOpIdx = normalized.map(m => m.from).lastIndexOf("operator");
-      const lastPIdx  = normalized.map(m => m.from).lastIndexOf("patient");
+      // Atualiza metadata do chat usando lista final mesclada
+      const allMsgs   = sortMsgs([...r2Msgs, ...wahaMsgs.filter(m => !r2Ids.has(m.id))]);
+      const lastAny   = allMsgs[allMsgs.length - 1];
+      const lastOpIdx = allMsgs.map(m => m.from).lastIndexOf("operator");
+      const lastPIdx  = allMsgs.map(m => m.from).lastIndexOf("patient");
       const semResp   = lastOpIdx === -1
-        ? normalized.filter(m => m.from === "patient")
-        : normalized.slice(lastOpIdx + 1).filter(m => m.from === "patient");
+        ? allMsgs.filter(m => m.from === "patient")
+        : allMsgs.slice(lastOpIdx + 1).filter(m => m.from === "patient");
       const ultimoFoiOp = lastOpIdx > lastPIdx || lastPIdx === -1;
-      const autoResolve = detectAutoResolve(normalized);
+      const autoResolve = detectAutoResolve(allMsgs);
       const novoLPTs    = (ultimoFoiOp || autoResolve) ? null : (semResp[0]?.ts || null);
 
       setChats(prev => {
-        const existing = prev.find(c => c.id === chatId);
+        const ex      = prev.find(c => c.id === chatId);
         const updated = prev.map(c => c.id !== chatId ? c : {
           ...c,
           lastMsg:       lastAny?.text || c.lastMsg,
           lastTime:      lastAny?.time || c.lastTime,
           lastPatientTs: novoLPTs,
-          // Unread só é zerado ao enviar resposta (send/markRead) — abrir o chat não zera
-          unread:        existing?.unread ?? 0,
+          unread:        ex?.unread ?? 0,
         });
         persistChats(updated);
         return updated;
