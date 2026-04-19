@@ -1617,14 +1617,26 @@ export function useWAHA(operator) {
         console.groupEnd();
       }
 
+      const wahaById = new Map(wahaMsgs.map(m => [m.id, m]));
+
       setMessages(prev => {
         const existing  = prev[chatId] || [];
         const existIds  = new Set(existing.map(m => m.id));
-        // R2 é a base — WAHA só adiciona o que o R2 não tem
-        // Para mensagens que ambos têm: R2 vence (horário e mídia confiáveis)
+
+        // R2 é base para horário/texto — WAHA completa mídia ausente no R2
+        const r2Merged = existing.filter(m => r2Ids.has(m.id)).map(m => {
+          const waha = wahaById.get(m.id);
+          if (!waha) return m;
+          // Se R2 não tem mídia mas WAHA tem, usa mídia do WAHA
+          const media = m.media || (waha.hasMedia ? waha.media : null);
+          const hasMedia = m.hasMedia || waha.hasMedia || false;
+          const type  = (hasMedia && m.type === "chat") ? (waha.type || m.type) : m.type;
+          return { ...m, media, hasMedia, type };
+        });
+
         const wahaExtras = wahaMsgs.filter(m => !r2Ids.has(m.id) && !existIds.has(m.id));
-        const wsExtras   = existing.filter(m => !r2Ids.has(m.id) && !wahaMsgs.some(w => w.id === m.id) && !m.id.startsWith("tmp-"));
-        const merged     = sortMsgs([...existing.filter(m => r2Ids.has(m.id)), ...wahaExtras, ...wsExtras]);
+        const wsExtras   = existing.filter(m => !r2Ids.has(m.id) && !wahaById.has(m.id) && !m.id.startsWith("tmp-"));
+        const merged     = sortMsgs([...r2Merged, ...wahaExtras, ...wsExtras]);
         _sessionMsgs.set(chatId, merged);
         return { ...prev, [chatId]: merged };
       });
