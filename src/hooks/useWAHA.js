@@ -1540,7 +1540,7 @@ export function useWAHA(operator) {
       media:    hasMedia ? {
         msgId,
         type:     MEDIA_TYPES.includes(t) ? t : "image", // fallback "image" quando type="text" mas tem mídia
-        mimetype: t === "ptt" || t === "voice" ? "audio/ogg" :
+        mimetype: t === "audio" || t === "ptt" || t === "voice" ? "audio/ogg" :
                   t === "image"   ? "image/jpeg" :
                   t === "sticker" ? "image/webp" :
                   t === "video"   ? "video/mp4"  :
@@ -1601,6 +1601,15 @@ export function useWAHA(operator) {
       const r2Msgs = Array.isArray(r2Raw)
         ? sortMsgs(r2Raw.map(m => normalizeR2Msg(m.chatId ? m : { chatId, ...m })))
         : [];
+
+      // Limpa flags de falha para mídias que o R2 confirmou terem wahaShortId
+      // (evita que tentativas anteriores frustradas bloqueiem re-tentativas após sync)
+      const _MEDIA_PFX = "crm_media_";
+      for (const raw of (Array.isArray(r2Raw) ? r2Raw : [])) {
+        if (raw.wahaShortId) {
+          try { localStorage.removeItem(_MEDIA_PFX + raw.wahaShortId + "_fail"); } catch {}
+        }
+      }
 
       const r2Ids = new Set(r2Msgs.map(m => m.id));
       const r2Media = r2Msgs.filter(m => m.hasMedia || m.media).length;
@@ -2051,6 +2060,25 @@ export function useWAHA(operator) {
     }
     console.log(`[sync-media] waha=${wahaMsgs.length} enriquecidas=${enriched.filter(m=>m.hasMedia||m.media).length} extras=${extras.length} toSave=${toSave.length}`);
     console.log(`[sync-media] toSave ids:`, toSave.map(m => `${m.id.slice(-12)} type=${m.type} url=${m.mediaUrl ? 'sim' : 'não'} wahaId=${m.wahaShortId?.slice(-8)||'null'}`));
+
+    // Limpa flags de falha permanente para mídias que o WAHA confirmou existirem
+    // (podem ter sido marcadas como falhas em tentativas anteriores com IDs diferentes)
+    const MEDIA_CACHE_PREFIX = "crm_media_";
+    for (const m of toSave) {
+      if (m.wahaShortId) {
+        try { localStorage.removeItem(MEDIA_CACHE_PREFIX + m.wahaShortId + "_fail"); } catch {}
+      }
+      // Limpa também pelo shortMsgId do R2 (Baileys hex) caso tenha sido marcado
+      const r2Short = (() => {
+        const raw = m.id;
+        if (typeof raw !== "string" || !raw.includes("_")) return null;
+        const parts = raw.split("_");
+        return [...parts].reverse().find(p => !p.includes("@")) || null;
+      })();
+      if (r2Short) {
+        try { localStorage.removeItem(MEDIA_CACHE_PREFIX + r2Short + "_fail"); } catch {}
+      }
+    }
 
     if (toSave.length > 0) {
       fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`, {
