@@ -2009,19 +2009,22 @@ export function useWAHA(operator) {
     })();
 
     // Enriquece mensagens existentes no state (preserva IDs do R2)
+    const MEDIA_TYPES_SET = new Set(["image","video","audio","voice","document","sticker","ptt"]);
     const current = _sessionMsgs.get(chatId) || [];
     const enriched = current.map(m => {
       if (m.hasMedia && m.media?.url) return m;
       const waha = findWaha(m);
-      if (!waha?.media) return m;
+      if (!waha) return m;
+      // WAHA type é autoritativo — corrige tipos errados do R2 (ex: PDF salvo como "image")
+      const correctType = (waha.media?.type && waha.media.type !== "text") ? waha.media.type
+                        : (waha.type && MEDIA_TYPES_SET.has(waha.type)) ? waha.type
+                        : m.type;
+      if (!waha.media) return { ...m, type: correctType }; // corrige tipo mesmo sem media object
       return {
         ...m,
         hasMedia: true,
-        // WAHA type/media.type é autoritativo — corrige tipos errados do R2 (ex: PDF salvo como "image")
-        type:     (waha.media?.type && waha.media.type !== "text") ? waha.media.type
-                : (waha.type && waha.type !== "text" && waha.type !== "chat") ? waha.type
-                : m.type,
-        media:    { ...(m.media || {}), ...waha.media, url: waha.media.url || m.media?.url || null },
+        type:  correctType,
+        media: { ...(m.media || {}), ...waha.media, url: waha.media.url || m.media?.url || null },
       };
     });
     // Mensagens WAHA genuinamente novas (não estavam no state)
@@ -2042,7 +2045,8 @@ export function useWAHA(operator) {
         ts:          m.ts ? new Date(m.ts).getTime() : 0,
         fromMe:      m.from === "operator",
         body:        m.text || "",
-        type:        m.type || "chat",
+        // Usa media.type se mais específico que m.type (corrige "image" salvo errado para "document" etc)
+        type:        (m.media?.type && MEDIA_TYPES_SET.has(m.media.type)) ? m.media.type : (m.type || "chat"),
         pushname:    m.pushname || "",
         wahaShortId: m.media?.msgId || null,
         mediaUrl:    m.media?.url && !m.media.url.startsWith("data:") ? m.media.url : null,
