@@ -1577,15 +1577,17 @@ export function useWAHA(operator) {
       // Ignora se o usuário já trocou de chat enquanto aguardava o fetch
       if (activeChatRef.current !== chatId) return;
 
-      // Mescla mensagens de todos os IDs alias, deduplica por ID
-      const seenIds = new Set();
-      const r2RawMerged = r2Raws.flat().filter(m => {
-        if (!m.id || seenIds.has(m.id)) return false;
-        seenIds.add(m.id);
-        return true;
-      });
+      // Mescla mensagens de todos os IDs alias — prefere a versão com mediaUrl
+      const r2ByIdRaw = new Map();
+      for (const m of r2Raws.flat()) {
+        if (!m.id) continue;
+        const existing = r2ByIdRaw.get(m.id);
+        if (!existing || (!existing.mediaUrl && m.mediaUrl)) {
+          r2ByIdRaw.set(m.id, m);
+        }
+      }
 
-      const r2Msgs = sortMsgs(r2RawMerged.map(normalizeR2Message));
+      const r2Msgs = sortMsgs([...r2ByIdRaw.values()].map(normalizeR2Message));
 
       setMessages(prev => {
         const existing    = prev[chatId] || [];
@@ -1593,10 +1595,13 @@ export function useWAHA(operator) {
         const ids         = new Set(r2Msgs.map(m => m.id));
         // Preserva msgs recebidas via WebSocket ainda não persistidas no R2
         const wsExtras = existing.filter(m => !ids.has(m.id) && !m.id.startsWith("tmp-"));
-        // Para cada msg do R2, preserva o media carregado localmente (blob URL) se R2 não tem URL
+        // Para cada msg do R2, preserva media local somente se tiver URL real (blob ou http)
+        // e R2 não tiver URL — nunca sobrescreve mediaUrl do R2 com null/undefined local
         const r2WithMedia = r2Msgs.map(m => {
+          if (m.media?.url) return m; // R2 já tem URL — usa sem alterar
           const local = existingMap.get(m.id);
-          if (local?.media && !m.media?.url) return { ...m, media: local.media };
+          const localUrl = local?.media?.url;
+          if (localUrl) return { ...m, media: { ...m.media, ...local.media, url: localUrl } };
           return m;
         });
         const merged = sortMsgs([...r2WithMedia, ...wsExtras]);
