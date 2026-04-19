@@ -650,13 +650,12 @@ export function useWAHA(operator) {
 
   async function loadChats(forceFullSync = false) {
     setLoading(true);
-    // Força sincronização completa: ignora lastSync, busca 100 dias
     if (forceFullSync) {
       try { localStorage.removeItem(LAST_SYNC_KEY); } catch {}
       console.log("[waha] force full sync: buscando 100 dias de histórico");
     }
     try {
-      // ── 1. Exibe imediatamente enquanto carrega (sessão → localStorage slim) ──
+      // ── 1. localStorage — exibe imediatamente sem esperar rede ──
       let cachedChats = (_sessionChats.value?.length && Date.now() < _sessionChats.expires)
         ? _sessionChats.value : [];
       if (!cachedChats.length) {
@@ -672,13 +671,101 @@ export function useWAHA(operator) {
         } catch {}
       }
 
-      // ── 2. R2: atualiza lastMsg/lastTs com dados persistidos pelo webhook ──
-      // Calcula fromTs baseado na última sync salva (+ 1 dia de buffer)
+      // ── 2. R2 + MongoDB — fonte persistente, mostra "Carregando conversas..." ──
+      const [dbRes, r2Res] = await Promise.all([
+        fetch(`/api/db?action=chats`, { headers: { "X-Internal-Key": ikey() } })
+          .then(r => r.json()).catch(() => ({ chats: {} })),
+        fetch("/api/r2-data?type=chats", { headers: { "X-Internal-Key": ikey() } })
+          .then(r => r.ok ? r.json() : []).catch(() => []),
+      ]);
+
+      const dbMeta  = dbRes?.chats || {};
+      const r2Chats = Array.isArray(r2Res) ? r2Res : [];
+      const lidPhoneCacheR2 = readLidPhoneMap();
+
+      // Aplica chats do R2 ao state (mescla com localStorage se já tiver)
+      if (r2Chats.length > 0) {
+        setChats(prev => {
+          const overrides    = readOverrides();
+          const prevMap      = new Map(prev.map(c => [c.id, c]));
+          const prevByPhone  = {};
+          for (const c of prev) {
+            const ck = canonicalKey(c.id, lidPhoneCacheR2);
+            if (ck) prevByPhone[ck] = c;
+          }
+          const wahaPhones = new Set(prev.map(c => c.id.replace(/\D/g,"")).filter(d => d.length >= 8));
+          const merged = [...prev];
+
+          for (const r2 of r2Chats) {
+            if (!_isValidNewChatId(r2.id)) continue;
+            const ck      = canonicalKey(r2.id, lidPhoneCacheR2);
+            const local   = prevMap.get(r2.id) || (ck ? prevByPhone[ck] : undefined);
+            const ov      = ck ? overrides[ck] : (overrides[r2.id] || null);
+            const r2LptMs = r2.lastPatientTs ? new Date(r2.lastPatientTs).getTime() : 0;
+            const ovResolved = ov?.resolvedAt && r2LptMs <= ov.resolvedAt;
+            const ovRead     = ov?.readAt     && r2LptMs <= ov.readAt;
+            const isMuted    = mutedChatsRef.current.has(r2.id);
+            const closing    = lastMsgIsClosing(r2.lastMsg);
+            const lpt        = isMuted || closing || ovRead || ovResolved ? null
+              : (r2.lastPatientTs ? new Date(r2.lastPatientTs).toISOString() : null);
+            const unread = isMuted || closing || !lpt || ovRead || ovResolved ? 0 : r2.unread || 0;
+            const status = closing || ovResolved ? "resolved" : "open";
+
+            if (local) {
+              // Atualiza chat existente com dados mais recentes do R2
+              const idx = merged.findIndex(c => c.id === local.id);
+              if (idx >= 0) {
+                const localTsMs = local.lastTs ? new Date(local.lastTs).getTime() : 0;
+                const r2TsMs    = r2.lastTs || 0;
+                const bestTsMs  = Math.max(localTsMs, r2TsMs);
+                merged[idx] = {
+                  ...merged[idx],
+                  lastMsg:       r2TsMs >= localTsMs ? (r2.lastMsg || local.lastMsg) : local.lastMsg,
+                  lastTs:        bestTsMs ? new Date(bestTsMs).toISOString() : local.lastTs,
+                  lastPatientTs: lpt ?? local.lastPatientTs,
+                  unread:        Math.max(unread, local.unread || 0),
+                  pushname:      local.pushname || r2.pushname,
+                };
+              }
+            } else {
+              // Chat novo que não estava no localStorage
+              const rDigits = r2.id.replace(/\D/g,"");
+              const dupByPhone = rDigits.length >= 8 && (wahaPhones.has(rDigits.slice(-8)) ||
+                merged.some(c => c.id.replace(/\D/g,"").slice(-8) === rDigits.slice(-8)));
+              if (dupByPhone) continue;
+              const meta = dbMeta[r2.id] || {};
+              merged.push({
+                id:            r2.id,
+                name:          r2.pushname || meta.pushname || "",
+                pushname:      r2.pushname || meta.pushname || "",
+                lastMsg:       r2.lastMsg  || "",
+                lastTs:        r2.lastTs   ? new Date(r2.lastTs).toISOString() : null,
+                lastPatientTs: lpt,
+                unread,
+                status:        meta.status || status,
+                assignedTo:    meta.assignedTo || null,
+                tags:          meta.tags       || [],
+                photoUrl:      null,
+              });
+              if (rDigits.length >= 8) wahaPhones.add(rDigits.slice(-8));
+            }
+          }
+          const deduped = _dedupeChats(merged);
+          console.log(`[r2] chatlist aplicado: ${deduped.length} chats`);
+          persistChats(deduped);
+          return deduped;
+        });
+      }
+
+      // R2 carregado — esconde "Carregando conversas..."
+      setLoading(false);
+
+      // ── 3. WAHA — enriquece em background após R2 já exibido ──
       let fromTs = null;
       const lastSync = getLastSyncTs();
       if (lastSync > 0) {
         const msSinceSync = Date.now() - lastSync;
-        const msToFetch   = msSinceSync + 86400000; // + 1 dia de buffer
+        const msToFetch   = msSinceSync + 86400000;
         const daysToFetch = Math.min(Math.ceil(msToFetch / 86400000), 100);
         fromTs = Math.floor((Date.now() - daysToFetch * 86400000) / 1000);
         console.log(`[waha] última sync: ${new Date(lastSync).toLocaleString()} — buscando últimos ${daysToFetch} dias`);
@@ -687,14 +774,7 @@ export function useWAHA(operator) {
         console.log("[waha] first load: buscando últimos 100 dias");
       }
 
-      // Busca WAHA + MongoDB + R2 em paralelo
-      const [raw, dbRes, r2Res] = await Promise.all([
-        getChats(),
-        fetch(`/api/db?action=chats`, { headers: { "X-Internal-Key": ikey() } })
-          .then(r => r.json()).catch(() => ({ chats: {} })),
-        fetch("/api/r2-data?type=chats", { headers: { "X-Internal-Key": ikey() } })
-          .then(r => r.ok ? r.json() : []).catch(() => []),
-      ]);
+      const raw = await getChats();
 
       if (!Array.isArray(raw)) return;
       console.log(`[waha] ${raw.length} chats recebidos do WAHA`);
