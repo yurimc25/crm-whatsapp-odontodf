@@ -4,7 +4,6 @@ import PatientCardDetected from "./modules/PatientCardDetected";
 import { QuickMessages } from "./modules/QuickMessages";
 import { useContactsCtx } from "../App";
 import { sendImage, sendFile, sendVideo, sendVoice, uploadToR2, sendReaction, sendLocation } from "../services/waha";
-import { getWahaChatId, getLidForJid } from "../hooks/useWAHA";
 import { ContactLookupModal } from "./ContactLookupModal";
 
 // Emojis frequentes para o picker rápido
@@ -181,170 +180,10 @@ function dayLabel(ts) {
   return `${weekday.charAt(0).toUpperCase()+weekday.slice(1)} - ${date}`;
 }
 
-const _ikey = () => import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
-
-function MigrateChatButton({ chatId, localMsgs, onDone }) {
-  const [state, setState] = useState("idle"); // idle | running | done | error
-  const [saved, setSaved] = useState(0);
-
-  async function run() {
-    setState("running"); setSaved(0);
-    try {
-      const ikey = _ikey();
-
-      // Coleta todos os IDs relacionados a este chat (canonical + aliases)
-      const altId = getLidForJid(chatId);
-      const allChatIds = [...new Set([chatId, altId].filter(Boolean))];
-
-      // Lê R2 de TODOS os IDs (canonical + aliases) e mescla por id
-      const r2Arrays = await Promise.all(
-        allChatIds.map(cid =>
-          fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(cid)}`, { headers: { "X-Internal-Key": ikey } })
-            .then(r => r.ok ? r.json() : []).catch(() => [])
-        )
-      );
-      const r2ById = new Map();
-      for (const arr of r2Arrays) {
-        for (const m of (Array.isArray(arr) ? arr : [])) {
-          if (!m.id) continue;
-          const existing = r2ById.get(m.id);
-          // Prefere a versão com mediaUrl
-          if (!existing || (!existing.mediaUrl && m.mediaUrl)) r2ById.set(m.id, m);
-        }
-      }
-
-      if (!localMsgs?.length) {
-        // Nenhuma msg local mas leu R2 — nada a sincronizar
-        setState("done"); onDone?.(); return;
-      }
-
-      // Converte msgs locais para formato R2, fazendo upload de mídias disponíveis
-      const baseList = localMsgs
-        .filter(m => m.id && !m.id.startsWith("tmp-"))
-        .map(m => ({
-          id:       m.id,
-          chatId,
-          ts:       m.ts ? new Date(m.ts).getTime() : 0,
-          fromMe:   m.from === "operator",
-          body:     m.text || "",
-          type:     m.type || "chat",
-          pushname: m.pushname || "",
-          _media:   m.media || null,
-        }))
-        .filter(m => m.ts > 0)
-        .sort((a, b) => a.ts - b.ts);
-
-      const localR2Msgs = await Promise.all(baseList.map(async m => {
-        const { _media, ...r2m } = m;
-
-        // Já tem URL persistida no R2 ou na msg local
-        const existingUrl = r2ById.get(m.id)?.mediaUrl || (_media?.url?.startsWith("http") ? _media.url : null);
-        if (existingUrl) return { ...r2m, mediaUrl: existingUrl };
-
-        if (!_media?.msgId) return r2m;
-
-        // Tenta subir binário do cache de memória ou localStorage
-        let b64 = null;
-        const blobUrl = getMediaBlobInMemory(_media.msgId);
-        if (blobUrl) {
-          try {
-            const buf = await fetch(blobUrl).then(r => r.arrayBuffer());
-            b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
-          } catch {}
-        }
-        if (!b64) {
-          const dataUri = getMediaFromStorage(_media.msgId);
-          if (dataUri) b64 = dataUri.split(",")[1] || null;
-        }
-        if (!b64) return r2m;
-
-        try {
-          const ext = (_media.mimetype || "").split("/")[1]?.split(";")[0] || "bin";
-          const up = await fetch("/api/r2-data?type=upload", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "X-Internal-Key": ikey },
-            body: JSON.stringify({ filename: `${_media.msgId}.${ext}`, mimetype: _media.mimetype || "application/octet-stream", data: b64 }),
-          });
-          if (up.ok) {
-            const { url } = await up.json();
-            if (url) return { ...r2m, mediaUrl: url };
-          }
-        } catch {}
-        return r2m;
-      }));
-
-      // Merge: local vence para msgs novas; para msgs existentes, prefere versão com mediaUrl
-      let changed = 0;
-      for (const m of localR2Msgs) {
-        const existing = r2ById.get(m.id);
-        if (!existing) {
-          r2ById.set(m.id, m);
-          changed++;
-        } else if (m.mediaUrl && !existing.mediaUrl) {
-          r2ById.set(m.id, { ...existing, mediaUrl: m.mediaUrl });
-          changed++;
-        }
-      }
-
-      if (!changed) { setState("done"); onDone?.(); return; }
-
-      const merged = [...r2ById.values()].sort((a, b) => (a.ts||0) - (b.ts||0));
-      if (merged.length > 200) merged.splice(0, merged.length - 200);
-
-      // Salva em todos os IDs do chat
-      const saveBody = JSON.stringify(merged);
-      const saveOpts = { method: "POST", headers: { "Content-Type": "application/json", "X-Internal-Key": ikey }, body: saveBody };
-      await Promise.all(
-        allChatIds.map(cid =>
-          fetch(`/api/r2-data?type=msgs-save&chatId=${encodeURIComponent(cid)}`, saveOpts).catch(() => {})
-        )
-      );
-
-      // Atualiza chats.json
-      const last = merged[merged.length - 1];
-      await fetch("/api/r2-data?type=chats", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Internal-Key": ikey },
-        body: JSON.stringify([{ id: chatId, lastMsg: last.body || "", lastTs: last.ts, fromMe: last.fromMe }]),
-      }).catch(() => {});
-
-      setSaved(changed);
-      setState("done");
-      onDone?.();
-    } catch (e) {
-      console.error("[migrate] falhou:", e.message);
-      setState("error");
-    }
-  }
-
-  const label = state === "idle"    ? "⬆ Sincronizar"
-              : state === "running" ? "⏳ Sincronizando…"
-              : state === "done"    ? `✓ ${saved} msgs`
-              : "✗ Erro";
-
-  const color = state === "done" ? "#4caf87" : state === "error" ? "#c0412c" : "#888";
-
-  return (
-    <button
-      title="Importa histórico deste chat do WAHA para a nuvem (R2)"
-      disabled={state === "running"}
-      onClick={state !== "running" ? run : undefined}
-      style={{
-        background: "transparent",
-        border: `1px solid ${color}33`,
-        borderRadius: 6, padding: "5px 8px",
-        color, fontSize: 11, cursor: state === "running" ? "wait" : "pointer",
-        whiteSpace: "nowrap", transition: "all .15s",
-      }}>
-      {label}
-    </button>
-  );
-}
-
 export default function ChatWindow({
   chat, messages, operator, onSend, onForward, onResolve,
   onDeleteMsg, onEditMsg,
-  canForwardToAdmin, onLoadOlder, onMigrated
+  canForwardToAdmin, onLoadOlder
 }) {
   const [text, setText]               = useState("");
   const [sending, setSending]         = useState(false);
@@ -425,14 +264,10 @@ export default function ChatWindow({
     });
   }
 
-  const bottomRef        = useRef(null);
-  const scrollRef        = useRef(null);
-  const prevScrollH      = useRef(0);
-  const scrollToChatId   = useRef(null);
-  const chatOpenedAtRef  = useRef(0);
-  const prevMsgCountRef  = useRef(0);
-  const [showScrollBtn,     setShowScrollBtn]     = useState(false);
-  const [unreadScrollCount, setUnreadScrollCount] = useState(0);
+  const bottomRef      = useRef(null);
+  const scrollRef      = useRef(null);
+  const prevScrollH    = useRef(0);
+  const scrollToChatId = useRef(null);
   const { displayInfo, addLocalContact, removeContact, lidPhoneMap } = useContactsCtx();
   const info = displayInfo(chat.id, chat.name, chat.pushname);
   const [photoUrl, setPhotoUrl] = useState(() => readPhotoCache()[chat.id] || chat.photoUrl || null);
@@ -456,11 +291,7 @@ export default function ChatWindow({
 
   useEffect(() => {
     setHasMore(true); setOldestDate(null); setLoadingMore(false);
-    scrollToChatId.current  = chat.id;
-    chatOpenedAtRef.current = Date.now();
-    prevMsgCountRef.current = 0;
-    setShowScrollBtn(false);
-    setUnreadScrollCount(0);
+    scrollToChatId.current = chat.id;
   }, [chat.id]);
 
   useEffect(() => {
@@ -469,30 +300,15 @@ export default function ChatWindow({
     if (scrollToChatId.current) {
       scrollToChatId.current = null;
       bottomRef.current?.scrollIntoView({ behavior:"instant" });
-      prevMsgCountRef.current = messages.length;
       return;
     }
-    const isNew = messages.length > prevMsgCountRef.current;
-    prevMsgCountRef.current = messages.length;
-    if (!isNew) return;
-    const nearBottom      = el.scrollHeight - el.scrollTop - el.clientHeight < 500;
-    const withinOpenWindow = Date.now() - chatOpenedAtRef.current < 5000;
-    if (nearBottom || withinOpenWindow) {
-      bottomRef.current?.scrollIntoView({ behavior:"instant" });
-      setShowScrollBtn(false);
-      setUnreadScrollCount(0);
-    } else {
-      setShowScrollBtn(true);
-      setUnreadScrollCount(prev => prev + 1);
-    }
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 300;
+    if (nearBottom) bottomRef.current?.scrollIntoView({ behavior:"instant" });
   }, [messages]);
 
   const handleScroll = useCallback(async () => {
     const el = scrollRef.current;
-    if (!el) return;
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 500;
-    if (nearBottom) { setShowScrollBtn(false); setUnreadScrollCount(0); }
-    if (loadingMore || !hasMore || !onLoadOlder) return;
+    if (!el || loadingMore || !hasMore || !onLoadOlder) return;
     if (el.scrollTop > 80) return;
     setLoadingMore(true);
     prevScrollH.current = el.scrollHeight;
@@ -686,9 +502,6 @@ export default function ChatWindow({
           </div>
         </div>
 
-        {/* Migrar histórico deste chat para R2 */}
-        <MigrateChatButton chatId={chat.id} localMsgs={messages} onDone={onMigrated} />
-
         {/* Encaminhar */}
         <div style={{ position:"relative" }}>
           <button onClick={e => { e.stopPropagation(); setShowForward(v=>!v); }} style={{
@@ -732,8 +545,7 @@ export default function ChatWindow({
       </div>
 
       {/* Mensagens */}
-      <div style={{ flex:1, position:"relative", overflow:"hidden", background:T.bg }}>
-      <div ref={scrollRef} style={{ height:"100%", overflowY:"auto", padding:"12px 16px",
+      <div ref={scrollRef} style={{ flex:1, overflowY:"auto", padding:"12px 16px",
         display:"flex", flexDirection:"column", gap:2, background:T.bg }}>
 
         {loadingMore && (
@@ -790,38 +602,6 @@ export default function ChatWindow({
           );
         })}
         <div ref={bottomRef} />
-      </div>
-
-      {/* Botão scroll para baixo — aparece quando há mensagens novas e usuário está acima */}
-      {showScrollBtn && (
-        <button
-          onClick={() => {
-            bottomRef.current?.scrollIntoView({ behavior:"smooth" });
-            setShowScrollBtn(false);
-            setUnreadScrollCount(0);
-          }}
-          style={{
-            position:"absolute", bottom:16, right:16,
-            width:40, height:40, borderRadius:"50%",
-            background:T.accent, color:"#fff",
-            border:"none", cursor:"pointer",
-            display:"flex", alignItems:"center", justifyContent:"center",
-            boxShadow:"0 2px 10px rgba(0,0,0,.5)", fontSize:18, zIndex:10,
-          }}>
-          ↓
-          {unreadScrollCount > 0 && (
-            <span style={{
-              position:"absolute", top:-5, right:-5,
-              background:"#e53935", color:"#fff", borderRadius:"50%",
-              minWidth:18, height:18, fontSize:10, fontWeight:700,
-              display:"flex", alignItems:"center", justifyContent:"center",
-              padding:"0 3px",
-            }}>
-              {unreadScrollCount > 9 ? "9+" : unreadScrollCount}
-            </span>
-          )}
-        </button>
-      )}
       </div>
 
       {/* Mensagem de contexto do menu */}
@@ -1154,7 +934,7 @@ function MessageBubble({ msg, currentOperator, onContextMenu, onOcrResult }) {
             <MediaContent
               media={msg.media}
               msgId={msg.media.msgId || msg.id}
-              chatId={getWahaChatId(msg.chatId || chat.id)}
+              chatId={msg.chatId}
               chatSession={import.meta.env.VITE_WAHA_SESSION || "default"}
               onOcrResult={onOcrResult}
             />

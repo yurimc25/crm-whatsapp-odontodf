@@ -30,72 +30,6 @@ const T = {
   bubbleMe:  "#1e3a2a",   // bolha minha mensagem
 };
 
-const ikey = () => import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
-
-function MigrateHistoryButton() {
-  const [state, setState] = useState("idle"); // idle | running | done | error
-  const [progress, setProgress] = useState({ done: 0, total: 0, saved: 0 });
-
-  async function run() {
-    setState("running");
-    setProgress({ done: 0, total: 0, saved: 0 });
-    try {
-      // 1. Busca lista de chatIds no WAHA (via servidor)
-      const listRes = await fetch("/api/r2-data?type=migrate-list", {
-        headers: { "X-Internal-Key": ikey() },
-      });
-      if (!listRes.ok) throw new Error(`Erro ${listRes.status}`);
-      const { chatIds, total } = await listRes.json();
-      if (!chatIds?.length) { setState("done"); return; }
-      setProgress(p => ({ ...p, total }));
-
-      // 2. Processa em batches de 10
-      let done = 0;
-      let saved = 0;
-      const BATCH = 10;
-      for (let i = 0; i < chatIds.length; i += BATCH) {
-        const batch = chatIds.slice(i, i + BATCH);
-        const r = await fetch("/api/r2-data?type=migrate-batch", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Internal-Key": ikey() },
-          body: JSON.stringify({ chatIds: batch }),
-        });
-        if (!r.ok) continue;
-        const result = await r.json();
-        done  += result.processed || 0;
-        saved += result.saved     || 0;
-        setProgress({ done, total, saved });
-      }
-      setState("done");
-    } catch (e) {
-      console.error("[migrate]", e.message);
-      setState("error");
-    }
-  }
-
-  const label = state === "idle"    ? "⬆ Migrar histórico"
-              : state === "running" ? `⏳ ${progress.done}/${progress.total} chats…`
-              : state === "done"    ? `✓ ${progress.saved} msgs migradas`
-              : "✗ Erro — tentar de novo";
-
-  return (
-    <button
-      title="Importa mensagens do WAHA para a nuvem (R2). Use uma vez para migrar o histórico."
-      disabled={state === "running"}
-      onClick={state !== "running" ? run : undefined}
-      style={{
-        background: "transparent",
-        border: `1px solid ${state === "done" ? "#4caf87" : state === "error" ? "#c0412c" : "#333"}`,
-        borderRadius: 6, padding: "4px 8px",
-        color:  state === "done" ? "#4caf87" : state === "error" ? "#c0412c" : "#888",
-        fontSize: 11, cursor: state === "running" ? "wait" : "pointer",
-        transition: "all .15s", whiteSpace: "nowrap",
-      }}>
-      {label}
-    </button>
-  );
-}
-
 function SyncDBButton({ onSync }) {
   const [syncing, setSyncing] = useState(false);
   const [lastSync, setLastSync] = useState(null);
@@ -122,7 +56,6 @@ function SyncDBButton({ onSync }) {
   );
 }
 
-
 export default function CRMLayout({ operator, onLogout, notificationBell }) {
   const [activeChat, setActiveChat]     = useState(null);
   const [filter, setFilter]             = useState("all");
@@ -131,41 +64,14 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
   const [newChatPhone, setNewChatPhone] = useState(null);
   const [resyncKey, setResyncKey]       = useState(0);
   const [agendaOpen, setAgendaOpen]     = useState(false);
-  const [showDuplicates, setShowDuplicates] = useState(false);
 
   const { displayName, lidPhoneMap } = useContactsCtx();
 
   const {
-    chats, setChats, messages, loadMessages, loadOlderMessages, send, deleteMsg, editMsg,
+    chats, messages, loadMessages, loadOlderMessages, send, deleteMsg, editMsg,
     deleteChat, forwardChat, resolveChat, markRead, markUnread, searchMessages,
     resyncChats, syncChatsToR2, mutedChats, muteChat, unmuteChat, loading, error, wsStatus, myJid,
   } = useWAHA(operator);
-
-  const ikey = () => import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
-
-  async function handleMigrated(chatId) {
-    // Recarrega mensagens do R2 e atualiza chatlist com lastMsg correto
-    try {
-      loadMessages(chatId); // recarrega ChatWindow com dados atualizados do R2
-      const r = await fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`, {
-        headers: { "X-Internal-Key": ikey() },
-      });
-      if (!r.ok) return;
-      const msgs = await r.json();
-      if (!Array.isArray(msgs) || !msgs.length) return;
-      const last = msgs[msgs.length - 1];
-      const body = last.body || "";
-      const type = (last.type || "").toLowerCase();
-      const lastMsg = body || (type === "ptt" || type === "voice" || type.includes("audio") ? "🎵 Áudio"
-        : type.includes("image") || type === "sticker" ? "📷 Imagem"
-        : type.includes("video") ? "🎥 Vídeo"
-        : type.includes("document") ? "📎 Arquivo"
-        : type !== "chat" ? "📎 Mídia" : "");
-      setChats(prev => prev.map(c => c.id !== chatId ? c : {
-        ...c, lastMsg, lastTs: last.ts, fromMe: last.fromMe ?? false,
-      }));
-    } catch {}
-  }
 
   const perms = ROLE_PERMISSIONS[operator.role] || {};
 
@@ -177,10 +83,9 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
   }
 
   // Dedup por telefone resolvido: remove @c.us quando existe @lid com mesmo número.
-  // Quando showDuplicates=true, exibe todos os chats sem filtro (modo debug).
+  // O @lid é alimentado pelo webhook em tempo real e é a fonte de verdade.
+  // Transfere a foto do @c.us para o @lid antes de descartar.
   const dedupedChats = useMemo(() => {
-    if (showDuplicates) return chats; // bypass total do dedup
-
     const PHOTO_KEY = "waha_photos_v4";
 
     // Monta mapa phone → chat@lid (usando lidPhoneMap já resolvido)
@@ -388,19 +293,6 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
           {(operator.role === "gerente" || operator.role === "admin") && (
             <SyncDBButton onSync={syncChatsToR2} />
           )}
-          {/* Toggle dedup — gerente/admin: desativa o dedup para ver @lid e @c.us separados */}
-          {(operator.role === "gerente" || operator.role === "admin") && (
-            <button
-              title={showDuplicates ? "Dedup ativo: clique para desativar" : "Dedup desativado: clique para reativar"}
-              onClick={() => { setShowDuplicates(v => !v); resyncChats(); }}
-              style={{ background: showDuplicates ? "#2a1a1a" : "transparent",
-                border: `1px solid ${showDuplicates ? "#c9a84c66" : "#333"}`,
-                borderRadius:6, padding:"4px 8px",
-                color: showDuplicates ? "#c9a84c" : "#555",
-                fontSize:11, cursor:"pointer", transition:"all .15s" }}>
-              {showDuplicates ? "🔀 sem dedup" : "🔀 dedup"}
-            </button>
-          )}
         </div>
       </div>
 
@@ -514,7 +406,6 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
               onEditMsg={(msgId, text) => editMsg(activeChat.id, msgId, text)}
               canForwardToAdmin={perms.verAdmin}
               onLoadOlder={loadOlderMessages}
-              onMigrated={() => handleMigrated(activeChat.id)}
             />
           ) : (
             <div style={{
