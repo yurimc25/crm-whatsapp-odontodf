@@ -113,7 +113,7 @@ function _cacheMsgs(chatId, msgs) {
         fromMe: m.fromMe, pushname: m.pushname,
       };
       if (m.media && m.hasMedia) {
-        slim.media = { msgId: m.media.msgId, type: m.media.type, mimetype: m.media.mimetype, thumbUrl: null, url: null };
+        slim.media = { msgId: m.media.msgId, type: m.media.type, mimetype: m.media.mimetype, thumbUrl: null, url: m.media.url || null };
       }
       return slim;
     });
