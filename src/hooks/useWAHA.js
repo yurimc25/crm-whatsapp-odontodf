@@ -2019,12 +2019,15 @@ export function useWAHA(operator) {
       const correctType = (waha.media?.type && waha.media.type !== "text") ? waha.media.type
                         : (waha.type && MEDIA_TYPES_SET.has(waha.type)) ? waha.type
                         : m.type;
-      if (!waha.media) return { ...m, type: correctType }; // corrige tipo mesmo sem media object
+      if (!waha.media) {
+        // Corrige tipo mesmo sem media object — atualiza também media.type para ficar consistente
+        return { ...m, type: correctType, media: m.media ? { ...m.media, type: correctType } : null };
+      }
       return {
         ...m,
         hasMedia: true,
         type:  correctType,
-        media: { ...(m.media || {}), ...waha.media, url: waha.media.url || m.media?.url || null },
+        media: { ...(m.media || {}), ...waha.media, type: correctType, url: waha.media.url || m.media?.url || null },
       };
     });
     // Mensagens WAHA genuinamente novas (não estavam no state)
