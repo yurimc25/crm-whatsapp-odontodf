@@ -143,18 +143,29 @@ async function _autoSaveMediaToR2(msg, setMessages) {
   if (_mediaUploadQueue.has(media.msgId)) return;
   _mediaUploadQueue.add(media.msgId);
 
-  const SESSION  = import.meta.env.VITE_WAHA_SESSION || "default";
-  const ikey     = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
-  const chatId   = msg.chatId; // pode ser @lid (canonical) ou @c.us
-  // Para o WAHA, prefere @c.us se disponível (WAHA entende melhor @c.us para download de mídia)
+  const SESSION    = import.meta.env.VITE_WAHA_SESSION || "default";
+  const ikey       = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
+  const chatId     = msg.chatId;
   const wahaChatId = (_lidToJid.get(chatId)) || chatId;
-  const shortId  = encodeURIComponent(media.msgId);
-  const chatIdE  = encodeURIComponent(wahaChatId);
-  const dlUrl    = `/api/waha?path=/api/${SESSION}/chats/${chatIdE}/messages/${shortId}&downloadMedia=true`;
+
+  // Constrói lista de URLs a tentar em ordem:
+  // 1. shortId (hex) com @c.us
+  // 2. shortId com chatId original (se @lid)
+  // 3. ID completo serializado da mensagem com @c.us (fallback para engines que precisam do ID completo)
+  // 4. ID completo com chatId original
+  const shortId   = encodeURIComponent(media.msgId);
+  const fullId    = msg.id && msg.id !== media.msgId ? encodeURIComponent(msg.id) : null;
+  const cusE      = encodeURIComponent(wahaChatId);
+  const origE     = encodeURIComponent(chatId);
+
+  const dlUrls = [
+    `/api/waha?path=/api/${SESSION}/chats/${cusE}/messages/${shortId}&downloadMedia=true`,
+    wahaChatId !== chatId ? `/api/waha?path=/api/${SESSION}/chats/${origE}/messages/${shortId}&downloadMedia=true` : null,
+    fullId ? `/api/waha?path=/api/${SESSION}/chats/${cusE}/messages/${fullId}&downloadMedia=true` : null,
+    fullId && wahaChatId !== chatId ? `/api/waha?path=/api/${SESSION}/chats/${origE}/messages/${fullId}&downloadMedia=true` : null,
+  ].filter(Boolean);
 
   try {
-    // 1. Baixa do WAHA (tenta com @c.us; fallback com chatId original se diferente)
-    let buf, mime;
     async function tryDownload(url) {
       const r = await fetch(url, { headers: { "X-Internal-Key": ikey }, cache: "no-store" });
       if (!r.ok) return null;
@@ -171,11 +182,17 @@ async function _autoSaveMediaToR2(msg, setMessages) {
       return { buf: await r.arrayBuffer(), mime: ct || media.mimetype || "application/octet-stream" };
     }
 
-    const result = await tryDownload(dlUrl)
-      || (wahaChatId !== chatId ? await tryDownload(`/api/waha?path=/api/${SESSION}/chats/${encodeURIComponent(chatId)}/messages/${shortId}&downloadMedia=true`) : null);
+    let result = null;
+    for (const url of dlUrls) {
+      result = await tryDownload(url);
+      if (result?.buf?.byteLength) break;
+    }
 
-    if (!result?.buf?.byteLength) { _mediaUploadQueue.delete(media.msgId); return; }
-    buf = result.buf; mime = result.mime;
+    if (!result?.buf?.byteLength) {
+      console.warn(`[media] download falhou para msgId=${media.msgId} chatId=${chatId}`);
+      _mediaUploadQueue.delete(media.msgId); return;
+    }
+    const { buf, mime } = result;
 
     // 2. Sobe para R2
     const ext      = mime.split("/")[1]?.split(";")[0] || "bin";
@@ -1607,6 +1624,14 @@ export function useWAHA(operator) {
         const merged = sortMsgs([...r2WithMedia, ...wsExtras]);
         _sessionMsgs.set(chatId, merged);
         _cacheMsgs(chatId, merged);
+
+        // Para mídia sem URL persistida no R2, dispara download+upload em background
+        // Cobre o caso de novo dispositivo abrindo chat com mídia não salva ainda
+        const pendingMedia = merged.filter(m => m.hasMedia && m.media?.msgId && !m.media?.url);
+        for (const m of pendingMedia) {
+          _autoSaveMediaToR2({ ...m, chatId: m.chatId || chatId }, setMessages);
+        }
+
         return { ...prev, [chatId]: merged };
       });
 
