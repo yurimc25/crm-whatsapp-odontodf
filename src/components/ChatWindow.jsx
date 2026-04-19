@@ -1616,27 +1616,50 @@ function MediaContent({ media, msgId, r2MsgId, chatId, chatSession, onOcrResult 
 }
 
 // ── Thumbnail da primeira página do PDF ───────────────────────────
+// Só renderiza quando entra no viewport (IntersectionObserver) para não
+// sobrecarregar dispositivos com muitos documentos abertos (ex: iPhone).
+let _pdfWorkerSet = false;
+async function _getPdfLib() {
+  const pdfjsLib = await import("pdfjs-dist");
+  if (!_pdfWorkerSet) {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+      "pdfjs-dist/build/pdf.worker.min.mjs",
+      import.meta.url
+    ).toString();
+    _pdfWorkerSet = true;
+  }
+  return pdfjsLib;
+}
+
 function PdfThumbnail({ blobUrl, onClick }) {
+  const wrapRef   = useRef(null);
   const canvasRef = useRef(null);
-  const [ready, setReady] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const [visible, setVisible] = useState(false);
+  const [ready,   setReady]   = useState(false);
+  const [failed,  setFailed]  = useState(false);
+
+  // Observa visibilidade — só inicia render quando entra na tela
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el || !("IntersectionObserver" in window)) { setVisible(true); return; }
+    const obs = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) { setVisible(true); obs.disconnect(); }
+    }, { rootMargin: "200px" });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
 
   useEffect(() => {
-    if (!blobUrl) return;
+    if (!visible || !blobUrl) return;
     let cancelled = false;
     (async () => {
       try {
-        const pdfjsLib = await import("pdfjs-dist");
-        pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-          "pdfjs-dist/build/pdf.worker.min.mjs",
-          import.meta.url
-        ).toString();
-        const pdf = await pdfjsLib.getDocument(blobUrl).promise;
+        const pdfjsLib = await _getPdfLib();
+        const pdf  = await pdfjsLib.getDocument(blobUrl).promise;
         const page = await pdf.getPage(1);
         if (cancelled) return;
-        const viewport = page.getViewport({ scale: 1 });
-        const targetW = 220;
-        const scale = targetW / viewport.width;
+        const vp     = page.getViewport({ scale: 1 });
+        const scale  = 220 / vp.width;
         const scaled = page.getViewport({ scale });
         const canvas = canvasRef.current;
         if (!canvas) return;
@@ -1647,15 +1670,17 @@ function PdfThumbnail({ blobUrl, onClick }) {
       } catch { if (!cancelled) setFailed(true); }
     })();
     return () => { cancelled = true; };
-  }, [blobUrl]);
+  }, [visible, blobUrl]);
 
   if (failed) return null;
   return (
-    <div onClick={onClick} style={{ cursor: onClick ? "pointer" : "default",
-      borderRadius:"6px 6px 0 0", overflow:"hidden", background:"#1a1a1a",
-      display:"flex", alignItems:"center", justifyContent:"center", minHeight: ready ? 0 : 80 }}>
+    <div ref={wrapRef} onClick={onClick}
+      style={{ cursor: onClick ? "pointer" : "default",
+        borderRadius:"6px 6px 0 0", overflow:"hidden", background:"#1a1a1a",
+        display:"flex", alignItems:"center", justifyContent:"center",
+        minHeight: ready ? 0 : 60 }}>
       <canvas ref={canvasRef} style={{ display: ready ? "block" : "none", width:"100%", maxWidth:220 }} />
-      {!ready && !failed && <div style={{ color:"#555", fontSize:11, padding:8 }}>⏳</div>}
+      {!ready && <div style={{ color:"#555", fontSize:11, padding:8 }}>⏳</div>}
     </div>
   );
 }
