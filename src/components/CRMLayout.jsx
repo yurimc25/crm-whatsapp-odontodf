@@ -122,77 +122,6 @@ function SyncDBButton({ onSync }) {
   );
 }
 
-function DuplicatesButton({ chats, dedupedChats }) {
-  const [open, setOpen] = useState(false);
-
-  const duplicates = useMemo(() => {
-    const removed = chats.filter(c => !dedupedChats.find(d => d.id === c.id));
-    // Agrupa: para cada removido, encontra o sobrevivente com mesmo phone tail-8
-    return removed.map(r => {
-      const rPhone = r.id.replace(/\D/g, "").slice(-8);
-      const survivor = dedupedChats.find(d => d.id.replace(/\D/g, "").slice(-8) === rPhone)
-        || dedupedChats.find(d => d.aliasIds?.includes(r.id));
-      return { removed: r, survivor };
-    });
-  }, [chats, dedupedChats]);
-
-  if (!open) {
-    return (
-      <button
-        title="Ver chats duplicados ocultos pelo dedup"
-        onClick={() => setOpen(true)}
-        style={{ background:"transparent", border:`1px solid #333`, borderRadius:6,
-          padding:"4px 8px", color: duplicates.length ? "#c9a84c" : "#555",
-          fontSize:11, cursor:"pointer" }}>
-        🔀 {duplicates.length} dup
-      </button>
-    );
-  }
-
-  return (
-    <div style={{
-      position:"fixed", inset:0, background:"#000a", zIndex:9999,
-      display:"flex", alignItems:"center", justifyContent:"center",
-    }} onClick={() => setOpen(false)}>
-      <div onClick={e => e.stopPropagation()} style={{
-        background:"#1e1e1e", border:"1px solid #333", borderRadius:10,
-        padding:20, width:680, maxHeight:"80vh", overflow:"auto",
-        fontFamily:"monospace", fontSize:12, color:"#ccc",
-      }}>
-        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:12 }}>
-          <strong style={{ color:"#c9a84c" }}>Chats ocultos pelo dedup ({duplicates.length})</strong>
-          <button onClick={() => setOpen(false)} style={{ background:"none", border:"none", color:"#888", cursor:"pointer", fontSize:16 }}>✕</button>
-        </div>
-        {duplicates.length === 0 && <div style={{ color:"#666" }}>Nenhum duplicado detectado.</div>}
-        {duplicates.map(({ removed: r, survivor: s }, i) => (
-          <div key={i} style={{ borderBottom:"1px solid #2a2a2a", padding:"8px 0", display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
-            <div>
-              <div style={{ color:"#e57373", marginBottom:4 }}>❌ Oculto</div>
-              <div><span style={{ color:"#888" }}>ID:</span> {r.id}</div>
-              <div><span style={{ color:"#888" }}>Nome:</span> {r.pushname || r.name || "—"}</div>
-              <div><span style={{ color:"#888" }}>Última msg:</span> {r.lastMsg?.slice(0,40) || "—"}</div>
-              <div><span style={{ color:"#888" }}>lastTs:</span> {r.lastTs ? new Date(r.lastTs).toLocaleString("pt-BR") : "—"}</div>
-              <div><span style={{ color:"#888" }}>aliases:</span> {r.aliasIds?.join(", ") || "—"}</div>
-            </div>
-            <div>
-              <div style={{ color:"#4caf87", marginBottom:4 }}>✓ Exibido</div>
-              {s ? <>
-                <div><span style={{ color:"#888" }}>ID:</span> {s.id}</div>
-                <div><span style={{ color:"#888" }}>Nome:</span> {s.pushname || s.name || "—"}</div>
-                <div><span style={{ color:"#888" }}>Última msg:</span> {s.lastMsg?.slice(0,40) || "—"}</div>
-                <div><span style={{ color:"#888" }}>lastTs:</span> {s.lastTs ? new Date(s.lastTs).toLocaleString("pt-BR") : "—"}</div>
-                <div><span style={{ color:"#888" }}>aliases:</span> {s.aliasIds?.join(", ") || "—"}</div>
-              </> : <div style={{ color:"#888" }}>— não encontrado —</div>}
-            </div>
-          </div>
-        ))}
-        <div style={{ marginTop:12, color:"#666", fontSize:11 }}>
-          Total: {chats.length} no estado → {dedupedChats.length} exibidos → {duplicates.length} ocultos
-        </div>
-      </div>
-    </div>
-  );
-}
 
 export default function CRMLayout({ operator, onLogout, notificationBell }) {
   const [activeChat, setActiveChat]     = useState(null);
@@ -202,6 +131,7 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
   const [newChatPhone, setNewChatPhone] = useState(null);
   const [resyncKey, setResyncKey]       = useState(0);
   const [agendaOpen, setAgendaOpen]     = useState(false);
+  const [showDuplicates, setShowDuplicates] = useState(false);
 
   const { displayName, lidPhoneMap } = useContactsCtx();
 
@@ -247,9 +177,10 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
   }
 
   // Dedup por telefone resolvido: remove @c.us quando existe @lid com mesmo número.
-  // O @lid é alimentado pelo webhook em tempo real e é a fonte de verdade.
-  // Transfere a foto do @c.us para o @lid antes de descartar.
+  // Quando showDuplicates=true, exibe todos os chats sem filtro (modo debug).
   const dedupedChats = useMemo(() => {
+    if (showDuplicates) return chats; // bypass total do dedup
+
     const PHOTO_KEY = "waha_photos_v4";
 
     // Monta mapa phone → chat@lid (usando lidPhoneMap já resolvido)
@@ -457,9 +388,18 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
           {(operator.role === "gerente" || operator.role === "admin") && (
             <SyncDBButton onSync={syncChatsToR2} />
           )}
-          {/* Debug: exibir chats duplicados — gerente/admin */}
+          {/* Toggle dedup — gerente/admin: desativa o dedup para ver @lid e @c.us separados */}
           {(operator.role === "gerente" || operator.role === "admin") && (
-            <DuplicatesButton chats={chats} dedupedChats={dedupedChats} />
+            <button
+              title={showDuplicates ? "Dedup ativo: clique para desativar" : "Dedup desativado: clique para reativar"}
+              onClick={() => { setShowDuplicates(v => !v); resyncChats(); }}
+              style={{ background: showDuplicates ? "#2a1a1a" : "transparent",
+                border: `1px solid ${showDuplicates ? "#c9a84c66" : "#333"}`,
+                borderRadius:6, padding:"4px 8px",
+                color: showDuplicates ? "#c9a84c" : "#555",
+                fontSize:11, cursor:"pointer", transition:"all .15s" }}>
+              {showDuplicates ? "🔀 sem dedup" : "🔀 dedup"}
+            </button>
           )}
         </div>
       </div>
