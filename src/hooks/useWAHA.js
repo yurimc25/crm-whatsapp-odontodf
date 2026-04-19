@@ -133,6 +133,73 @@ function _getCachedMsgs(chatId) {
 // PartyKit + polling processam a mesma mensagem
 const _handledMsgIds = new Set();
 
+// Fila de upload de mídia automático para R2 — evita sobrecarregar WAHA com muitas requests
+const _mediaUploadQueue  = new Set(); // msgIds em processamento
+
+// Fire-and-forget: baixa mídia do WAHA e sobe para R2, depois atualiza _sessionMsgs
+async function _autoSaveMediaToR2(msg, setMessages) {
+  const media = msg.media;
+  if (!media?.msgId || !msg.chatId) return;
+  if (_mediaUploadQueue.has(media.msgId)) return;
+  _mediaUploadQueue.add(media.msgId);
+
+  const SESSION  = import.meta.env.VITE_WAHA_SESSION || "default";
+  const ikey     = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
+  const chatId   = msg.chatId;
+  const shortId  = encodeURIComponent(media.msgId);
+  const chatIdE  = encodeURIComponent(chatId);
+  const dlUrl    = `/api/waha?path=/api/${SESSION}/chats/${chatIdE}/messages/${shortId}&downloadMedia=true`;
+
+  try {
+    // 1. Baixa do WAHA
+    let buf, mime;
+    const r = await fetch(dlUrl, { headers: { "X-Internal-Key": ikey }, cache: "no-store" });
+    if (!r.ok) { _mediaUploadQueue.delete(media.msgId); return; }
+    const ct = r.headers.get("content-type") || "";
+    if (ct.includes("application/json")) {
+      const json = await r.json().catch(() => null);
+      const mUrl = json?.media?.url;
+      if (!mUrl) { _mediaUploadQueue.delete(media.msgId); return; }
+      const r2 = await fetch(`/api/waha?path=${encodeURIComponent(mUrl)}`, {
+        headers: { "X-Internal-Key": ikey }, cache: "no-store" });
+      if (!r2.ok) { _mediaUploadQueue.delete(media.msgId); return; }
+      buf  = await r2.arrayBuffer();
+      mime = r2.headers.get("content-type") || media.mimetype || "application/octet-stream";
+    } else {
+      buf  = await r.arrayBuffer();
+      mime = ct || media.mimetype || "application/octet-stream";
+    }
+
+    if (!buf || !buf.byteLength) { _mediaUploadQueue.delete(media.msgId); return; }
+
+    // 2. Sobe para R2
+    const ext      = mime.split("/")[1]?.split(";")[0] || "bin";
+    const filename = `${media.msgId}.${ext}`;
+    const b64      = btoa(String.fromCharCode(...new Uint8Array(buf)));
+    const up = await fetch("/api/r2-data?type=upload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Internal-Key": ikey },
+      body: JSON.stringify({ filename, mimetype: mime, data: b64 }),
+    });
+    if (!up.ok) { _mediaUploadQueue.delete(media.msgId); return; }
+    const { url: r2Url } = await up.json();
+    if (!r2Url) { _mediaUploadQueue.delete(media.msgId); return; }
+
+    // 3. Atualiza mensagem em memória/estado com a URL do R2
+    const patchMsg = m => {
+      if (m.id !== msg.id) return m;
+      return { ...m, media: { ...m.media, url: r2Url } };
+    };
+    _sessionMsgs.set(chatId, (_sessionMsgs.get(chatId) || []).map(patchMsg));
+    setMessages(prev => {
+      const curr = prev[chatId];
+      if (!curr) return prev;
+      return { ...prev, [chatId]: curr.map(patchMsg) };
+    });
+  } catch {}
+  _mediaUploadQueue.delete(media.msgId);
+}
+
 // Cache de resolução LID → JID (@c.us) — sobrevive re-renders, não sobrevive F5
 // Quando WhatsApp usa @lid (Linked ID), precisamos mapear para o número real
 const _lidToJid  = new Map(); // lid@lid → 55...@c.us
@@ -1082,6 +1149,11 @@ export function useWAHA(operator) {
         _cacheMsgs(effectiveId, updated);
         return { ...prev, [effectiveId]: updated };
       });
+
+      // Auto-upload de mídia para R2 — dispara em background, não bloqueia
+      if (msg.hasMedia && msg.media?.msgId) {
+        _autoSaveMediaToR2({ ...msg, chatId: effectiveId }, setMessages);
+      }
 
       setChats(prev => {
         const isPatient = msg.from === "patient";
