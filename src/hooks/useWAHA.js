@@ -266,11 +266,17 @@ function _isValidChatId(id) {
 }
 
 // Versão mais estrita para NOVOS chats adicionados por fontes externas (R2, polling)
-// Ainda rejeita @lid e >13 dígitos @c.us (phantom de resolução incorreta)
-function _isValidNewChatId(id) {
+// Aceita @lid pois o webhook.js pode armazenar chats como @lid com aliasIds
+// Rejeita apenas @s.whatsapp.net e @c.us com dígitos excessivos (phantom de resolução incorreta)
+function _isValidNewChatId(id, chat) {
   if (!id) return false;
   if (id.endsWith("@s.whatsapp.net")) return false;
-  if (id.endsWith("@lid")) return false;
+  // @lid: aceita se tem aliasIds @c.us ou se o lid_phone_map resolve o número
+  if (id.endsWith("@lid")) {
+    if (chat?.aliasIds?.some(a => a.endsWith("@c.us"))) return true;
+    const lidOnly = id.replace(/@lid$/, "");
+    return !!(readLidPhoneMap()[lidOnly]?.phone);
+  }
   if (!id.endsWith("@g.us")) {
     const digits = id.replace(/\D/g, "");
     if (digits.length > 13) return false;
@@ -899,7 +905,7 @@ export function useWAHA(operator) {
       ]);
 
       const dbMeta  = dbRes?.chats || {};
-      const r2Valid = (Array.isArray(r2Res) ? r2Res : []).filter(c => c.id && _isValidNewChatId(c.id));
+      const r2Valid = (Array.isArray(r2Res) ? r2Res : []).filter(c => c.id && _isValidNewChatId(c.id, c));
       console.log(`[r2] ${r2Valid.length} chats carregados do R2`);
 
       // ── 3. Normaliza chats do R2 para formato do app ──
@@ -922,6 +928,7 @@ export function useWAHA(operator) {
           status:       meta.status     || "open",
           assignedTo:   meta.assignedTo || null,
           tags:         meta.tags       || [],
+          aliasIds:     c.aliasIds?.filter(Boolean) || [],
           avatar:       (pn || cleanId || "??").slice(0, 2).toUpperCase(),
           avatarColor:  stringToColor(c.id),
           photoUrl:     null,
