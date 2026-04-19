@@ -280,6 +280,12 @@ function _isValidNewChatId(id) {
 
 // Deduplica lista de chats por tail-8 de telefone, filtrando apagados e IDs inválidos
 // Mesma lógica usada em loadChats — centralizada aqui para reutilização
+// Combina aliasIds de dois chats preservando todos os IDs alternativos
+function _mergeAliasIds(a, b, canonicalId) {
+  const all = [...(a.aliasIds || []), ...(b.aliasIds || []), a.id, b.id];
+  return [...new Set(all.filter(id => id && id !== canonicalId))];
+}
+
 function _dedupeChats(chats) {
   const deduped = [];
   const seen8   = new Map(); // tail-8 → índice em deduped
@@ -303,12 +309,12 @@ function _dedupeChats(chats) {
       const lidId  = ex.id.endsWith("@lid") ? ex.id : (chat.id.endsWith("@lid") ? chat.id : null);
       const cusId  = ex.id.endsWith("@c.us") ? ex.id : (chat.id.endsWith("@c.us") ? chat.id : null);
       const bestId = lidId || cusId || ex.id;
-      // Para dados do chat, prioriza o @lid (tem lastMsg/lastTs mais recentes via webhook)
       const lidChat = ex.id.endsWith("@lid") ? ex : (chat.id.endsWith("@lid") ? chat : null);
       const base    = lidChat || (newTs > exTs ? chat : ex);
       deduped[existIdx] = {
         ...base,
         id:            bestId,
+        aliasIds:      _mergeAliasIds(ex, chat, bestId),
         photoUrl:      ex.photoUrl   || chat.photoUrl,
         unread:        Math.max(ex.unread || 0, chat.unread || 0),
         lastPatientTs: ex.lastPatientTs || chat.lastPatientTs,
@@ -318,7 +324,7 @@ function _dedupeChats(chats) {
     }
   }
   // Segunda passagem: mescla @lid com @c.us conhecido via _lidToJid
-  // Cobre o caso em que os dígitos do @lid não coincidem com o telefone @c.us (tail-8 falha)
+  // Preserva ambos os IDs em aliasIds para que loadMessages busque os dois no R2
   const byId = new Map(deduped.map((c, i) => [c.id, i]));
   const toRemoveIdxs = new Set();
   for (let i = 0; i < deduped.length; i++) {
@@ -331,10 +337,10 @@ function _dedupeChats(chats) {
     const cus = deduped[cusIdx];
     const lidTs = chat.lastTs ? new Date(chat.lastTs).getTime() : 0;
     const cusTs = cus.lastTs ? new Date(cus.lastTs).getTime() : 0;
-    // Mantém @lid como canonical (webhook canônico); mescla dados do @c.us
     deduped[i] = {
       ...cus, ...chat,
       id:            chat.id, // @lid canonical
+      aliasIds:      _mergeAliasIds(chat, cus, chat.id),
       photoUrl:      chat.photoUrl || cus.photoUrl,
       unread:        Math.max(chat.unread || 0, cus.unread || 0),
       lastPatientTs: chat.lastPatientTs || cus.lastPatientTs,
@@ -1478,16 +1484,38 @@ export function useWAHA(operator) {
 
     try {
       // 3. R2 (fonte primária — atualizado mesmo com CRM fechado)
-      const r2Raw = await fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`, {
-        headers: { "X-Internal-Key": ikey() }
-      }).then(r => r.ok ? r.json() : []).catch(() => []);
+      // Busca o chatId canônico + todos os aliasIds (ex: @lid e @c.us do mesmo contato)
+      const chatEntry = (_sessionChats.value || []).find(c => c.id === chatId);
+      const aliasFromEntry = chatEntry?.aliasIds?.filter(Boolean) || [];
+      // Fallback: se não tem aliasIds mas conhecemos o mapa LID↔JID, inclui o alternativo
+      const aliasFromMap = [];
+      if (!aliasFromEntry.length) {
+        const alt = _jidToLid.get(chatId) || _lidToJid.get(chatId);
+        if (alt) aliasFromMap.push(alt);
+      }
+      const aliases = aliasFromEntry.length ? aliasFromEntry : aliasFromMap;
+      const allIds  = [chatId, ...aliases];
+
+      const r2Raws = await Promise.all(
+        allIds.map(cid =>
+          fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(cid)}`, {
+            headers: { "X-Internal-Key": ikey() }
+          }).then(r => r.ok ? r.json() : []).catch(() => [])
+        )
+      );
 
       // Ignora se o usuário já trocou de chat enquanto aguardava o fetch
       if (activeChatRef.current !== chatId) return;
 
-      const r2Msgs = Array.isArray(r2Raw)
-        ? sortMsgs(r2Raw.map(normalizeR2Message))
-        : [];
+      // Mescla mensagens de todos os IDs alias, deduplica por ID
+      const seenIds = new Set();
+      const r2RawMerged = r2Raws.flat().filter(m => {
+        if (!m.id || seenIds.has(m.id)) return false;
+        seenIds.add(m.id);
+        return true;
+      });
+
+      const r2Msgs = sortMsgs(r2RawMerged.map(normalizeR2Message));
 
       setMessages(prev => {
         const existing    = prev[chatId] || [];
