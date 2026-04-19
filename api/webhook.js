@@ -72,10 +72,37 @@ function normalizeMsg(payload) {
   const fromMe   = payload.fromMe ?? payload._data?.fromMe ?? false;
   const body     = payload.body || payload._data?.body
     || payload.caption || payload._data?.caption || "";
-  const type     = payload.type || payload._data?.type || "chat";
   const pushname = payload.notifyName || payload._data?.notifyName || "";
 
-  return { id, chatId, ts: tsMs, fromMe, body, type, pushname };
+  // Detecta tipo real de mídia (NOWEB pode retornar type="image" para documentos, etc.)
+  const rawType  = payload.type || payload._data?.type || "chat";
+  const msgData  = payload._data?.message || {};
+  const mimetype = payload.media?.mimetype
+    || msgData.imageMessage?.mimetype
+    || msgData.videoMessage?.mimetype
+    || msgData.audioMessage?.mimetype
+    || msgData.documentMessage?.mimetype
+    || msgData.stickerMessage?.mimetype
+    || null;
+  const type = mimetype
+    ? (mimetype.startsWith("video/")       ? "video"
+     : mimetype.startsWith("audio/")       ? "audio"
+     : mimetype === "image/webp"           ? "sticker"
+     : mimetype.startsWith("image/")       ? "image"
+     : mimetype === "application/pdf" || mimetype.startsWith("application/") || mimetype.startsWith("text/") ? "document"
+     : rawType)
+    : rawType;
+
+  // Extrai wahaShortId para o endpoint de download de mídia
+  const MEDIA_TYPES = new Set(["image","video","audio","voice","document","sticker","ptt"]);
+  const hasMedia = payload.hasMedia === true || MEDIA_TYPES.has(type);
+  const rawId    = payload.id || null;
+  const wahaShortId = (hasMedia && rawId && typeof rawId === "string" && rawId.includes("_"))
+    ? ([...rawId.split("_")].reverse().find(p => !p.includes("@")) || null)
+    : null;
+
+  return { id, chatId, ts: tsMs, fromMe, body, type, pushname,
+           ...(wahaShortId ? { wahaShortId } : {}) };
 }
 
 // Resolve @lid → JID @c.us real via API de contatos do WAHA (server-side).
