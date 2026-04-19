@@ -4,6 +4,7 @@ import PatientCardDetected from "./modules/PatientCardDetected";
 import { QuickMessages } from "./modules/QuickMessages";
 import { useContactsCtx } from "../App";
 import { sendImage, sendFile, sendVideo, sendVoice, uploadToR2, sendReaction, sendLocation } from "../services/waha";
+import { getWahaChatId, getLidForJid } from "../hooks/useWAHA";
 import { ContactLookupModal } from "./ContactLookupModal";
 
 // Emojis frequentes para o picker rápido
@@ -260,12 +261,12 @@ function MigrateChatButton({ chatId, localMsgs, onDone }) {
         .sort((a, b) => (a.ts||0) - (b.ts||0));
       if (merged.length > 200) merged.splice(0, merged.length - 200);
 
-      // Salva mensagens no R2
-      await fetch(`/api/r2-data?type=msgs-save&chatId=${encodeURIComponent(chatId)}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Internal-Key": ikey },
-        body: JSON.stringify(merged),
-      });
+      // Salva mensagens no R2 (também no alias @lid/@c.us se houver)
+      const saveBody = JSON.stringify(merged);
+      const saveOpts = { method: "POST", headers: { "Content-Type": "application/json", "X-Internal-Key": ikey }, body: saveBody };
+      await fetch(`/api/r2-data?type=msgs-save&chatId=${encodeURIComponent(chatId)}`, saveOpts);
+      const altId = getLidForJid(chatId); // @c.us → @lid alias
+      if (altId) fetch(`/api/r2-data?type=msgs-save&chatId=${encodeURIComponent(altId)}`, saveOpts).catch(() => {});
 
       // Atualiza lastMsg no chats.json
       const last = merged[merged.length - 1];
@@ -1121,7 +1122,7 @@ function MessageBubble({ msg, currentOperator, onContextMenu, onOcrResult }) {
             <MediaContent
               media={msg.media}
               msgId={msg.media.msgId || msg.id}
-              chatId={msg.chatId}
+              chatId={getWahaChatId(msg.chatId || chat.id)}
               chatSession={import.meta.env.VITE_WAHA_SESSION || "default"}
               onOcrResult={onOcrResult}
             />

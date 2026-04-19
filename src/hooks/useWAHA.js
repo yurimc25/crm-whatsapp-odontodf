@@ -136,7 +136,7 @@ const _handledMsgIds = new Set();
 // Fila de upload de mídia automático para R2 — evita sobrecarregar WAHA com muitas requests
 const _mediaUploadQueue  = new Set(); // msgIds em processamento
 
-// Fire-and-forget: baixa mídia do WAHA e sobe para R2, depois atualiza _sessionMsgs
+// Fire-and-forget: baixa mídia do WAHA e sobe para R2, depois atualiza _sessionMsgs e persiste mediaUrl
 async function _autoSaveMediaToR2(msg, setMessages) {
   const media = msg.media;
   if (!media?.msgId || !msg.chatId) return;
@@ -145,32 +145,37 @@ async function _autoSaveMediaToR2(msg, setMessages) {
 
   const SESSION  = import.meta.env.VITE_WAHA_SESSION || "default";
   const ikey     = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
-  const chatId   = msg.chatId;
+  const chatId   = msg.chatId; // pode ser @lid (canonical) ou @c.us
+  // Para o WAHA, prefere @c.us se disponível (WAHA entende melhor @c.us para download de mídia)
+  const wahaChatId = (_lidToJid.get(chatId)) || chatId;
   const shortId  = encodeURIComponent(media.msgId);
-  const chatIdE  = encodeURIComponent(chatId);
+  const chatIdE  = encodeURIComponent(wahaChatId);
   const dlUrl    = `/api/waha?path=/api/${SESSION}/chats/${chatIdE}/messages/${shortId}&downloadMedia=true`;
 
   try {
-    // 1. Baixa do WAHA
+    // 1. Baixa do WAHA (tenta com @c.us; fallback com chatId original se diferente)
     let buf, mime;
-    const r = await fetch(dlUrl, { headers: { "X-Internal-Key": ikey }, cache: "no-store" });
-    if (!r.ok) { _mediaUploadQueue.delete(media.msgId); return; }
-    const ct = r.headers.get("content-type") || "";
-    if (ct.includes("application/json")) {
-      const json = await r.json().catch(() => null);
-      const mUrl = json?.media?.url;
-      if (!mUrl) { _mediaUploadQueue.delete(media.msgId); return; }
-      const r2 = await fetch(`/api/waha?path=${encodeURIComponent(mUrl)}`, {
-        headers: { "X-Internal-Key": ikey }, cache: "no-store" });
-      if (!r2.ok) { _mediaUploadQueue.delete(media.msgId); return; }
-      buf  = await r2.arrayBuffer();
-      mime = r2.headers.get("content-type") || media.mimetype || "application/octet-stream";
-    } else {
-      buf  = await r.arrayBuffer();
-      mime = ct || media.mimetype || "application/octet-stream";
+    async function tryDownload(url) {
+      const r = await fetch(url, { headers: { "X-Internal-Key": ikey }, cache: "no-store" });
+      if (!r.ok) return null;
+      const ct = r.headers.get("content-type") || "";
+      if (ct.includes("application/json")) {
+        const json = await r.json().catch(() => null);
+        const mUrl = json?.media?.url;
+        if (!mUrl) return null;
+        const r2 = await fetch(`/api/waha?path=${encodeURIComponent(mUrl)}`, {
+          headers: { "X-Internal-Key": ikey }, cache: "no-store" });
+        if (!r2.ok) return null;
+        return { buf: await r2.arrayBuffer(), mime: r2.headers.get("content-type") || media.mimetype || "application/octet-stream" };
+      }
+      return { buf: await r.arrayBuffer(), mime: ct || media.mimetype || "application/octet-stream" };
     }
 
-    if (!buf || !buf.byteLength) { _mediaUploadQueue.delete(media.msgId); return; }
+    const result = await tryDownload(dlUrl)
+      || (wahaChatId !== chatId ? await tryDownload(`/api/waha?path=/api/${SESSION}/chats/${encodeURIComponent(chatId)}/messages/${shortId}&downloadMedia=true`) : null);
+
+    if (!result?.buf?.byteLength) { _mediaUploadQueue.delete(media.msgId); return; }
+    buf = result.buf; mime = result.mime;
 
     // 2. Sobe para R2
     const ext      = mime.split("/")[1]?.split(";")[0] || "bin";
@@ -185,16 +190,39 @@ async function _autoSaveMediaToR2(msg, setMessages) {
     const { url: r2Url } = await up.json();
     if (!r2Url) { _mediaUploadQueue.delete(media.msgId); return; }
 
-    // 3. Atualiza mensagem em memória/estado com a URL do R2
+    // 3. Persiste mediaUrl no registro R2 da mensagem (para sobreviver F5 em qualquer computador)
+    // Salva nos dois chatIds possíveis (canonical @lid e @c.us) para máxima compatibilidade
+    const tsMs = msg.ts ? new Date(msg.ts).getTime() : 0;
+    const r2Record = {
+      id: msg.id, chatId, ts: tsMs, fromMe: msg.from === "operator",
+      body: msg.text || "", type: msg.type || "chat", pushname: msg.pushname || "",
+      mediaUrl: r2Url,
+    };
+    const saveToR2 = async (cid) => fetch(`/api/r2-data?type=msgs-save&chatId=${encodeURIComponent(cid)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Internal-Key": ikey },
+      body: JSON.stringify([r2Record]),
+    }).catch(() => {});
+    saveToR2(chatId);
+    const altId = _jidToLid.get(chatId) || _lidToJid.get(chatId);
+    if (altId) saveToR2(altId);
+
+    // 4. Atualiza mensagem em memória/estado com a URL do R2
     const patchMsg = m => {
       if (m.id !== msg.id) return m;
       return { ...m, media: { ...m.media, url: r2Url } };
     };
-    _sessionMsgs.set(chatId, (_sessionMsgs.get(chatId) || []).map(patchMsg));
+    // Atualiza em ambos os chatIds (canonical e alias)
+    for (const cid of [chatId, altId].filter(Boolean)) {
+      const updated = (_sessionMsgs.get(cid) || []).map(patchMsg);
+      _sessionMsgs.set(cid, updated);
+    }
     setMessages(prev => {
-      const curr = prev[chatId];
-      if (!curr) return prev;
-      return { ...prev, [chatId]: curr.map(patchMsg) };
+      let next = prev;
+      for (const cid of [chatId, altId].filter(Boolean)) {
+        if (prev[cid]) next = { ...next, [cid]: prev[cid].map(patchMsg) };
+      }
+      return next;
     });
   } catch {}
   _mediaUploadQueue.delete(media.msgId);
@@ -203,7 +231,18 @@ async function _autoSaveMediaToR2(msg, setMessages) {
 // Cache de resolução LID → JID (@c.us) — sobrevive re-renders, não sobrevive F5
 // Quando WhatsApp usa @lid (Linked ID), precisamos mapear para o número real
 const _lidToJid  = new Map(); // lid@lid → 55...@c.us
+const _jidToLid  = new Map(); // 55...@c.us → lid@lid  (reverse — para sync e dedup)
 const _lidFailed = new Set(); // LIDs onde resolução falhou esta sessão (não tenta de novo)
+
+// Exportado para ChatWindow usar na URL de download de mídia do WAHA
+// Retorna o @c.us se o chatId for @lid com mapeamento conhecido, senão retorna o próprio chatId
+export function getWahaChatId(chatId) {
+  return (chatId?.endsWith("@lid") && _lidToJid.get(chatId)) || chatId || "";
+}
+// Retorna o @lid canônico para um @c.us (ou null se não houver)
+export function getLidForJid(jid) {
+  return _jidToLid.get(jid) || null;
+}
 
 // Chats apagados pelo operador — persiste em localStorage
 // Só volta a aparecer se chegar nova mensagem
@@ -278,8 +317,38 @@ function _dedupeChats(chats) {
       };
     }
   }
-  console.log(`[dedup] entrada=${chats.length} saída=${deduped.length} apagados=${_skipDel} inválidos=${_skipInv} mesclados=${_skipMerge}`);
-  return deduped;
+  // Segunda passagem: mescla @lid com @c.us conhecido via _lidToJid
+  // Cobre o caso em que os dígitos do @lid não coincidem com o telefone @c.us (tail-8 falha)
+  const byId = new Map(deduped.map((c, i) => [c.id, i]));
+  const toRemoveIdxs = new Set();
+  for (let i = 0; i < deduped.length; i++) {
+    const chat = deduped[i];
+    if (!chat.id.endsWith("@lid")) continue;
+    const jid = _lidToJid.get(chat.id);
+    if (!jid || !byId.has(jid)) continue;
+    const cusIdx = byId.get(jid);
+    if (toRemoveIdxs.has(cusIdx)) continue;
+    const cus = deduped[cusIdx];
+    const lidTs = chat.lastTs ? new Date(chat.lastTs).getTime() : 0;
+    const cusTs = cus.lastTs ? new Date(cus.lastTs).getTime() : 0;
+    // Mantém @lid como canonical (webhook canônico); mescla dados do @c.us
+    deduped[i] = {
+      ...cus, ...chat,
+      id:            chat.id, // @lid canonical
+      photoUrl:      chat.photoUrl || cus.photoUrl,
+      unread:        Math.max(chat.unread || 0, cus.unread || 0),
+      lastPatientTs: chat.lastPatientTs || cus.lastPatientTs,
+      pushname:      chat.pushname || cus.pushname,
+      status:        chat.status !== "resolved" ? chat.status : cus.status,
+      lastMsg:       lidTs >= cusTs ? (chat.lastMsg || cus.lastMsg) : (cus.lastMsg || chat.lastMsg),
+      lastTs:        lidTs >= cusTs ? chat.lastTs : cus.lastTs,
+    };
+    toRemoveIdxs.add(cusIdx);
+    _skipMerge++;
+  }
+  const result = deduped.filter((_, i) => !toRemoveIdxs.has(i));
+  console.log(`[dedup] entrada=${chats.length} saída=${result.length} apagados=${_skipDel} inválidos=${_skipInv} mesclados=${_skipMerge}`);
+  return result;
 }
 
 // Limpeza única na inicialização: remove chaves antigas de mensagens/imagens do localStorage
@@ -386,6 +455,7 @@ async function resolveLid(lid, pushname) {
         const name = contact?.name || contact?.pushname || contact?.pushName || null;
         if (jid && !jid.endsWith("@lid") && !jid.endsWith("@s.whatsapp.net")) {
           _lidToJid.set(lid, jid);
+          _jidToLid.set(jid, lid);
           _saveLidResolution(lid, jid, pushname || name);
           console.log(`[lid] resolvido via API: ${lid} → ${jid}`);
           return jid;
@@ -405,6 +475,7 @@ async function resolveLid(lid, pushname) {
     if (match && !match.id.endsWith("@lid")) {
       console.log(`[lid] resolvido por pushname "${pushname}": ${lid} → ${match.id}`);
       _lidToJid.set(lid, match.id);
+      _jidToLid.set(match.id, lid);
       _lidFailed.delete(lid);
       _saveLidResolution(lid, match.id, pushname);
       return match.id;
@@ -420,6 +491,7 @@ async function resolveLid(lid, pushname) {
     if (phantom) {
       console.log(`[lid] resolvido por phantom ID: ${lid} → ${phantom.id}`);
       _lidToJid.set(lid, phantom.id);
+      _jidToLid.set(phantom.id, lid);
       _lidFailed.delete(lid);
       _saveLidResolution(lid, phantom.id, pushname || phantom.pushname);
       return phantom.id;
@@ -1135,6 +1207,10 @@ export function useWAHA(operator) {
       const msgTail10 = msgDigits.slice(-10);
       const msgTail8  = msgDigits.slice(-8);
       const _findTarget = (list) => list.find(c => c.id === msgChatId)
+        // @lid→@c.us: se sabemos o JID real, procura pelo @c.us (ou pelo @lid se o @c.us não está na lista)
+        || (msgChatId.endsWith("@lid") && _lidToJid.has(msgChatId) ? list.find(c => c.id === _lidToJid.get(msgChatId)) : null)
+        // @c.us→@lid: mensagem chegou como @c.us mas o chat canônico pode ser @lid
+        || (_jidToLid.has(msgChatId) ? list.find(c => c.id === _jidToLid.get(msgChatId)) : null)
         || list.find(c => { const t = c.id.replace(/\D/g, "").slice(-10); return t.length >= 8 && t === msgTail10; })
         || (msgTail8.length >= 8 ? list.find(c => { const t = c.id.replace(/\D/g, "").slice(-8); return t.length >= 8 && t === msgTail8; }) : null);
       const preTarget = _findTarget(_sessionChats.value || []);
@@ -1261,6 +1337,7 @@ export function useWAHA(operator) {
             const originalLid = msg.chatId;
             if (originalLid?.endsWith("@lid")) {
               _lidToJid.set(originalLid, rawFallback);
+              _jidToLid.set(rawFallback, originalLid);
               _saveLidResolution(originalLid, rawFallback, msg.pushname);
             }
             msg.chatId = rawFallback;
