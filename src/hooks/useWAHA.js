@@ -54,9 +54,16 @@ function normalizeR2Message(m) {
   const tsMs = typeof m.ts === "number" ? m.ts : (m.ts ? new Date(m.ts).getTime() : 0);
   const t = (m.type || "").toLowerCase();
   const hasMedia = ["image","video","audio","voice","document","sticker","ptt"].includes(t);
+  // Extrai short hex msgId do ID serializado (ex: "false_556@c.us_3EB0ABC" → "3EB0ABC")
+  const shortMsgId = (() => {
+    const raw = m.id;
+    if (typeof raw !== "string" || !raw.includes("_")) return raw;
+    const parts = raw.split("_");
+    return [...parts].reverse().find(p => !p.includes("@")) || raw;
+  })();
   // Reconstrói objeto media mínimo para que MediaContent consiga buscar do WAHA via msgId
   const media = hasMedia ? {
-    msgId:    m.id,
+    msgId:    shortMsgId,
     type:     t,
     mimetype: t === "ptt" || t === "voice" ? "audio/ogg" :
               t === "image"  ? "image/jpeg" :
@@ -98,12 +105,18 @@ function _writeMsgsCache(cache) {
 function _cacheMsgs(chatId, msgs) {
   try {
     const cache = _readMsgsCache();
-    // Guarda só campos leves — sem media blob
-    cache.data[chatId] = msgs.slice(-MSGS_CACHE_LIMIT).map(m => ({
-      id: m.id, chatId: m.chatId, from: m.from, text: m.text,
-      type: m.type, ts: m.ts, time: m.time, hasMedia: m.hasMedia,
-      fromMe: m.fromMe, pushname: m.pushname,
-    }));
+    // Guarda campos leves — media só com metadados (sem blob/base64)
+    cache.data[chatId] = msgs.slice(-MSGS_CACHE_LIMIT).map(m => {
+      const slim = {
+        id: m.id, chatId: m.chatId, from: m.from, text: m.text,
+        type: m.type, ts: m.ts, time: m.time, hasMedia: m.hasMedia,
+        fromMe: m.fromMe, pushname: m.pushname,
+      };
+      if (m.media && m.hasMedia) {
+        slim.media = { msgId: m.media.msgId, type: m.media.type, mimetype: m.media.mimetype, thumbUrl: null, url: null };
+      }
+      return slim;
+    });
     cache.order = [chatId, ...(cache.order || []).filter(id => id !== chatId)].slice(0, MSGS_CACHE_MAX);
     // Evicta chats antigos
     for (const id of Object.keys(cache.data)) {

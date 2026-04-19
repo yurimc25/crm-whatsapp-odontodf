@@ -46,8 +46,19 @@ export default async function handler(req, res) {
 
     if (!Array.isArray(body)) return res.status(400).json({ error: "Esperado array de mensagens" });
     try {
-      await r2Put(chatKey(chatId), Buffer.from(JSON.stringify(body), "utf8"), "application/json");
-      return res.status(200).json({ ok: true, count: body.length });
+      // Merge com R2 existente — preserva msgs novas que chegaram via webhook após o snapshot local
+      const key = chatKey(chatId);
+      let existing = [];
+      try {
+        const r = await r2Get(key);
+        if (r) existing = JSON.parse(r.buf.toString("utf8"));
+      } catch {}
+      const incomingIds = new Set(body.map(m => m.id));
+      const r2Extras = Array.isArray(existing) ? existing.filter(m => !incomingIds.has(m.id)) : [];
+      const merged = [...body, ...r2Extras].sort((a, b) => (a.ts||0) - (b.ts||0));
+      if (merged.length > 200) merged.splice(0, merged.length - 200);
+      await r2Put(key, Buffer.from(JSON.stringify(merged), "utf8"), "application/json");
+      return res.status(200).json({ ok: true, count: merged.length });
     } catch (e) {
       return res.status(500).json({ error: e.message });
     }
