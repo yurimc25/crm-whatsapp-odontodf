@@ -1516,7 +1516,9 @@ export function useWAHA(operator) {
   function normalizeR2Msg(m) {
     const tsMs = typeof m.ts === "number" ? m.ts : (m.ts ? new Date(m.ts).getTime() : 0);
     const t    = (m.type || "").toLowerCase();
-    const hasMedia = ["image","video","audio","voice","document","sticker","ptt"].includes(t);
+    const MEDIA_TYPES = ["image","video","audio","voice","document","sticker","ptt"];
+    // Detecta mídia também por mediaUrl ou wahaShortId (quando type="text" mas tem mídia no NOWEB)
+    const hasMedia = MEDIA_TYPES.includes(t) || !!(m.mediaUrl || m.wahaShortId);
     const shortMsgId = (() => {
       const raw = m.id;
       if (typeof raw !== "string" || !raw.includes("_")) return raw;
@@ -1537,12 +1539,14 @@ export function useWAHA(operator) {
       pushname: m.pushname || "",
       media:    hasMedia ? {
         msgId,
-        type:     t,
+        type:     MEDIA_TYPES.includes(t) ? t : "image", // fallback "image" quando type="text" mas tem mídia
         mimetype: t === "ptt" || t === "voice" ? "audio/ogg" :
                   t === "image"   ? "image/jpeg" :
                   t === "sticker" ? "image/webp" :
                   t === "video"   ? "video/mp4"  :
-                  t === "document"? "application/octet-stream" : null,
+                  t === "document"? "application/octet-stream" :
+                  m.mediaUrl?.includes("video") ? "video/mp4" :
+                  "image/jpeg",
         url:      m.mediaUrl || null,
         thumbUrl: null,
       } : null,
@@ -1706,7 +1710,8 @@ export function useWAHA(operator) {
             ts:          w.ts ? new Date(w.ts).getTime() : 0,
             fromMe:      w.from === "operator",
             body:        w.text || "",
-            type:        w.type || "chat",
+            // Usa media.type quando type="text" (NOWEB engine retorna type errado para mídias)
+            type:        (w.media?.type && w.media.type !== "text") ? w.media.type : (w.type !== "text" && w.type !== "chat" ? w.type : "image"),
             pushname:    w.pushname || "",
             wahaShortId: w.media?.msgId || null,
             // Salva media.url mesmo que seja proxied — é estável enquanto WAHA server está vivo
@@ -2000,7 +2005,8 @@ export function useWAHA(operator) {
       return {
         ...m,
         hasMedia: true,
-        type:     waha.type || m.type,
+        // NOWEB retorna type="text" mesmo para mídias — usa media.type que tem o tipo real
+        type:     (waha.media?.type && waha.media.type !== "text") ? waha.media.type : (m.type === "chat" || m.type === "text" ? (waha.type === "text" ? "image" : waha.type) : m.type),
         media:    { ...(m.media || {}), ...waha.media, url: waha.media.url || m.media?.url || null },
       };
     });
@@ -2036,7 +2042,7 @@ export function useWAHA(operator) {
         ts:          w.ts ? new Date(w.ts).getTime() : 0,
         fromMe:      w.from === "operator",
         body:        w.text || "",
-        type:        w.type || "chat",
+        type:        (w.media?.type && w.media.type !== "text") ? w.media.type : (w.type !== "text" && w.type !== "chat" ? w.type : "image"),
         pushname:    w.pushname || "",
         wahaShortId: w.media?.msgId || null,
         mediaUrl:    w.media?.url && !w.media.url.startsWith("data:") ? w.media.url : null,
