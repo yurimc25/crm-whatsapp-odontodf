@@ -133,23 +133,43 @@ function mediaLabel(type) {
 }
 
 // Atualiza chats.json com última msg + lastPatientTs + unread pré-computados
-async function updateChatsIndex(msg, msgs) {
+async function updateChatsIndex(msg, msgs, altIds = []) {
   const chats = await r2Json("chats.json", []);
-  const idx   = chats.findIndex(c => c.id === msg.chatId);
-  const lpt   = computeLastPatientTs(msgs);
-  const unread = computeUnread(msgs);
+  const lpt     = computeLastPatientTs(msgs);
+  const unread  = computeUnread(msgs);
   const lastMsg = msg.body || (msg.type && msg.type !== "chat" ? mediaLabel(msg.type) : "");
+
+  // Coleta todos os IDs relacionados a esta mensagem (canonical + alternates)
+  const allIds = [msg.chatId, ...altIds].filter(Boolean);
+
+  // Encontra índice existente para qualquer um dos IDs (canonical ou alias)
+  let idx = chats.findIndex(c => c.id === msg.chatId);
+  if (idx < 0) {
+    for (const altId of altIds) {
+      idx = chats.findIndex(c => c.id === altId);
+      if (idx >= 0) break;
+    }
+  }
+
+  // aliasIds: todos os IDs exceto o canonical do entry resultante
+  const canonicalId = idx >= 0 ? chats[idx].id : msg.chatId;
+  const aliasIds = [...new Set(allIds.filter(id => id !== canonicalId && id))];
+
   const entry = {
-    id:            msg.chatId,
+    id:            canonicalId,
     lastMsg,
     lastTs:        msg.ts,
     fromMe:        msg.fromMe,
     pushname:      msg.pushname || (idx >= 0 ? chats[idx].pushname : ""),
     lastPatientTs: lpt,
     unread,
+    aliasIds:      aliasIds.length ? aliasIds : undefined,
   };
+
   if (idx >= 0) {
-    chats[idx] = { ...chats[idx], ...entry };
+    const existing = chats[idx];
+    const mergedAliases = [...new Set([...(existing.aliasIds || []), ...aliasIds])];
+    chats[idx] = { ...existing, ...entry, aliasIds: mergedAliases.length ? mergedAliases : undefined };
   } else {
     chats.unshift(entry);
     if (chats.length > 1000) chats.splice(1000);
@@ -214,11 +234,31 @@ export default async function handler(req, res) {
     if (r2Enabled) {
       if (event === "message" || event === "message.any") {
         const msg = normalizeMsg(resolvedPayload);
-        // Não persiste mensagens com chatId ainda em @lid (não é número real)
-        if (msg.chatId && !msg.chatId.endsWith("@lid") && !msg.chatId.endsWith("@s.whatsapp.net")) {
+        if (msg.chatId && !msg.chatId.endsWith("@s.whatsapp.net")) {
+          // Coleta todos os IDs candidatos do payload original (antes de qualquer resolução)
+          // para salvar a mensagem em TODOS os arquivos R2 relevantes (@lid e @c.us)
+          const rawCandidates = [
+            payload.chatId, payload.from, payload.key?.remoteJid,
+            resolvedPayload.chatId, resolvedPayload.from,
+          ]
+            .filter(Boolean)
+            .map(s => s.replace(/:\d+(@\S+)?$/, ""))
+            .filter(s => s && !s.endsWith("@s.whatsapp.net") && s !== msg.chatId);
+          const extraIds = [...new Set(rawCandidates)];
+
+          // Salva no chatId principal (preferência: @c.us via normalizeMsg)
           saveMessage(msg)
-            .then(msgs => updateChatsIndex(msg, msgs))
+            .then(msgs => updateChatsIndex(msg, msgs, extraIds))
             .catch(e => console.warn("[r2] save/updateChats:", e.message));
+
+          // Salva também em cada ID alternativo válido encontrado no payload
+          // (garante que @lid e @c.us do mesmo contato ficam no mesmo arquivo R2)
+          for (const altId of extraIds) {
+            const altMsg = { ...msg, chatId: altId };
+            saveMessage(altMsg)
+              .then(msgs => updateChatsIndex(altMsg, msgs))
+              .catch(() => {});
+          }
         }
       } else if (event === "chat.new") {
         // Garante que o chat existe no índice mesmo sem mensagem ainda
