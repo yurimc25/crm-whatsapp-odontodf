@@ -1690,29 +1690,23 @@ export function useWAHA(operator) {
         return { ...prev, [chatId]: merged };
       });
 
-      // Persiste de volta ao R2: apenas mensagens cujo ID já existe no R2 (sem criar duplicatas)
-      // e mensagens genuinamente novas do WAHA (wahaExtras por ID exato).
-      // NÃO salva mensagens matched por timestamp — IDs diferentes causariam duplicatas.
+      // Persiste mídia de volta ao R2 para sobreviver F5 (fire-and-forget)
+      // O endpoint faz merge por ID exato e fallback por timestamp+fromMe — sem duplicatas
       {
-        const toSave = [];
-        for (const w of wahaMsgs) {
-          if (!(w.hasMedia || w.media)) continue;
-          const tsMs = w.ts ? new Date(w.ts).getTime() : 0;
-          const entry = {
+        const toSave = wahaMsgs
+          .filter(w => w.hasMedia || w.media)
+          .map(w => ({
             id:          w.id,
-            chatId:      w.chatId || chatId,
-            ts:          tsMs,
+            chatId:      chatId, // sempre @c.us — não usa w.chatId que pode ser @lid
+            ts:          w.ts ? new Date(w.ts).getTime() : 0,
             fromMe:      w.from === "operator",
             body:        w.text || "",
             type:        w.type || "chat",
             pushname:    w.pushname || "",
             wahaShortId: w.media?.msgId || null,
-            mediaUrl:    w.media?.url && !w.media.url.startsWith("data:") && !w.media.url.startsWith("/api/") ? w.media.url : null,
-          };
-          // Salva apenas se o ID já existe no R2 (atualiza campos de mídia sem criar duplicata)
-          // ou se é genuinamente nova (não estava no R2 por ID)
-          toSave.push(entry);
-        }
+            // Salva media.url mesmo que seja proxied — é estável enquanto WAHA server está vivo
+            mediaUrl:    w.media?.url && !w.media.url.startsWith("data:") ? w.media.url : null,
+          }));
         if (toSave.length > 0) {
           fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`, {
             method: "POST",
