@@ -360,6 +360,12 @@ function persistChats(chats) {
 }
 
 // Padrões de despedida: correspondem somente a mensagens curtas sem pedidos
+// Mensagem de boas-vindas automática enviada pelo WhatsApp móvel — não conta como resposta do operador
+function isAutoWelcome(text) {
+  if (!text) return false;
+  return /^Bem-vindo[ao]? à Odonto On Face/i.test(text.trim());
+}
+
 const FAREWELL_PATTERNS = [
   /^(ok|okay|oks|okey)[\s!.,]*$/i,
   /^obrigad/i,
@@ -392,6 +398,7 @@ function computeLastPatientTs(msgs) {
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i];
     if (m.from === "operator") {
+      if (isAutoWelcome(m.text)) continue; // boas-vindas automáticas não contam como resposta
       if (patientMsgs.length === 0) return null; // operador respondeu por último
       break;
     }
@@ -1147,7 +1154,10 @@ export function useWAHA(operator) {
           // Unread: msgs do paciente após a última resposta do operador
           let unread = 0;
           for (let j = allNorm.length - 1; j >= 0; j--) {
-            if (allNorm[j].from === "operator") break;
+            if (allNorm[j].from === "operator") {
+              if (isAutoWelcome(allNorm[j].text)) continue; // boas-vindas automáticas não contam
+              break;
+            }
             if (allNorm[j].from === "patient") unread++;
           }
 

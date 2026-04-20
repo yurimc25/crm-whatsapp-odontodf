@@ -179,7 +179,7 @@ export default function PatientPanel({ chat, operator }) {
           // Para busca por nome, ainda filtra por telefone se possível
           if (nameResult?.patients?.length > 0 && tail8.length === 8) {
             const filtered = nameResult.patients.filter(matchesPhone);
-            result = { ...nameResult, patients: filtered.length > 0 ? filtered : nameResult.patients };
+            result = { ...nameResult, patients: filtered };
           } else {
             result = nameResult;
           }
