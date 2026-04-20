@@ -673,7 +673,7 @@ function AgendamentosTab({ paciente }) {
     setNotFound(false);
     setLoading(true);
 
-    const phone = (paciente.telefone || paciente.phone || "").replace(/\D/g, "");
+    const phone = (paciente.telefone || paciente.phone || paciente.cellphone_formated || "").replace(/\D/g, "");
     const params = new URLSearchParams({ action: "patient_events", type: view });
     if (phone) params.set("phone", phone);
 
