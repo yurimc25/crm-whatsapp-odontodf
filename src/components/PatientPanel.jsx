@@ -177,18 +177,22 @@ export default function PatientPanel({ chat, operator, activeTab, onTabChange, t
           result = { ...result, patients: filtered };
         }
         if (!result?.patients?.length && info.hasContact) {
-          const cleanName = info.name.trim();
-          // Ignora nome que contém CPF embutido (ex: "João Silva 123.456.789-00")
-          const nameHasCpf = /\d{3}\.?\d{3}\.?\d{3}[-.]?\d{2}/.test(cleanName)
-            || /\d{11}/.test(cleanName.replace(/\D/g, ""));
-          if (!nameHasCpf && tail8.length === 8) {
+          // Remove CPF embutido do nome (ex: "João Silva 123.456.789-00" → "João Silva")
+          const rawName  = info.name.trim();
+          const cleanName = rawName
+            .replace(/\d{3}\.?\d{3}\.?\d{3}[-.\s]?\d{2}\b/g, "") // CPF formatado
+            .replace(/\b\d{11}\b/g, "")                            // CPF sem formatação
+            .trim();
+
+          if (cleanName.length >= 2) {
             const words = cleanName.split(/\s+/).filter(Boolean);
-            // Tenta progressivamente: 3 palavras → 2 → só o primeiro nome
+            // Fase 1: busca + filtro por telefone (comportamento atual)
             const attempts = [
               words.slice(0, 3).join(" "),
               words.slice(0, 2).join(" "),
               words[0],
             ].filter((v, i, a) => v && a.indexOf(v) === i);
+
             for (const attempt of attempts) {
               const nameResult = await searchByName(attempt);
               if (nameResult?.patients?.length > 0) {
@@ -196,6 +200,44 @@ export default function PatientPanel({ chat, operator, activeTab, onTabChange, t
                 if (filtered.length > 0) {
                   result = { ...nameResult, patients: filtered };
                   break;
+                }
+              }
+            }
+
+            // Fase 2 (fallback): se ainda sem resultado, busca nome exato e aceita
+            // se todos os resultados têm o mesmo nome (1 resultado ou duplicatas no Codental)
+            if (!result?.patients?.length) {
+              const nameResult = await searchByName(cleanName);
+              const patients = nameResult?.patients || [];
+              if (patients.length > 0) {
+                // Normaliza nome para comparação (minúsculo, sem acentos)
+                const norm = s => (s || "").toLowerCase()
+                  .normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+                const targetNorm = norm(cleanName);
+                // Aceita só resultados onde o nome do paciente bate exatamente com o nome limpo
+                const exact = patients.filter(p => norm(p.name || p.fullName || "") === targetNorm);
+                if (exact.length === 0) {
+                  // Tenta match parcial: todos os words do cleanName estão no nome do paciente
+                  const wordNorms = words.map(norm);
+                  const partial = patients.filter(p => {
+                    const pn = norm(p.name || p.fullName || "");
+                    return wordNorms.every(w => pn.includes(w));
+                  });
+                  // Só usa se único resultado OU todos têm o mesmo nome (duplicatas)
+                  if (partial.length === 1) {
+                    result = { ...nameResult, patients: partial };
+                  } else if (partial.length > 1) {
+                    const allSameName = partial.every(p => norm(p.name || p.fullName || "") === norm(partial[0].name || partial[0].fullName || ""));
+                    if (allSameName) result = { ...nameResult, patients: partial };
+                  }
+                } else {
+                  // Match exato: único ou duplicatas (mesmo nome)
+                  if (exact.length === 1) {
+                    result = { ...nameResult, patients: exact };
+                  } else {
+                    const allSameName = exact.every(p => norm(p.name || p.fullName || "") === norm(exact[0].name || exact[0].fullName || ""));
+                    if (allSameName) result = { ...nameResult, patients: exact };
+                  }
                 }
               }
             }
