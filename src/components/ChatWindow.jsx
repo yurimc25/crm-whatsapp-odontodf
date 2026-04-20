@@ -987,6 +987,12 @@ function MessageBubble({ msg, currentOperator, onContextMenu, onOcrResult }) {
             {msg.operator || "Operador"}
           </div>
         )}
+        {isPatient && msg.pushname && msg.chatId?.endsWith("@g.us") && (
+          <div style={{ fontSize:10, fontWeight:700, marginBottom:2, textAlign:"left",
+            color:T.accent }}>
+            {msg.pushname}
+          </div>
+        )}
         <div style={{
           background: isDentistAlert ? "#2a2200" : isBot ? T.bubbleBot : isMe ? T.bubbleMe : T.bubblePat,
           border: isDentistAlert ? "2px solid #c9a84c" : `1px solid ${isBot ? T.borderBot : isMe ? T.borderMe : "#383838"}`,
