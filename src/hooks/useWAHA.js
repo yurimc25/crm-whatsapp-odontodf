@@ -1442,14 +1442,47 @@ export function useWAHA(operator) {
       } else if (event === "chat.new") {
         handleChatNew(payload);
       } else if (event === "message.revoked") {
-        const msgId = payload.id || payload._data?.id?.id;
-        const chatId = (payload.chatId || payload.key?.remoteJid || payload.from || "")
+        const msgId  = payload.before?.id || payload.id || payload._data?.id?.id;
+        const chatId = (payload.before?.chatId || payload.chatId || payload.key?.remoteJid || payload.from || "")
           .replace(/:\d+(@\S+)?$/, "");
         if (msgId && chatId) {
           setMessages(prev => {
             const cur = prev[chatId];
             if (!cur) return prev;
-            const updated = cur.filter(m => m.id !== msgId);
+            // Risca a mensagem em vez de removê-la
+            const updated = cur.map(m => m.id === msgId ? { ...m, revoked: true, text: "" } : m);
+            _sessionMsgs.set(chatId, updated);
+            return { ...prev, [chatId]: updated };
+          });
+        }
+      } else if (event === "message.reaction") {
+        const emoji    = payload.reaction?.emoji ?? payload.reactionMessage?.text ?? payload.body ?? null;
+        const targetId = payload.reaction?.targetMessageId
+          ?? payload.reactionMessage?.key?.id
+          ?? payload.reactedMessageId ?? null;
+        const chatId   = (payload.chatId || payload.from || payload.reactionMessage?.key?.remoteJid || "")
+          .replace(/:\d+(@\S+)?$/, "");
+        const fromMe   = payload.fromMe ?? false;
+        const reactorId = (payload.from || "").replace(/:\d+(@\S+)?$/, "") || (fromMe ? "me" : "unknown");
+        if (targetId && chatId) {
+          setMessages(prev => {
+            const cur = prev[chatId];
+            if (!cur) return prev;
+            const updated = cur.map(m => {
+              if (m.id !== targetId) return m;
+              const reactions = { ...(m.reactions || {}) };
+              // Remove reação anterior deste usuário
+              for (const e of Object.keys(reactions)) {
+                reactions[e] = reactions[e].filter(u => u.id !== reactorId);
+                if (reactions[e].length === 0) delete reactions[e];
+              }
+              // Adiciona nova (se não for remoção)
+              if (emoji) {
+                reactions[emoji] = [...(reactions[emoji] || []), { id: reactorId, fromMe }];
+              }
+              return { ...m, reactions };
+            });
+            _sessionMsgs.set(chatId, updated);
             return { ...prev, [chatId]: updated };
           });
         }
@@ -1559,14 +1592,16 @@ export function useWAHA(operator) {
       id:       m.id,
       chatId:   m.chatId,
       from:     m.fromMe ? "operator" : "patient",
-      text:     m.body || "",
+      text:     m.revoked ? "" : (m.body || ""),
       type:     m.type || "chat",
       ts:       tsMs ? new Date(tsMs).toISOString() : null,
       time:     tsMs ? new Date(tsMs).toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" }) : "",
-      hasMedia,
+      hasMedia: m.revoked ? false : hasMedia,
       pushname: m.pushname || "",
-      replyTo,
-      media:    hasMedia ? {
+      replyTo:  m.revoked ? null : replyTo,
+      revoked:  m.revoked || false,
+      reactions: m.reactions || null,
+      media:    (!m.revoked && hasMedia) ? {
         msgId,
         type:     MEDIA_TYPES.includes(t) ? t : "document", // fallback "document" — NOWEB armazena type="text" p/ arquivos
         mimetype: m.mimetype ||

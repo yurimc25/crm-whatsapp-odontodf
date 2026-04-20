@@ -1050,8 +1050,18 @@ function MessageBubble({ msg, currentOperator, onContextMenu, onOcrResult }) {
             </div>
           )}
 
+          {/* Mensagem apagada */}
+          {msg.revoked && (
+            <div style={{ color: T.sub, fontSize:13, fontStyle:"italic",
+              display:"flex", alignItems:"center", gap:5, opacity:.7 }}>
+              <span style={{ fontSize:15 }}>🚫</span>
+              <span style={{ textDecoration:"line-through" }}>Mensagem apagada</span>
+            </div>
+          )}
+
+          {/* Conteúdo normal (oculto quando apagada) */}
           {/* Mensagem citada (reply) */}
-          {msg.replyTo && (
+          {!msg.revoked && msg.replyTo && (
             <div style={{
               borderLeft: `3px solid ${isPatient ? T.accent : "#aaa"}`,
               background: isPatient ? "rgba(255,255,255,.06)" : "rgba(0,0,0,.15)",
@@ -1089,10 +1099,10 @@ function MessageBubble({ msg, currentOperator, onContextMenu, onOcrResult }) {
           )}
 
           {/* Localização */}
-          {msg.location && <LocationBubble location={msg.location} />}
+          {!msg.revoked && msg.location && <LocationBubble location={msg.location} />}
 
           {/* Mídia */}
-          {msg.media && (
+          {!msg.revoked && msg.media && (
             <MediaContent
               media={msg.media}
               msgId={msg.media.msgId || msg.id}
@@ -1104,7 +1114,7 @@ function MessageBubble({ msg, currentOperator, onContextMenu, onOcrResult }) {
           )}
 
           {/* Texto */}
-          {(isDentistAlert ? alertText : msg.text) && (
+          {!msg.revoked && (isDentistAlert ? alertText : msg.text) && (
             <div style={{ color: isDentistAlert ? "#ffe082" : T.text,
               fontSize:13, lineHeight:1.55, whiteSpace:"pre-wrap",
               fontWeight: isDentistAlert ? 600 : 400,
@@ -1114,7 +1124,7 @@ function MessageBubble({ msg, currentOperator, onContextMenu, onOcrResult }) {
           )}
 
           {/* Link preview (primeira URL) */}
-          {urls.length > 0 && !msg.media && (
+          {!msg.revoked && urls.length > 0 && !msg.media && (
             <LinkPreview url={urls[0]} />
           )}
 

@@ -3,7 +3,7 @@
 
 import { r2Get, r2Put } from "./_r2.js";
 
-const RELEVANT = new Set(["message", "message.any", "chat.new", "message.revoked"]);
+const RELEVANT = new Set(["message", "message.any", "chat.new", "message.revoked", "message.reaction"]);
 const MAX_MSGS_PER_CHAT = 200;
 
 // Chave R2 segura para um chatId (ex: "556198...@c.us" → "msgs/556198___c_us.json")
@@ -204,8 +204,31 @@ async function revokeMessage(chatId, msgId) {
   const key  = chatKey(chatId);
   const msgs = await r2Json(key, []);
   const idx  = msgs.findIndex(m => m.id === msgId);
-  if (idx < 0) return; // não encontrada — sem ação
+  if (idx < 0) return;
   msgs[idx] = { ...msgs[idx], revoked: true, body: "" };
+  await r2WriteJson(key, msgs);
+}
+
+// Aplica/remove reação de um emoji a uma mensagem no R2
+// emoji="" significa remoção de reação anterior
+async function applyReaction(chatId, msgId, emoji, reactorId, fromMe) {
+  if (!chatId || !msgId) return;
+  const key  = chatKey(chatId);
+  const msgs = await r2Json(key, []);
+  const idx  = msgs.findIndex(m => m.id === msgId);
+  if (idx < 0) return; // mensagem não está no R2 (muito antiga) — ignora
+  const reactions = { ...(msgs[idx].reactions || {}) };
+  // Remove qualquer reação anterior deste usuário
+  for (const e of Object.keys(reactions)) {
+    reactions[e] = reactions[e].filter(u => u.id !== reactorId);
+    if (reactions[e].length === 0) delete reactions[e];
+  }
+  // Adiciona nova reação (se não for remoção)
+  if (emoji) {
+    if (!reactions[emoji]) reactions[emoji] = [];
+    reactions[emoji].push({ id: reactorId, fromMe: !!fromMe });
+  }
+  msgs[idx] = { ...msgs[idx], reactions };
   await r2WriteJson(key, msgs);
 }
 
@@ -275,6 +298,25 @@ export default async function handler(req, res) {
       console.log(`[webhook] message.revoked chatId=${chatId} msgId=${msgId}`);
       if (r2Enabled && chatId && msgId) {
         revokeMessage(chatId, msgId).catch(e => console.warn("[r2] revoke:", e.message));
+      }
+    }
+
+    // ── message.reaction ─────────────────────────────────────────────────
+    if (event === "message.reaction") {
+      // WAHA pode enviar em formatos diferentes dependendo do engine (NOWEB / Baileys)
+      const emoji     = payload.reaction?.emoji ?? payload.reactionMessage?.text ?? payload.body ?? null;
+      const targetId  = payload.reaction?.targetMessageId
+        ?? payload.reactionMessage?.key?.id
+        ?? payload.reactedMessageId ?? null;
+      const rawChatId = (payload.chatId || payload.from || payload.reactionMessage?.key?.remoteJid || "")
+        .replace(/:\d+(@\S+)?$/, "");
+      const chatId    = rawChatId.endsWith("@s.whatsapp.net") ? null : rawChatId;
+      const fromMe    = payload.fromMe ?? false;
+      const reactorId = payload.from?.replace(/:\d+(@\S+)?$/, "") || (fromMe ? "me" : "unknown");
+      console.log(`[webhook] message.reaction chatId=${chatId} targetId=${targetId} emoji=${emoji} from=${reactorId}`);
+      if (r2Enabled && chatId && targetId !== null) {
+        applyReaction(chatId, targetId, emoji || "", reactorId, fromMe)
+          .catch(e => console.warn("[r2] reaction:", e.message));
       }
     }
 
