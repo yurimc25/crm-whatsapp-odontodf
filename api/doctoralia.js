@@ -606,7 +606,6 @@ export default async function handler(req, res) {
       const params = new URLSearchParams({ page, pageSize });
       if (type && type !== "all") params.set("type", type);
       const url = `${BASE_URL}/api/v2/patients/${pid}/events?${params}`;
-      console.log(`[doctoralia/patient_events] GET ${url}`);
       const r = await docFetch(url);
 
       if (!r.ok) {

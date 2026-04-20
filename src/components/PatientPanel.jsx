@@ -675,8 +675,7 @@ function AgendamentosTab({ paciente }) {
 
     const phone = (paciente.telefone || paciente.phone || paciente.cellphone_formated || "").replace(/\D/g, "");
     const name  = paciente.full_name || paciente.nome || paciente.name || "";
-    console.log("[agenda] paciente keys:", Object.keys(paciente), "phone:", phone, "name:", name);
-    const params = new URLSearchParams({ action: "patient_events", type: view });
+const params = new URLSearchParams({ action: "patient_events", type: view });
     if (phone) params.set("phone", phone);
     if (name)  params.set("name", name);
 
