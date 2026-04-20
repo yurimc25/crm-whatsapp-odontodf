@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useContactsCtx } from "../App";
 import { useCodental } from "../hooks/useCodental";
 import { FileLightbox } from "./ChatWindow";
@@ -78,7 +78,7 @@ function Field({ label, value }) {
   );
 }
 
-export default function PatientPanel({ chat, operator, activeTab, onTabChange }) {
+export default function PatientPanel({ chat, operator, activeTab, onTabChange, tabRowRef }) {
   const [_tab, _setTab] = useState("perfil");
   const tab    = activeTab  ?? _tab;
   const setTab = onTabChange ?? _setTab;
@@ -403,11 +403,9 @@ export default function PatientPanel({ chat, operator, activeTab, onTabChange })
       )}
 
       {/* Conteúdo */}
-      <div style={{ flex:1, overflowY:"auto", padding:"12px 14px",
-        display:"flex", flexDirection:"column", gap:10 }}>
-        {tab === "perfil"       && <PerfilTab paciente={paciente} uploads={uploads} evols={evols} buscando={buscando} onReload={() => paciente && recarregarUploads(paciente.id)} onPacienteUpdate={updates => setPaciente(prev => {
+      {(() => {
+        const handlePacienteUpdate = updates => setPaciente(prev => {
           if (!prev) return prev;
-          // Se vier do form (tem chave 'nome'), mapeia para campos do Codental
           if ('nome' in updates) {
             return { ...prev,
               full_name: updates.nome || prev.full_name,
@@ -419,13 +417,32 @@ export default function PatientPanel({ chat, operator, activeTab, onTabChange })
               dental_plan_card_number: updates.carteirinha || prev.dental_plan_card_number,
             };
           }
-          // Se vier do getPatient (refresh), merge direto
           return { ...prev, ...updates, id: prev.id };
-        })} />}
-        {tab === "agendamentos" && <AgendamentosTab paciente={paciente} info={info} />}
-        {tab === "evolucoes"    && <EvolucoeTab paciente={paciente} evols={evols} uploads={uploads} buscando={buscando} onReload={() => paciente && recarregarUploads(paciente.id)} />}
-        {tab === "notas"        && <NotasTab chat={chat} operator={operator} />}
-      </div>
+        });
+        const tabSlot = t => (
+          <div key={t} style={{ minWidth: tabRowRef ? "100vw" : undefined,
+            height: tabRowRef ? "100%" : undefined,
+            overflowY:"auto", padding:"12px 14px",
+            display:"flex", flexDirection:"column", gap:10 }}>
+            {t === "perfil"       && <PerfilTab paciente={paciente} uploads={uploads} evols={evols} buscando={buscando} onReload={() => paciente && recarregarUploads(paciente.id)} onPacienteUpdate={handlePacienteUpdate} />}
+            {t === "agendamentos" && <AgendamentosTab paciente={paciente} info={info} />}
+            {t === "evolucoes"    && <EvolucoeTab paciente={paciente} evols={evols} uploads={uploads} buscando={buscando} onReload={() => paciente && recarregarUploads(paciente.id)} />}
+            {t === "notas"        && <NotasTab chat={chat} operator={operator} />}
+          </div>
+        );
+        if (tabRowRef) return (
+          <div style={{ flex:1, overflow:"hidden" }}>
+            <div ref={tabRowRef} style={{ display:"flex", height:"100%", willChange:"transform" }}>
+              {["perfil","agendamentos","evolucoes","notas"].map(tabSlot)}
+            </div>
+          </div>
+        );
+        return (
+          <div style={{ flex:1, overflowY:"auto", display:"flex", flexDirection:"column" }}>
+            {tabSlot(tab)}
+          </div>
+        );
+      })()}
     </div>
   );
 }

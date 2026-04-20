@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useLayoutEffect } from "react";
 import ChatList from "./ChatList";
 import ChatWindow from "./ChatWindow";
 import PatientPanel from "./PatientPanel";
@@ -52,7 +52,16 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
   const [agendaOpen, setAgendaOpen]   = useState(false);
   const [patientTab, setPatientTab]   = useState("perfil");
   const PATIENT_TABS = ["perfil", "agendamentos", "evolucoes", "notas"];
-  const swipeStart = useRef(null);
+
+  // Carousel refs (direct DOM to keep 60fps without React re-renders)
+  const chatPanelRef    = useRef(null);
+  const patientPanelRef = useRef(null);
+  const tabRowRef       = useRef(null);
+  const patientTabRef   = useRef("perfil");
+  const activeChatRef   = useRef(null);
+  const dragStateRef    = useRef({ x0: 0, y0: 0, target: null });
+  const contentRef      = useRef(null);
+  const goToRef         = useRef(null);
 
   const { displayName, lidPhoneMap } = useContactsCtx();
   const {
@@ -75,7 +84,7 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
     window.history.pushState({ crm: 1 }, "", window.location.href);
     window.history.pushState({ crm: 2 }, "", window.location.href);
     function handlePopState() {
-      if (screenRef.current === "patient") { setScreen("chat"); window.history.pushState({ crm: 2 }, "", window.location.href); return; }
+      if (screenRef.current === "patient") { goToRef.current?.("chat", patientTabRef.current, true); window.history.pushState({ crm: 2 }, "", window.location.href); return; }
       if (!drawerRef.current && activeChat)  { setDrawerOpen(true); window.history.pushState({ crm: 2 }, "", window.location.href); }
       else { window.history.pushState({ crm: 1 }, "", window.location.href); }
     }
@@ -94,6 +103,130 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
     window.addEventListener("crm:open-chat", handleOpenChat);
     return () => window.removeEventListener("crm:open-chat", handleOpenChat);
   }, [chats]);
+
+  // Sync refs
+  useEffect(() => { patientTabRef.current = patientTab; }, [patientTab]);
+  useEffect(() => { activeChatRef.current = activeChat; }, [activeChat]);
+
+  // goTo: commit position change, animating panels via direct DOM
+  function goTo(newScreen, newTab, animated) {
+    const trans = animated ? "transform 0.28s cubic-bezier(.4,0,.2,1)" : "none";
+    const outerI = newScreen === "patient" ? 1 : 0;
+    const tabI = PATIENT_TABS.indexOf(newTab);
+    if (chatPanelRef.current) {
+      chatPanelRef.current.style.transition = trans;
+      chatPanelRef.current.style.transform = `translateX(calc(${-outerI * 100}vw))`;
+    }
+    if (patientPanelRef.current) {
+      patientPanelRef.current.style.transition = trans;
+      patientPanelRef.current.style.transform = `translateX(calc(${(1 - outerI) * 100}vw))`;
+    }
+    if (tabRowRef.current && tabI >= 0) {
+      tabRowRef.current.style.transition = trans;
+      tabRowRef.current.style.transform = `translateX(calc(${-tabI * 100}vw))`;
+    }
+    setScreen(newScreen);
+    setPatientTab(newTab);
+  }
+  goToRef.current = goTo;
+
+  // Reset panels when active chat changes
+  useLayoutEffect(() => {
+    if (chatPanelRef.current) {
+      chatPanelRef.current.style.transition = "none";
+      chatPanelRef.current.style.transform = "translateX(0)";
+    }
+    if (patientPanelRef.current) {
+      patientPanelRef.current.style.transition = "none";
+      patientPanelRef.current.style.transform = "translateX(100vw)";
+    }
+    if (tabRowRef.current) {
+      tabRowRef.current.style.transition = "none";
+      tabRowRef.current.style.transform = "translateX(0)";
+    }
+    setScreen("chat");
+    setPatientTab("perfil");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeChat?.id]);
+
+  // Non-passive touch handler for live swipe tracking
+  useEffect(() => {
+    const el = contentRef.current;
+    if (!el) return;
+    const ds = dragStateRef.current;
+    const TABS = ["perfil","agendamentos","evolucoes","notas"];
+
+    function onStart(e) {
+      ds.x0 = e.touches[0].clientX;
+      ds.y0 = e.touches[0].clientY;
+      ds.target = null;
+      [chatPanelRef, patientPanelRef, tabRowRef].forEach(r => {
+        if (r.current) r.current.style.transition = "none";
+      });
+    }
+
+    function onMove(e) {
+      const dx = e.touches[0].clientX - ds.x0;
+      const dy = e.touches[0].clientY - ds.y0;
+      if (!ds.target) {
+        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+        if (Math.abs(dy) > Math.abs(dx)) { ds.target = "vertical"; return; }
+        const currScreen = screenRef.current;
+        const currTabI = TABS.indexOf(patientTabRef.current);
+        if (currScreen === "chat") {
+          ds.target = (dx < 0 && activeChatRef.current) ? "outer" : "drawer";
+        } else {
+          ds.target = (dx > 0 && currTabI === 0) ? "outer" : "inner";
+        }
+      }
+      if (ds.target === "vertical" || ds.target === "drawer") return;
+      e.preventDefault();
+      const currScreen = screenRef.current;
+      const currTabI = TABS.indexOf(patientTabRef.current);
+      const outerI = currScreen === "patient" ? 1 : 0;
+      if (ds.target === "outer") {
+        if (chatPanelRef.current)
+          chatPanelRef.current.style.transform = `translateX(calc(${-outerI * 100}vw + ${dx}px))`;
+        if (patientPanelRef.current)
+          patientPanelRef.current.style.transform = `translateX(calc(${(1 - outerI) * 100}vw + ${dx}px))`;
+      } else if (ds.target === "inner") {
+        const atEdge = (dx > 0 && currTabI === 0) || (dx < 0 && currTabI === TABS.length - 1);
+        const clampedDx = atEdge ? dx / 3 : dx;
+        if (tabRowRef.current)
+          tabRowRef.current.style.transform = `translateX(calc(${-currTabI * 100}vw + ${clampedDx}px))`;
+      }
+    }
+
+    function onEnd(e) {
+      const dx = e.changedTouches[0].clientX - ds.x0;
+      const target = ds.target;
+      ds.target = null;
+      if (target === "drawer") { setDrawerOpen(true); return; }
+      if (!target || target === "vertical") return;
+      const currScreen = screenRef.current;
+      const currTab = patientTabRef.current;
+      const currTabI = TABS.indexOf(currTab);
+      const THRESHOLD = 55;
+      if (target === "outer") {
+        if (dx < -THRESHOLD && currScreen === "chat") goToRef.current("patient", "perfil", true);
+        else if (dx > THRESHOLD && currScreen === "patient") goToRef.current("chat", currTab, true);
+        else goToRef.current(currScreen, currTab, true);
+      } else if (target === "inner") {
+        if (dx < -THRESHOLD && currTabI < TABS.length - 1) goToRef.current("patient", TABS[currTabI + 1], true);
+        else if (dx > THRESHOLD && currTabI > 0) goToRef.current("patient", TABS[currTabI - 1], true);
+        else goToRef.current("patient", currTab, true);
+      }
+    }
+
+    el.addEventListener("touchstart", onStart, { passive: true });
+    el.addEventListener("touchmove", onMove, { passive: false });
+    el.addEventListener("touchend", onEnd, { passive: true });
+    return () => {
+      el.removeEventListener("touchstart", onStart);
+      el.removeEventListener("touchmove", onMove);
+      el.removeEventListener("touchend", onEnd);
+    };
+  }, []);
 
   function canSeeChat(chat) {
     if (perms.verTodos) return true;
@@ -124,8 +257,7 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
     setActiveChat(enriched);
     loadMessages(rawChat.id);
     markRead(rawChat.id);
-    setScreen("chat");
-    setDrawerOpen(false); // fecha o drawer ao selecionar um chat
+    setDrawerOpen(false);
   }
 
   const activeRaw  = activeChat ? chats.find(c => c.id === activeChat.id) : null;
@@ -172,15 +304,6 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
         }
         .mob-backdrop.open  { opacity:1; pointer-events:all; }
         .mob-backdrop.closed{ opacity:0; pointer-events:none; }
-        @keyframes slideInRight {
-          from { transform: translateX(100%); }
-          to   { transform: translateX(0); }
-        }
-        .patient-slide {
-          animation: slideInRight .25s cubic-bezier(.4,0,.2,1);
-          will-change: transform;
-          contain: layout;
-        }
       `}</style>
 
       {/* ── Top bar ────────────────────────────────────────────────── */}
@@ -191,7 +314,7 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
       }}>
         {/* Hamburger / voltar */}
         {screen === "patient" ? (
-          <button onClick={() => setScreen("chat")}
+          <button onClick={() => goTo("chat", patientTab, true)}
             style={{ background:"none", border:"none", color:T.accent,
               fontSize:24, cursor:"pointer", padding:"0 4px", lineHeight:1, flexShrink:0 }}>
             ‹
@@ -219,7 +342,7 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
 
         {/* Botão Perfil (só quando há chat ativo na tela de chat) */}
         {screen === "chat" && activeChat && (
-          <button onClick={() => setScreen("patient")}
+          <button onClick={() => goTo("patient", "perfil", true)}
             style={{ background:T.accent+"22", border:`1px solid ${T.accent}44`,
               borderRadius:5, color:T.accent, fontSize:10, cursor:"pointer",
               padding:"3px 10px", fontWeight:600, flexShrink:0 }}>
@@ -343,70 +466,55 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
         </div>
       </div>
 
-      {/* ── Conteúdo principal ───────────────────────────────────────── */}
-      <div
-        onTouchStart={e => { swipeStart.current = { x: e.touches[0].clientX, y: e.touches[0].clientY }; }}
-        onTouchEnd={e => {
-          if (!swipeStart.current) return;
-          const dx = e.changedTouches[0].clientX - swipeStart.current.x;
-          const dy = e.changedTouches[0].clientY - swipeStart.current.y;
-          swipeStart.current = null;
-          if (Math.abs(dx) < 40 || Math.abs(dy) > Math.abs(dx) * 0.8) return; // muito curto ou diagonal
-          if (screen === "chat") {
-            if (dx < 0 && activeChat) { setPatientTab("perfil"); setScreen("patient"); } // esquerda → perfil
-            else if (dx > 0) setDrawerOpen(true);                                         // direita → chatlist
-          } else if (screen === "patient") {
-            const idx = PATIENT_TABS.indexOf(patientTab);
-            if (dx < 0 && idx < PATIENT_TABS.length - 1) setPatientTab(PATIENT_TABS[idx + 1]); // próxima aba
-            else if (dx > 0 && idx > 0) setPatientTab(PATIENT_TABS[idx - 1]);                  // aba anterior
-            else if (dx > 0 && idx === 0) setScreen("chat");                                   // volta pra conversa
-          }
-        }}
-        style={{ flex:1, overflow:"hidden", display:"flex", flexDirection:"column", clipPath:"inset(0)" }}>
+      {/* ── Conteúdo principal (carousel) ──────────────────────────── */}
+      <div ref={contentRef} style={{ flex:1, overflow:"hidden", position:"relative" }}>
 
-        {screen === "chat" && activeChat && (
-          <ChatWindow
-            chat={{
-              ...activeChat,
-              name:  displayName(activeChat.id, activeChat.name || activeChat.pushname, activeChat.pushname),
-              phone: formatPhone(wahaIdToPhone(activeChat.id)),
-            }}
-            messages={messages[activeChat.id] || []}
-            operator={operator}
-            onSend={(text, replyToId) => send(activeChat.id, text, operator.name, replyToId)}
-            onForward={toRole => forwardChat(activeChat.id, toRole)}
-            onResolve={() => resolveChat(activeChat.id)}
-            canForwardToAdmin={perms.verAdmin}
-            onLoadOlder={loadOlderMessages}
-            onSyncMedia={operator.role === "admin" ? syncMediaToR2 : undefined}
-            onDeleteMsg={(msgId, forEveryone) => deleteMsg?.(activeChat.id, msgId, forEveryone)}
-            onEditMsg={(msgId, newText) => editMsg?.(activeChat.id, msgId, newText)}
-            onReactMsg={(msgId, emoji) => reactMsg?.(activeChat.id, msgId, emoji)}
-            onOpenPatient={() => setScreen("patient")}
-          />
-        )}
+        {/* Painel Chat */}
+        <div ref={chatPanelRef} style={{ position:"absolute", inset:0, willChange:"transform", display:"flex", flexDirection:"column" }}>
+          {activeChat ? (
+            <ChatWindow
+              chat={{
+                ...activeChat,
+                name:  displayName(activeChat.id, activeChat.name || activeChat.pushname, activeChat.pushname),
+                phone: formatPhone(wahaIdToPhone(activeChat.id)),
+              }}
+              messages={messages[activeChat.id] || []}
+              operator={operator}
+              onSend={(text, replyToId) => send(activeChat.id, text, operator.name, replyToId)}
+              onForward={toRole => forwardChat(activeChat.id, toRole)}
+              onResolve={() => resolveChat(activeChat.id)}
+              canForwardToAdmin={perms.verAdmin}
+              onLoadOlder={loadOlderMessages}
+              onSyncMedia={operator.role === "admin" ? syncMediaToR2 : undefined}
+              onDeleteMsg={(msgId, forEveryone) => deleteMsg?.(activeChat.id, msgId, forEveryone)}
+              onEditMsg={(msgId, newText) => editMsg?.(activeChat.id, msgId, newText)}
+              onReactMsg={(msgId, emoji) => reactMsg?.(activeChat.id, msgId, emoji)}
+              onOpenPatient={() => goTo("patient", "perfil", true)}
+            />
+          ) : (
+            <div style={{ flex:1, display:"flex", flexDirection:"column",
+              alignItems:"center", justifyContent:"center", gap:12, color:T.sub }}>
+              <span style={{ fontSize:36 }}>🦷</span>
+              <span style={{ fontSize:13 }}>Selecione uma conversa</span>
+              <button onClick={() => setDrawerOpen(true)}
+                style={{ background:T.accent+"22", border:`1px solid ${T.accent}44`,
+                  borderRadius:8, padding:"8px 18px", color:T.accent,
+                  fontSize:12, fontWeight:600, cursor:"pointer" }}>
+                ☰ Abrir conversas
+              </button>
+            </div>
+          )}
+        </div>
 
-        {screen === "chat" && !activeChat && (
-          <div style={{ flex:1, display:"flex", flexDirection:"column",
-            alignItems:"center", justifyContent:"center", gap:12, color:T.sub }}>
-            <span style={{ fontSize:36 }}>🦷</span>
-            <span style={{ fontSize:13 }}>Selecione uma conversa</span>
-            <button onClick={() => setDrawerOpen(true)}
-              style={{ background:T.accent+"22", border:`1px solid ${T.accent}44`,
-                borderRadius:8, padding:"8px 18px", color:T.accent,
-                fontSize:12, fontWeight:600, cursor:"pointer" }}>
-              ☰ Abrir conversas
-            </button>
-          </div>
-        )}
-
-        {screen === "patient" && activeChat && (
-          <div className="patient-slide" style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+        {/* Painel Paciente */}
+        {activeChat && (
+          <div ref={patientPanelRef} style={{ position:"absolute", inset:0, willChange:"transform", display:"flex", flexDirection:"column" }}>
             <PatientPanel
               chat={activeChat}
               operator={operator}
               activeTab={patientTab}
-              onTabChange={setPatientTab}
+              onTabChange={t => goTo("patient", t, true)}
+              tabRowRef={tabRowRef}
             />
           </div>
         )}
