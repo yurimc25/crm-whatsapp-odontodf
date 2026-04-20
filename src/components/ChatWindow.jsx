@@ -183,7 +183,7 @@ function dayLabel(ts) {
 export default function ChatWindow({
   chat, messages, operator, onSend, onForward, onResolve,
   onDeleteMsg, onEditMsg, onReactMsg,
-  canForwardToAdmin, onLoadOlder, onSyncMedia
+  canForwardToAdmin, onLoadOlder, onSyncMedia, onOpenPatient
 }) {
   const [text, setText]               = useState("");
   const [sending, setSending]         = useState(false);
@@ -195,6 +195,7 @@ export default function ChatWindow({
   const [showQuick, setShowQuick]     = useState(false);
   const [quickQuery, setQuickQuery]   = useState("");
   const [showContactLookup, setShowContactLookup] = useState(false);
+  const [photoModal, setPhotoModal] = useState(false);
   const [confirmMsg, setConfirmMsg]   = useState(null);
   // Reply / edit
   const [replyTo, setReplyTo]         = useState(null); // { id, text, from }
@@ -502,8 +503,9 @@ export default function ChatWindow({
 
         {photoUrl ? (
           <img src={photoUrl} alt=""
+            onClick={() => setPhotoModal(true)}
             style={{ width:38, height:38, borderRadius:"50%", objectFit:"cover",
-              flexShrink:0, border:`2px solid ${T.border}` }}
+              flexShrink:0, border:`2px solid ${T.border}`, cursor:"pointer" }}
             onError={e => { e.target.style.display="none"; }} />
         ) : (
           <div style={{ width:38, height:38, borderRadius:"50%", flexShrink:0,
@@ -516,9 +518,23 @@ export default function ChatWindow({
           </div>
         )}
 
+        {/* Modal foto ampliada */}
+        {photoModal && photoUrl && (
+          <div onClick={() => setPhotoModal(false)}
+            style={{ position:"fixed", inset:0, zIndex:300, background:"rgba(0,0,0,.88)",
+              display:"flex", alignItems:"center", justifyContent:"center" }}>
+            <img src={photoUrl} alt=""
+              style={{ maxWidth:"90vw", maxHeight:"90vh", borderRadius:12,
+                boxShadow:"0 8px 40px rgba(0,0,0,.8)" }} />
+          </div>
+        )}
+
         <div style={{ flex:1, minWidth:0 }}>
-          <div style={{ color:T.text, fontSize:14, fontWeight:600,
-            overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+          <div
+            onClick={onOpenPatient}
+            style={{ color:T.text, fontSize:14, fontWeight:600,
+              overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap",
+              cursor: onOpenPatient ? "pointer" : "default" }}>
             {info.hasContact ? info.name : info.phone}
           </div>
           <div style={{ display:"flex", alignItems:"center", gap:6 }}>

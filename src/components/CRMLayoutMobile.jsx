@@ -50,7 +50,6 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
   const [showNewChat, setShowNewChat] = useState(false);
   const [newChatPhone, setNewChatPhone] = useState(null);
   const [agendaOpen, setAgendaOpen]   = useState(false);
-  const [photoModal, setPhotoModal]   = useState(false);
 
   const { displayName, lidPhoneMap } = useContactsCtx();
   const {
@@ -201,37 +200,11 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
           </button>
         )}
 
-        {/* Foto do contato (clicável para ampliar) */}
-        {screen === "chat" && activeChat ? (
-          activeChat.photoUrl ? (
-            <img src={activeChat.photoUrl} alt=""
-              onClick={() => setPhotoModal(true)}
-              style={{ width:32, height:32, borderRadius:"50%", objectFit:"cover",
-                flexShrink:0, border:`2px solid ${T.border}`, cursor:"pointer" }}
-              onError={e => { e.target.style.display="none"; }} />
-          ) : (
-            <div style={{ width:32, height:32, borderRadius:"50%", flexShrink:0,
-              background:(activeChat.avatarColor||T.accent)+"33", color:activeChat.avatarColor||T.accent,
-              display:"flex", alignItems:"center", justifyContent:"center",
-              fontSize:11, fontWeight:700, border:`2px solid ${(activeChat.avatarColor||T.accent)}44`,
-              cursor:"default" }}>
-              {(activeChat.name||activeChat.pushname||"?").slice(0,2).toUpperCase()}
-            </div>
-          )
-        ) : (
-          <span style={{ fontSize:15, flexShrink:0 }}>🦷</span>
-        )}
+        <span style={{ fontSize:15, flexShrink:0 }}>🦷</span>
 
-        {/* Nome clicável para abrir painel do paciente */}
-        <span
-          onClick={screen === "chat" && activeChat ? () => setScreen("patient") : undefined}
-          style={{ color:T.text, fontWeight:600, fontSize:14, flex:1,
-            overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap",
-            cursor: screen === "chat" && activeChat ? "pointer" : "default" }}>
-          {screen === "patient" ? "Paciente"
-            : activeChat
-              ? displayName(activeChat.id, activeChat.name || activeChat.pushname, activeChat.pushname)
-              : "Clínica CRM"}
+        <span style={{ color:T.text, fontWeight:600, fontSize:14, flex:1,
+          overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+          {screen === "patient" ? "Paciente" : "Clínica CRM"}
         </span>
 
         {/* Status WS */}
@@ -239,23 +212,14 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
           background: WS_COLOR[wsStatus] || "#666",
           boxShadow: wsStatus==="connected" ? `0 0 0 2px ${T.green}33` : "none" }} />
 
-        {/* Ações no chat */}
+        {/* Botão Perfil (só quando há chat ativo na tela de chat) */}
         {screen === "chat" && activeChat && (
-          <div style={{ display:"flex", alignItems:"center", gap:5 }}>
-            <button
-              onClick={() => activeRaw?.unread > 0 ? markRead(activeChat.id) : markUnread(activeChat.id)}
-              title={activeRaw?.unread > 0 ? "Marcar como lido" : "Marcar como não lido"}
-              style={{ background:"none", border:`1px solid ${T.border}`, borderRadius:5,
-                color:T.sub, fontSize:10, cursor:"pointer", padding:"3px 6px" }}>
-              {activeRaw?.unread > 0 ? "✓" : "◉"}
-            </button>
-            <button onClick={() => setScreen("patient")}
-              style={{ background:T.accent+"22", border:`1px solid ${T.accent}44`,
-                borderRadius:5, color:T.accent, fontSize:10, cursor:"pointer",
-                padding:"3px 10px", fontWeight:600 }}>
-              Perfil
-            </button>
-          </div>
+          <button onClick={() => setScreen("patient")}
+            style={{ background:T.accent+"22", border:`1px solid ${T.accent}44`,
+              borderRadius:5, color:T.accent, fontSize:10, cursor:"pointer",
+              padding:"3px 10px", fontWeight:600, flexShrink:0 }}>
+            Perfil
+          </button>
         )}
 
         {/* Notificação + usuário + sair (sem chat ativo) */}
@@ -276,18 +240,6 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
           </div>
         )}
       </div>
-
-      {/* ── Modal foto de perfil ─────────────────────────────────────── */}
-      {photoModal && activeChat?.photoUrl && (
-        <div onClick={() => setPhotoModal(false)}
-          style={{ position:"fixed", inset:0, zIndex:200, background:"rgba(0,0,0,.85)",
-            display:"flex", alignItems:"center", justifyContent:"center" }}>
-          <img src={activeChat.photoUrl} alt=""
-            style={{ maxWidth:"90vw", maxHeight:"90vh", borderRadius:12,
-              boxShadow:"0 8px 40px rgba(0,0,0,.8)" }}
-            onError={e => { e.target.style.display="none"; }} />
-        </div>
-      )}
 
       {/* ── Backdrop ────────────────────────────────────────────────── */}
       <div
@@ -407,6 +359,7 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
             onDeleteMsg={(msgId, forEveryone) => deleteMsg?.(activeChat.id, msgId, forEveryone)}
             onEditMsg={(msgId, newText) => editMsg?.(activeChat.id, msgId, newText)}
             onReactMsg={(msgId, emoji) => reactMsg?.(activeChat.id, msgId, emoji)}
+            onOpenPatient={() => setScreen("patient")}
           />
         )}
 
