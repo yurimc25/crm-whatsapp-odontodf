@@ -136,9 +136,14 @@ function _dedupeChats(chats) {
       // Para dados do chat, prioriza o @lid (tem lastMsg/lastTs mais recentes via webhook)
       const lidChat = ex.id.endsWith("@lid") ? ex : (chat.id.endsWith("@lid") ? chat : null);
       const base    = lidChat || (newTs > exTs ? chat : ex);
+      // Acumula todos os IDs conhecidos para este número — usado para persistir status em todos os aliases
+      const prevAliases = ex.aliases || [];
+      const newAliases  = chat.aliases || [];
+      const aliases = [...new Set([...prevAliases, ex.id, chat.id, ...newAliases])].filter(a => a !== bestId);
       deduped[existIdx] = {
         ...base,
         id:            bestId,
+        aliases,
         photoUrl:      ex.photoUrl   || chat.photoUrl,
         unread:        Math.max(ex.unread || 0, chat.unread || 0),
         lastPatientTs: ex.lastPatientTs || chat.lastPatientTs,
@@ -2350,11 +2355,13 @@ export function useWAHA(operator) {
   // ── 7. Ações ──────────────────────────────────────────────────
   const forwardChat = useCallback((chatId, toRole) => {
     setChats(prev => {
+      const chat = prev.find(c => c.id === chatId);
       const updated = prev.map(c => c.id === chatId ? { ...c, assignedTo: toRole, status: "open" } : c);
       persistChats(updated);
+      const data = { assignedTo: toRole, status: "open" };
+      if (chat) persistChatAll(chat, data); else persistChat(chatId, data);
       return updated;
     });
-    persistChat(chatId, { assignedTo: toRole, status: "open" });
   }, []);
 
   const resolveChat = useCallback((chatId) => {
@@ -2378,27 +2385,29 @@ export function useWAHA(operator) {
       } else {
         clearOverride(chatId);
       }
-      // Persiste no MongoDB
-      persistChat(chatId, {
+      // Persiste no MongoDB para o ID visível E todos os aliases (evita duplicata ao recarregar)
+      const data = {
         status:        newSt,
         lastPatientTs: newSt === "resolved" ? null : undefined,
         unread:        newSt === "resolved" ? 0    : undefined,
-      });
+      };
+      if (chat) persistChatAll(chat, data); else persistChat(chatId, data);
       return updated;
     });
   }, []);
 
   const markRead = useCallback((chatId) => {
     setChats(prev => {
+      const chat = prev.find(c => c.id === chatId);
       const updated = prev.map(c =>
         c.id === chatId ? { ...c, unread: 0, lastPatientTs: null } : c
       );
       persistChats(updated);
+      saveOverride(chatId, { readAt: Date.now() });
+      const data = { unread: 0, lastPatientTs: null };
+      if (chat) persistChatAll(chat, data); else persistChat(chatId, data);
       return updated;
     });
-    // Persiste override manual para sobreviver ao reload
-    saveOverride(chatId, { readAt: Date.now() });
-    persistChat(chatId, { unread: 0, lastPatientTs: null });
   }, []);
 
   const markUnread = useCallback((chatId) => {
@@ -2737,6 +2746,12 @@ export function useWAHA(operator) {
     console.log("[resync] concluído");
     setTimeout(_syncChatsToR2, 3000);
   }
+}
+
+// Persiste metadata de chat no MongoDB para o chatId e todos os aliases conhecidos
+function persistChatAll(chat, data) {
+  const ids = [chat.id, ...(chat.aliases || [])].filter(Boolean);
+  for (const id of ids) persistChat(id, data);
 }
 
 // Persiste metadata de chat no MongoDB (fire-and-forget)

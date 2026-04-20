@@ -62,6 +62,8 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
   const dragStateRef    = useRef({ x0: 0, y0: 0, target: null });
   const contentRef      = useRef(null);
   const goToRef         = useRef(null);
+  const drawerDomRef    = useRef(null);
+  const backdropDomRef  = useRef(null);
 
   const { displayName, lidPhoneMap } = useContactsCtx();
   const {
@@ -107,6 +109,81 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
   // Sync refs
   useEffect(() => { patientTabRef.current = patientTab; }, [patientTab]);
   useEffect(() => { activeChatRef.current = activeChat; }, [activeChat]);
+
+  // Drawer: controla transform via DOM (permite drag ao vivo)
+  const TRANS = "transform 0.28s cubic-bezier(.4,0,.2,1)";
+  const drawerOpenRef = useRef(drawerOpen);
+  useLayoutEffect(() => {
+    // Estado inicial sem transição
+    const d = drawerDomRef.current; const b = backdropDomRef.current;
+    if (!d || !b) return;
+    d.style.transform = drawerOpen ? "translateX(0)" : "translateX(-100%)";
+    b.style.opacity = drawerOpen ? "1" : "0";
+    b.style.pointerEvents = drawerOpen ? "all" : "none";
+  }, []);
+  useEffect(() => {
+    if (!drawerDomRef.current || !backdropDomRef.current) return;
+    // Skip first run (handled by useLayoutEffect)
+    if (drawerOpenRef.current === drawerOpen) return;
+    drawerOpenRef.current = drawerOpen;
+    const d = drawerDomRef.current; const b = backdropDomRef.current;
+    d.style.transition = TRANS;
+    d.style.transform = drawerOpen ? "translateX(0)" : "translateX(-100%)";
+    b.style.transition = "opacity 0.28s";
+    b.style.opacity = drawerOpen ? "1" : "0";
+    b.style.pointerEvents = drawerOpen ? "all" : "none";
+  }, [drawerOpen]);
+
+  // Drawer: fechar deslizando para a esquerda
+  useEffect(() => {
+    const el = drawerDomRef.current;
+    if (!el) return;
+    let x0 = 0, y0 = 0, target = null;
+    function onStart(e) {
+      x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; target = null;
+    }
+    function onMove(e) {
+      if (!drawerRef.current) return;
+      const dx = e.touches[0].clientX - x0;
+      const dy = e.touches[0].clientY - y0;
+      if (!target) {
+        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+        target = Math.abs(dy) > Math.abs(dx) ? "v" : dx < 0 ? "close" : "none";
+        if (target !== "close") return;
+        el.style.transition = "none";
+        if (backdropDomRef.current) backdropDomRef.current.style.transition = "none";
+      }
+      if (target !== "close") return;
+      e.preventDefault();
+      const clamped = Math.min(0, dx);
+      el.style.transform = `translateX(${clamped}px)`;
+      const w = el.offsetWidth || 300;
+      if (backdropDomRef.current)
+        backdropDomRef.current.style.opacity = String(Math.max(0, 1 + clamped / w));
+    }
+    function onEnd(e) {
+      if (target !== "close") return;
+      const dx = e.changedTouches[0].clientX - x0;
+      if (dx < -55) {
+        setDrawerOpen(false); // useEffect above animates to closed
+      } else {
+        el.style.transition = TRANS;
+        el.style.transform = "translateX(0)";
+        if (backdropDomRef.current) {
+          backdropDomRef.current.style.transition = "opacity 0.28s";
+          backdropDomRef.current.style.opacity = "1";
+        }
+      }
+    }
+    el.addEventListener("touchstart", onStart, { passive: true });
+    el.addEventListener("touchmove", onMove, { passive: false });
+    el.addEventListener("touchend", onEnd, { passive: true });
+    return () => {
+      el.removeEventListener("touchstart", onStart);
+      el.removeEventListener("touchmove", onMove);
+      el.removeEventListener("touchend", onEnd);
+    };
+  }, []);
 
   // goTo: commit position change, animating panels via direct DOM
   function goTo(newScreen, newTab, animated) {
@@ -179,7 +256,18 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
           ds.target = (dx > 0 && currTabI === 0) ? "outer" : "inner";
         }
       }
-      if (ds.target === "vertical" || ds.target === "drawer") return;
+      if (ds.target === "vertical") return;
+      if (ds.target === "drawer") {
+        e.preventDefault();
+        const clamped = Math.max(0, dx);
+        if (drawerDomRef.current) drawerDomRef.current.style.transform = `translateX(calc(-100% + ${clamped}px))`;
+        const w = drawerDomRef.current?.offsetWidth || 300;
+        if (backdropDomRef.current) {
+          backdropDomRef.current.style.opacity = String(Math.min(1, clamped / w));
+          backdropDomRef.current.style.pointerEvents = "all";
+        }
+        return;
+      }
       e.preventDefault();
       const currScreen = screenRef.current;
       const currTabI = TABS.indexOf(patientTabRef.current);
@@ -201,7 +289,16 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
       const dx = e.changedTouches[0].clientX - ds.x0;
       const target = ds.target;
       ds.target = null;
-      if (target === "drawer") { setDrawerOpen(true); return; }
+      if (target === "drawer") {
+        if (dx > 55) {
+          setDrawerOpen(true); // useEffect applies with transition
+        } else {
+          // Snap drawer back
+          if (drawerDomRef.current) { drawerDomRef.current.style.transition = TRANS; drawerDomRef.current.style.transform = "translateX(-100%)"; }
+          if (backdropDomRef.current) { backdropDomRef.current.style.transition = "opacity 0.28s"; backdropDomRef.current.style.opacity = "0"; backdropDomRef.current.style.pointerEvents = "none"; }
+        }
+        return;
+      }
       if (!target || target === "vertical") return;
       const currScreen = screenRef.current;
       const currTab = patientTabRef.current;
@@ -294,16 +391,11 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
           transition:transform .25s cubic-bezier(.4,0,.2,1);
           will-change:transform;
         }
-        .mob-drawer.open { transform:translateX(0); }
-        .mob-drawer.closed { transform:translateX(-100%); }
         .mob-backdrop{
           position:fixed; inset:0; z-index:49;
           background:rgba(0,0,0,.55);
           backdrop-filter:blur(1px);
-          transition:opacity .25s;
         }
-        .mob-backdrop.open  { opacity:1; pointer-events:all; }
-        .mob-backdrop.closed{ opacity:0; pointer-events:none; }
       `}</style>
 
       {/* ── Top bar ────────────────────────────────────────────────── */}
@@ -371,12 +463,14 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
 
       {/* ── Backdrop ────────────────────────────────────────────────── */}
       <div
-        className={`mob-backdrop ${drawerOpen ? "open" : "closed"}`}
+        ref={backdropDomRef}
+        className="mob-backdrop"
+        style={{ opacity:0, pointerEvents:"none" }}
         onClick={() => { if (activeChat) setDrawerOpen(false); }}
       />
 
       {/* ── Drawer (ChatList) ────────────────────────────────────────── */}
-      <div className={`mob-drawer ${drawerOpen ? "open" : "closed"}`}>
+      <div ref={drawerDomRef} className="mob-drawer" style={{ transform:"translateX(-100%)" }}>
         {/* Cabeçalho do drawer */}
         <div style={{ padding:"10px 12px 6px", borderBottom:`1px solid ${T.border}`,
           display:"flex", alignItems:"center", gap:8, flexShrink:0 }}>
