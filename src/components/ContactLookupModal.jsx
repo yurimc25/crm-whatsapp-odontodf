@@ -75,21 +75,26 @@ export function ContactLookupModal({ phoneNumber, chatId, onClose, onSelectConta
         }
       } catch {}
 
-      // ── Codental — usa número inteiro do chat para busca, filtra >= 8 dígitos ──
+      // ── Codental — busca por número (se dígitos) ou por nome ──
       let codentalResults = [];
-      if (isDigits && digits.length >= 4 && chatDigits.length >= 8) {
-        try {
-          // Envia o número completo do chat — a API gera as variantes BR
-          const r = await fetch(
-            `/api/codental?action=search&phone=${chatDigits}`,
-            { headers: { "X-Internal-Key": ikey } }
-          );
+      try {
+        let codentalUrl;
+        if (isDigits && digits.length >= 4 && chatDigits.length >= 8) {
+          codentalUrl = `/api/codental?action=search&phone=${chatDigits}`;
+        } else if (!isDigits && query.trim().length >= 2) {
+          codentalUrl = `/api/codental?action=search&q=${encodeURIComponent(query.trim())}`;
+        }
+        if (codentalUrl) {
+          const r = await fetch(codentalUrl, { headers: { "X-Internal-Key": ikey } });
           if (r.ok) {
             const data = await r.json();
             codentalResults = (data.patients || [])
               .filter(p => {
-                const pPhone = (p.cellphone_formated || p.cellphone || "").replace(/\D/g, "");
-                return matchesChatPhone(pPhone);
+                if (isDigits) {
+                  const pPhone = (p.cellphone_formated || p.cellphone || "").replace(/\D/g, "");
+                  return matchesChatPhone(pPhone);
+                }
+                return true;
               })
               .slice(0, 10)
               .map(p => ({
@@ -99,8 +104,8 @@ export function ContactLookupModal({ phoneNumber, chatId, onClose, onSelectConta
               }))
               .filter(c => c.name);
           }
-        } catch {}
-      }
+        }
+      } catch {}
 
       // ── Mescla resultados removendo duplicatas por número ────────
       const seen = new Set();
