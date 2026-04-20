@@ -440,7 +440,7 @@ function detectAutoResolve(msgs) {
 }
 
 export function useWAHA(operator) {
-  const [chats,    setChats]    = useState(() => {
+  const [chats,    setChatsRaw]    = useState(() => {
     // 1. Sessão atual (re-render sem F5) — objetos completos
     if (_sessionChats.value?.length && Date.now() < _sessionChats.expires) {
       return _sessionChats.value;
@@ -455,6 +455,16 @@ export function useWAHA(operator) {
     } catch {}
     return [];
   });
+  // Wrapper que garante dedup em TODA atualização de state — elimina duplicatas na origem
+  const setChats = useCallback((updater) => {
+    setChatsRaw(prev => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      if (next === prev) return prev;
+      const deduped = _dedupeChats(next);
+      // Só gera novo array se algo mudou (evita re-render desnecessário)
+      return deduped.length === next.length ? next : deduped;
+    });
+  }, []);
   const [messages,    setMessages]    = useState({});
   const [loading,     setLoading]     = useState(false);
   const [error,       setError]       = useState(null);
