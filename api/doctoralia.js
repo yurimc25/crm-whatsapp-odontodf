@@ -623,7 +623,7 @@ export default async function handler(req, res) {
       }
 
       const data   = await r.json();
-      const events = data.appointments ?? data.events ?? data.items ?? data.data ?? (Array.isArray(data) ? data : []);
+      const events = data.page ?? data.appointments ?? data.events ?? data.items ?? data.data ?? (Array.isArray(data) ? data : []);
       console.log(`[doctoralia/patient_events] patientId=${pid} type=${type} total=${data.total ?? events.length} url=${url} keys=${Object.keys(data).join(",")}`);
       return res.json({ ...data, events, patientId: pid });
     } catch (e) {
