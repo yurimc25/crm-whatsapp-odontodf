@@ -50,6 +50,9 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
   const [showNewChat, setShowNewChat] = useState(false);
   const [newChatPhone, setNewChatPhone] = useState(null);
   const [agendaOpen, setAgendaOpen]   = useState(false);
+  const [patientTab, setPatientTab]   = useState("perfil");
+  const PATIENT_TABS = ["perfil", "agendamentos", "evolucoes", "notas"];
+  const swipeStart = useRef(null);
 
   const { displayName, lidPhoneMap } = useContactsCtx();
   const {
@@ -175,6 +178,8 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
         }
         .patient-slide {
           animation: slideInRight .25s cubic-bezier(.4,0,.2,1);
+          will-change: transform;
+          contain: layout;
         }
       `}</style>
 
@@ -339,7 +344,25 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
       </div>
 
       {/* ── Conteúdo principal ───────────────────────────────────────── */}
-      <div style={{ flex:1, overflow:"hidden", display:"flex", flexDirection:"column" }}>
+      <div
+        onTouchStart={e => { swipeStart.current = { x: e.touches[0].clientX, y: e.touches[0].clientY }; }}
+        onTouchEnd={e => {
+          if (!swipeStart.current) return;
+          const dx = e.changedTouches[0].clientX - swipeStart.current.x;
+          const dy = e.changedTouches[0].clientY - swipeStart.current.y;
+          swipeStart.current = null;
+          if (Math.abs(dx) < 40 || Math.abs(dy) > Math.abs(dx) * 0.8) return; // muito curto ou diagonal
+          if (screen === "chat") {
+            if (dx < 0 && activeChat) { setPatientTab("perfil"); setScreen("patient"); } // esquerda → perfil
+            else if (dx > 0) setDrawerOpen(true);                                         // direita → chatlist
+          } else if (screen === "patient") {
+            const idx = PATIENT_TABS.indexOf(patientTab);
+            if (dx < 0 && idx < PATIENT_TABS.length - 1) setPatientTab(PATIENT_TABS[idx + 1]); // próxima aba
+            else if (dx > 0 && idx > 0) setPatientTab(PATIENT_TABS[idx - 1]);                  // aba anterior
+            else if (dx > 0 && idx === 0) setScreen("chat");                                   // volta pra conversa
+          }
+        }}
+        style={{ flex:1, overflow:"hidden", display:"flex", flexDirection:"column", clipPath:"inset(0)" }}>
 
         {screen === "chat" && activeChat && (
           <ChatWindow
@@ -379,7 +402,12 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
 
         {screen === "patient" && activeChat && (
           <div className="patient-slide" style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
-            <PatientPanel chat={activeChat} operator={operator} />
+            <PatientPanel
+              chat={activeChat}
+              operator={operator}
+              activeTab={patientTab}
+              onTabChange={setPatientTab}
+            />
           </div>
         )}
       </div>

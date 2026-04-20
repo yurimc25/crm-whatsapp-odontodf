@@ -78,8 +78,10 @@ function Field({ label, value }) {
   );
 }
 
-export default function PatientPanel({ chat, operator }) {
-  const [tab, setTab] = useState("perfil");
+export default function PatientPanel({ chat, operator, activeTab, onTabChange }) {
+  const [_tab, _setTab] = useState("perfil");
+  const tab    = activeTab  ?? _tab;
+  const setTab = onTabChange ?? _setTab;
   const { displayInfo, addLocalContact } = useContactsCtx();
   const info = displayInfo(chat.id, chat.name, chat.pushname);
 
