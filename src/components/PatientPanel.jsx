@@ -420,7 +420,7 @@ export default function PatientPanel({ chat, operator }) {
           // Se vier do getPatient (refresh), merge direto
           return { ...prev, ...updates, id: prev.id };
         })} />}
-        {tab === "agendamentos" && <AgendamentosTab paciente={paciente} />}
+        {tab === "agendamentos" && <AgendamentosTab paciente={paciente} info={info} />}
         {tab === "evolucoes"    && <EvolucoeTab paciente={paciente} evols={evols} uploads={uploads} buscando={buscando} onReload={() => paciente && recarregarUploads(paciente.id)} />}
         {tab === "notas"        && <NotasTab chat={chat} operator={operator} />}
       </div>
@@ -686,7 +686,7 @@ function EventCard({ ev }) {
   );
 }
 
-function AgendamentosTab({ paciente }) {
+function AgendamentosTab({ paciente, info }) {
   const [view, setView]       = useState("all"); // "all" | "future" | "past"
   const [events, setEvents]   = useState(null);
   const [loading, setLoading] = useState(false);
@@ -694,15 +694,20 @@ function AgendamentosTab({ paciente }) {
   const [notFound, setNotFound] = useState(false);
 
   useEffect(() => {
-    if (!paciente) return;
+    // Usa paciente do Codental ou cai no info do chat (nome/telefone visíveis no painel)
+    const phone = (
+      paciente?.telefone || paciente?.phone || paciente?.cellphone_formated ||
+      info?.phone || ""
+    ).replace(/\D/g, "");
+    const name = paciente?.full_name || paciente?.nome || paciente?.name || info?.name || "";
+
+    if (!phone && !name) return;
+
     let cancelled = false;
     setEvents(null);
     setError(null);
     setNotFound(false);
     setLoading(true);
-
-    const phone = (paciente.telefone || paciente.phone || paciente.cellphone_formated || "").replace(/\D/g, "");
-    const name  = paciente.full_name || paciente.nome || paciente.name || "";
 const params = new URLSearchParams({ action: "patient_events", type: view });
     if (phone) params.set("phone", phone);
     if (name)  params.set("name", name);
@@ -721,7 +726,7 @@ const params = new URLSearchParams({ action: "patient_events", type: view });
       .finally(() => { if (!cancelled) setLoading(false); });
 
     return () => { cancelled = true; };
-  }, [paciente, view]);
+  }, [paciente, info, view]);
 
   const tabBtn = (val, label) => (
     <button onClick={() => setView(val)} style={{
@@ -741,12 +746,6 @@ const params = new URLSearchParams({ action: "patient_events", type: view });
           {tabBtn("future", "Próximas")}
           {tabBtn("past",   "Histórico")}
         </div>
-
-        {!paciente && (
-          <div style={{ color:T.sub, fontSize:12, textAlign:"center", padding:8 }}>
-            Paciente não identificado.
-          </div>
-        )}
 
         {loading && (
           <div style={{ color:T.sub, fontSize:12, textAlign:"center", padding:12 }}>Buscando...</div>
