@@ -12,6 +12,7 @@ import {
   getChats, getMessages, getMessagesPaged, sendText, getSessionStatus,
   normalizeChat, normalizeMessage,
   deleteMessage as wahaDeleteMessage, editMessage as wahaEditMessage,
+  sendReaction as wahaSendReaction,
 } from "../services/waha";
 import { MOCK_CHATS, MOCK_MESSAGES } from "../data/mock";
 
@@ -1460,30 +1461,33 @@ export function useWAHA(operator) {
         const targetId = payload.reaction?.targetMessageId
           ?? payload.reactionMessage?.key?.id
           ?? payload.reactedMessageId ?? null;
-        const chatId   = (payload.chatId || payload.from || payload.reactionMessage?.key?.remoteJid || "")
+        const rawChatId = (payload.chatId || payload.from || payload.reactionMessage?.key?.remoteJid || "")
           .replace(/:\d+(@\S+)?$/, "");
         const fromMe   = payload.fromMe ?? false;
-        const reactorId = (payload.from || "").replace(/:\d+(@\S+)?$/, "") || (fromMe ? "me" : "unknown");
-        if (targetId && chatId) {
+        const reactorId = rawChatId || (fromMe ? "me" : "unknown");
+        if (targetId && rawChatId) {
           setMessages(prev => {
-            const cur = prev[chatId];
-            if (!cur) return prev;
+            // Encontra a chave real no state pelo chatId ou por tail-8 de telefone
+            const digits = rawChatId.replace(/\D/g, "");
+            const tail8  = digits.slice(-8);
+            const key = Object.keys(prev).find(k => k === rawChatId
+              || (tail8.length >= 8 && k.replace(/\D/g, "").slice(-8) === tail8));
+            if (!key) return prev;
+            const cur = prev[key];
             const updated = cur.map(m => {
               if (m.id !== targetId) return m;
               const reactions = { ...(m.reactions || {}) };
-              // Remove reação anterior deste usuário
               for (const e of Object.keys(reactions)) {
                 reactions[e] = reactions[e].filter(u => u.id !== reactorId);
                 if (reactions[e].length === 0) delete reactions[e];
               }
-              // Adiciona nova (se não for remoção)
               if (emoji) {
                 reactions[emoji] = [...(reactions[emoji] || []), { id: reactorId, fromMe }];
               }
               return { ...m, reactions };
             });
-            _sessionMsgs.set(chatId, updated);
-            return { ...prev, [chatId]: updated };
+            _sessionMsgs.set(key, updated);
+            return { ...prev, [key]: updated };
           });
         }
       }
@@ -2278,6 +2282,37 @@ export function useWAHA(operator) {
     });
   }, []);
 
+  // Aplica reação localmente (otimista) e envia ao WAHA
+  // emoji="" = remover reação anterior
+  const reactMsg = useCallback(async (chatId, msgId, emoji) => {
+    const myId = myJid || "me";
+    setMessages(prev => {
+      // Encontra a chave correta (pode diferir por tail-8 de telefone)
+      const digits = chatId.replace(/\D/g, "");
+      const tail8  = digits.slice(-8);
+      const key = Object.keys(prev).find(k => k === chatId
+        || (tail8.length >= 8 && k.replace(/\D/g, "").slice(-8) === tail8))
+        || chatId;
+      const cur = prev[key] || [];
+      const updated = cur.map(m => {
+        if (m.id !== msgId) return m;
+        const reactions = { ...(m.reactions || {}) };
+        // Remove qualquer reação anterior deste usuário
+        for (const e of Object.keys(reactions)) {
+          reactions[e] = reactions[e].filter(u => u.id !== myId);
+          if (reactions[e].length === 0) delete reactions[e];
+        }
+        if (emoji) {
+          reactions[emoji] = [...(reactions[emoji] || []), { id: myId, fromMe: true }];
+        }
+        return { ...m, reactions };
+      });
+      _sessionMsgs.set(key, updated);
+      return { ...prev, [key]: updated };
+    });
+    try { await wahaSendReaction(chatId, msgId, emoji); } catch {}
+  }, [myJid]);
+
   const editMsg = useCallback(async (chatId, msgId, newText) => {
     try { await wahaEditMessage(chatId, msgId, newText); } catch {}
     setMessages(prev => {
@@ -2435,6 +2470,7 @@ export function useWAHA(operator) {
     send,
     deleteMsg,
     editMsg,
+    reactMsg,
     deleteChat,
     forwardChat,
     resolveChat,

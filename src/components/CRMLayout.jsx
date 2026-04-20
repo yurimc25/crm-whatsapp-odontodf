@@ -68,7 +68,7 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
   const { displayName, lidPhoneMap } = useContactsCtx();
 
   const {
-    chats, messages, loadMessages, loadOlderMessages, send, deleteMsg, editMsg,
+    chats, messages, loadMessages, loadOlderMessages, send, deleteMsg, editMsg, reactMsg,
     deleteChat, forwardChat, resolveChat, markRead, markUnread, searchMessages, syncMediaToR2,
     resyncChats, syncChatsToR2, mutedChats, muteChat, unmuteChat, loading, error, wsStatus, myJid,
   } = useWAHA(operator);
@@ -404,6 +404,7 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
               onResolve={() => resolveChat(activeChat.id)}
               onDeleteMsg={(msgId, forEveryone) => deleteMsg(activeChat.id, msgId, forEveryone)}
               onEditMsg={(msgId, text) => editMsg(activeChat.id, msgId, text)}
+              onReactMsg={(msgId, emoji) => reactMsg(activeChat.id, msgId, emoji)}
               canForwardToAdmin={perms.verAdmin}
               onLoadOlder={loadOlderMessages}
               onSyncMedia={syncMediaToR2}

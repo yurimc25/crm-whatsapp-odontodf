@@ -54,7 +54,7 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
   const { displayName, lidPhoneMap } = useContactsCtx();
   const {
     chats, messages, loadMessages, loadOlderMessages, send,
-    deleteMsg, editMsg, deleteChat, searchMessages,
+    deleteMsg, editMsg, reactMsg, deleteChat, searchMessages,
     forwardChat, resolveChat, markRead, markUnread,
     resyncChats, syncChatsToR2, syncMediaToR2, mutedChats, muteChat, unmuteChat,
     loading, error, wsStatus, myJid,
