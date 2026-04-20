@@ -518,15 +518,24 @@ export async function editMessage(chatId, msgId, newText) {
 }
 
 export async function sendReaction(chatId, msgId, reaction) {
+  // WAHA precisa do ID serializado: "{fromMe}_{chatId}_{hexId}"
+  // Se msgId já tem esse formato (contém "@" ou "_"), usa direto.
+  // Se é só o hex (vindo do R2/webhook), constrói como mensagem recebida (fromMe=false).
+  const isFullId = msgId && (msgId.includes("@") || /^(true|false)_/.test(msgId));
+  const messageId = isFullId ? msgId : `false_${chatId}_${msgId}`;
+  console.log("[sendReaction] chatId=", chatId, "msgId=", msgId, "→", messageId, "reaction=", reaction);
   const r = await fetch(`${WAHA_URL}/api/reaction`, {
     method: "PUT",
     headers: headers(),
     body: JSON.stringify({
       session: SESSION,
-      reaction: { messageId: msgId, reaction },
+      reaction: { messageId, reaction },
     }),
   });
-  if (!r.ok) throw new Error(`WAHA sendReaction: ${r.status}`);
+  if (!r.ok) {
+    const body = await r.text().catch(() => "");
+    throw new Error(`WAHA sendReaction: ${r.status} ${body}`);
+  }
   return r.json().catch(() => ({}));
 }
 

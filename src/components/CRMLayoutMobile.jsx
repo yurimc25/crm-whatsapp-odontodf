@@ -377,6 +377,7 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
             onSyncMedia={syncMediaToR2}
             onDeleteMsg={(msgId, forEveryone) => deleteMsg?.(activeChat.id, msgId, forEveryone)}
             onEditMsg={(msgId, newText) => editMsg?.(activeChat.id, msgId, newText)}
+            onReactMsg={(msgId, emoji) => reactMsg?.(activeChat.id, msgId, emoji)}
           />
         )}
 

@@ -182,7 +182,7 @@ function dayLabel(ts) {
 
 export default function ChatWindow({
   chat, messages, operator, onSend, onForward, onResolve,
-  onDeleteMsg, onEditMsg,
+  onDeleteMsg, onEditMsg, onReactMsg,
   canForwardToAdmin, onLoadOlder, onSyncMedia
 }) {
   const [text, setText]               = useState("");
@@ -724,7 +724,7 @@ export default function ChatWindow({
           onEdit={msg => { setEditingId(msg.id); setText(msg.text || ""); setMsgCtxMenu(null); }}
           onDeleteForMe={msg => { onDeleteMsg?.(msg.id, false); setMsgCtxMenu(null); }}
           onDeleteForAll={msg => { onDeleteMsg?.(msg.id, true); setMsgCtxMenu(null); }}
-          onReact={async (msg, emoji) => { try { await sendReaction(chat.id, msg.id, emoji); } catch {} setMsgCtxMenu(null); }}
+          onReact={(msg, emoji) => { onReactMsg?.(msg.id, emoji); setMsgCtxMenu(null); }}
           onForward={msg => { onForward?.("recepcao"); setMsgCtxMenu(null); }}
         />
       )}
