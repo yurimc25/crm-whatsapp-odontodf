@@ -588,8 +588,9 @@ export default async function handler(req, res) {
 
         // Fallback por nome completo
         if (!pid && name) {
-          console.log(`[doctoralia/patient_events] telefone sem resultado, tentando nome: "${name}"`);
-          pid = await searchByQ(name.trim());
+          const cleanName = name.replace(/\b\d{9,14}\b/g, "").replace(/\s{2,}/g, " ").trim();
+          console.log(`[doctoralia/patient_events] telefone sem resultado, tentando nome: "${cleanName}"`);
+          pid = await searchByQ(cleanName);
         }
 
         if (!pid) return res.json({ patientId: null, events: [], total: 0, notFound: true });
@@ -605,16 +606,19 @@ export default async function handler(req, res) {
       const params = new URLSearchParams({ page, pageSize });
       if (type && type !== "all") params.set("type", type);
       const url = `${BASE_URL}/api/v2/patients/${pid}/events?${params}`;
+      console.log(`[doctoralia/patient_events] GET ${url}`);
       const r = await docFetch(url);
 
       if (!r.ok) {
         const txt = await r.text().catch(() => "");
+        console.error(`[doctoralia/patient_events] ${r.status}: ${txt.slice(0, 300)}`);
         return res.status(r.status).json({ error: `Doctoralia ${r.status}`, detail: txt.slice(0, 300) });
       }
 
       const data = await r.json();
-      console.log(`[doctoralia/patient_events] patientId=${pid} type=${type} total=${data.total ?? "?"}`);
-      return res.json({ ...data, patientId: pid });
+      const events = data.events ?? data.items ?? data.data ?? data.appointments ?? (Array.isArray(data) ? data : []);
+      console.log(`[doctoralia/patient_events] patientId=${pid} type=${type} total=${data.total ?? events.length} keys=${Object.keys(data).join(",")}`);
+      return res.json({ ...data, events, patientId: pid });
     } catch (e) {
       console.error("[doctoralia/patient_events]", e.message);
       return res.status(500).json({ error: e.message });
