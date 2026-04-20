@@ -802,7 +802,7 @@ const params = new URLSearchParams({ action: "patient_events", type: view });
       .finally(() => { if (!cancelled) setLoading(false); });
 
     return () => { cancelled = true; };
-  }, [paciente, info, view]);
+  }, [paciente, info?.phone, info?.name, view]);
 
   const tabBtn = (val, label) => (
     <button onClick={() => setView(val)} style={{
