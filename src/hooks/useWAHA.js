@@ -1360,9 +1360,9 @@ export function useWAHA(operator) {
             tags:          [],
             photoUrl:      null,
           };
-          const updated = [newChat, ...prev];
-          persistChats(updated);
-          return updated;
+          const deduped = _dedupeChats([newChat, ...prev]);
+          persistChats(deduped);
+          return deduped;
         }
 
         const updated = prev.map(c => c.id !== target.id ? c : {
@@ -1403,11 +1403,14 @@ export function useWAHA(operator) {
     function handleChatNew(payload) {
       const newChat = normalizeChat(payload);
       if (!newChat?.id) return;
+      if (!_isValidChatId(newChat.id)) return;
       setChats(prev => {
-        if (prev.find(c => c.id === newChat.id)) return prev;
-        const updated = [newChat, ...prev];
-        persistChats(updated);
-        return updated;
+        // Só ignora se o ID exato já existe — deixa _dedupeChats resolver telefones duplicados
+        // (não usa tail-8 aqui para evitar falso-positivo com DDDs diferentes)
+        if (prev.some(c => c.id === newChat.id)) return prev;
+        const deduped = _dedupeChats([newChat, ...prev]);
+        persistChats(deduped);
+        return deduped;
       });
       loadLastMessages([newChat.id]);
     }
