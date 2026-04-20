@@ -1722,15 +1722,22 @@ export function useWAHA(operator) {
           // WAHA type é autoritativo para mídia — corrige tipo errado salvo no R2 (ex: "image" em vez de "document")
           const wahaType = waha.type && waha.type !== "text" && waha.type !== "chat" ? waha.type : null;
           const type     = wahaType || m.type;
-          return { ...m, media, hasMedia, type };
+          // replyTo: preserva de qualquer fonte que tenha
+          const replyTo  = m.replyTo || waha.replyTo || null;
+          return { ...m, media, hasMedia, type, replyTo };
         });
 
         // Mensagens só no WAHA e não vistas antes
         const wahaExtras = wahaMsgs.filter(m => !r2Ids.has(m.id) && !existIds.has(m.id));
         // Mensagens que não estão no R2 mas estão no state (WS/cache) — usa versão WAHA se disponível (tem mídia)
+        // Preserva replyTo da versão WS/cache se a WAHA não trouxer
         const wsExtras = existing
           .filter(m => !r2Ids.has(m.id) && !m.id.startsWith("tmp-"))
-          .map(m => getWaha(m.id, m) || m);
+          .map(m => {
+            const waha = getWaha(m.id, m);
+            if (!waha) return m;
+            return { ...waha, replyTo: m.replyTo || waha.replyTo || null };
+          });
 
         const merged     = sortMsgs([...r2Merged, ...wahaExtras, ...wsExtras]);
         const mergedMedia = merged.filter(m => m.hasMedia || m.media).length;
