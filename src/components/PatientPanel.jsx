@@ -627,22 +627,24 @@ function PerfilTab({ paciente, uploads, evols, buscando, onReload, onPacienteUpd
 const STATUS_LABEL = {
   0: "Não confirmada",
   1: "Cancelada",
+  4: "Confirmada",
   6: "Confirmada",
 };
 const STATUS_COLOR = {
   0: "#f0a500",
   1: T.red,
+  4: T.green,
   6: T.green,
 };
 const ATTENDANCE_LABEL = {
   0: "Sem Status",
-  1: "Faltou",
-  2: "Realizada",
+  1: "Consulta realizada",
+  6: "Faltou",
 };
 const ATTENDANCE_COLOR = {
   0: T.sub,
-  1: T.red,
-  2: T.green,
+  1: T.green,
+  6: T.red,
 };
 
 function EventCard({ ev }) {
