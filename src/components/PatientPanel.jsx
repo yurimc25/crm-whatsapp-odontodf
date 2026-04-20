@@ -420,7 +420,7 @@ export default function PatientPanel({ chat, operator }) {
           // Se vier do getPatient (refresh), merge direto
           return { ...prev, ...updates, id: prev.id };
         })} />}
-        {tab === "agendamentos" && <AgendamentosTab />}
+        {tab === "agendamentos" && <AgendamentosTab paciente={paciente} />}
         {tab === "evolucoes"    && <EvolucoeTab paciente={paciente} evols={evols} uploads={uploads} buscando={buscando} onReload={() => paciente && recarregarUploads(paciente.id)} />}
         {tab === "notas"        && <NotasTab chat={chat} operator={operator} />}
       </div>
@@ -624,13 +624,127 @@ function PerfilTab({ paciente, uploads, evols, buscando, onReload, onPacienteUpd
 }
 
 // ── Aba Agenda ────────────────────────────────────────────────────
-function AgendamentosTab() {
+const STATUS_COLOR = {
+  0: T.sub,      // Agendado
+  1: T.red,      // Canc. clínica
+  2: T.red,      // Canc. paciente
+  3: "#f0a500",  // Não confirmado
+  4: T.green,    // Confirmado
+  6: T.green,    // Atendido
+};
+
+function EventCard({ ev }) {
+  const date = ev.start ? new Date(ev.start) : null;
+  const dateStr = date
+    ? date.toLocaleDateString("pt-BR", { day:"2-digit", month:"2-digit", year:"numeric" })
+    : "—";
+  const timeStr = date
+    ? date.toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" })
+    : "";
+  const color = STATUS_COLOR[ev.status] ?? T.sub;
+
+  return (
+    <div style={{ paddingBottom:10, marginBottom:10, borderBottom:`1px solid ${T.border}` }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:3 }}>
+        <span style={{ color:T.text, fontSize:13, fontWeight:600 }}>{dateStr} {timeStr && `· ${timeStr}`}</span>
+        <span style={{ color, fontSize:11, fontWeight:600, background:`${color}18`, borderRadius:4, padding:"2px 6px" }}>
+          {ev.statusLabel || `Status ${ev.status}`}
+        </span>
+      </div>
+      {ev.service && <div style={{ color:T.sub, fontSize:11, marginBottom:2 }}>{ev.service}</div>}
+      {ev.doctor && <div style={{ color:T.sub, fontSize:11 }}>Dr(a). {ev.doctor}</div>}
+      {ev.facilityName && <div style={{ color:T.stub, fontSize:10, marginTop:2 }}>{ev.facilityName}</div>}
+    </div>
+  );
+}
+
+function AgendamentosTab({ paciente }) {
+  const [view, setView]       = useState("future"); // "future" | "past"
+  const [events, setEvents]   = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError]     = useState(null);
+  const [notFound, setNotFound] = useState(false);
+
+  useEffect(() => {
+    if (!paciente) return;
+    let cancelled = false;
+    setEvents(null);
+    setError(null);
+    setNotFound(false);
+    setLoading(true);
+
+    const phone = (paciente.telefone || paciente.phone || "").replace(/\D/g, "");
+    const params = new URLSearchParams({ action: "patient_events", type: view });
+    if (phone) params.set("phone", phone);
+
+    fetch(`/api/doctoralia?${params}`, {
+      headers: { "X-Internal-Key": "crm-interno-2025" },
+    })
+      .then(r => r.json())
+      .then(d => {
+        if (cancelled) return;
+        if (d.notFound) { setNotFound(true); setEvents([]); }
+        else if (d.error) setError(d.error);
+        else setEvents(d.events || []);
+      })
+      .catch(e => { if (!cancelled) setError(e.message); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+
+    return () => { cancelled = true; };
+  }, [paciente, view]);
+
+  const tabBtn = (val, label) => (
+    <button onClick={() => setView(val)} style={{
+      flex: 1, padding:"5px 0", fontSize:11, fontWeight:600,
+      background: view === val ? T.accent : "transparent",
+      color: view === val ? "#fff" : T.sub,
+      border: `1px solid ${view === val ? T.accent : T.border}`,
+      borderRadius: 5, cursor: "pointer",
+    }}>{label}</button>
+  );
+
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-      <Section label="Próximas consultas">
-        <div style={{ color:T.sub, fontSize:12, textAlign:"center", padding:8 }}>
-          Em breve — integração Doctoralia
+      <Section label="Consultas (Doctoralia)">
+        <div style={{ display:"flex", gap:6, marginBottom:10 }}>
+          {tabBtn("future", "Próximas")}
+          {tabBtn("past",   "Histórico")}
+          {tabBtn("all",    "Todas")}
         </div>
+
+        {!paciente && (
+          <div style={{ color:T.sub, fontSize:12, textAlign:"center", padding:8 }}>
+            Paciente não identificado.
+          </div>
+        )}
+
+        {loading && (
+          <div style={{ color:T.sub, fontSize:12, textAlign:"center", padding:12 }}>Buscando...</div>
+        )}
+
+        {!loading && notFound && (
+          <div style={{ color:T.sub, fontSize:12, textAlign:"center", padding:8 }}>
+            Paciente não encontrado no Doctoralia.
+          </div>
+        )}
+
+        {!loading && error && (
+          <div style={{ color:T.red, fontSize:12, padding:8 }}>Erro: {error}</div>
+        )}
+
+        {!loading && !error && events !== null && events.length === 0 && !notFound && (
+          <div style={{ color:T.sub, fontSize:12, textAlign:"center", padding:8 }}>
+            Nenhuma consulta encontrada.
+          </div>
+        )}
+
+        {!loading && events && events.length > 0 && (
+          <div>
+            {events.map((ev, i) => (
+              <EventCard key={ev.id ?? i} ev={ev} />
+            ))}
+          </div>
+        )}
       </Section>
     </div>
   );

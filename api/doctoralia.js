@@ -527,5 +527,90 @@ export default async function handler(req, res) {
     }
   }
 
+  // ── Busca de pacientes por nome/telefone ─────────────────────────
+  if (action === "search") {
+    let { q, results = 10 } = req.query;
+    if (!q) return res.status(400).json({ error: "Parâmetro q obrigatório" });
+
+    // Normaliza telefone se parecer um número
+    const cleaned = q.replace(/[\s\-\(\)\+]/g, "");
+    const isPhone  = /^\d{8,15}$/.test(cleaned);
+    const query    = isPhone ? cleaned : q.trim();
+
+    try {
+      const url = `${BASE_URL}/api/v2/patients?facilityId=${FACILITY_ID}&q=${encodeURIComponent(query)}&page=0&pageSize=${results}`;
+      const r   = await docFetch(url);
+      if (!r.ok) {
+        const txt = await r.text().catch(() => "");
+        return res.status(r.status).json({ error: `Doctoralia ${r.status}`, detail: txt.slice(0, 300) });
+      }
+      const raw      = await r.json();
+      const list     = Array.isArray(raw) ? raw : (raw.data || raw.items || raw.patients || []);
+      const patients = list.map(p => ({
+        id:                  p.id,
+        name:                [p.firstName, p.lastName].filter(Boolean).join(" ") || p.name || p.displayName,
+        phone:               p.phone || p.phoneNumber || null,
+        email:               p.email || null,
+        insurance:           p.insuranceName || p.insurance || null,
+        insuranceId:         p.insuranceId   ?? null,
+        blocked:             p.blocked       ?? false,
+        birthdate:           p.birthdate     || p.birthDate || null,
+        nextAppointment:     p.nextAppointment     || null,
+        previousAppointment: p.previousAppointment || null,
+      }));
+      console.log(`[doctoralia/search] q="${query}" → ${patients.length} pacientes`);
+      return res.json({ q: query, total: patients.length, patients });
+    } catch (e) {
+      console.error("[doctoralia/search]", e.message);
+      return res.status(500).json({ error: e.message });
+    }
+  }
+
+  // ── Consultas do paciente (histórico + próximas) ─────────────────
+  if (action === "patient_events") {
+    const { patientId, phone, type = "all", page = 0, pageSize = 20 } = req.query;
+
+    let pid = patientId;
+
+    // Se não veio patientId, busca pelo telefone via action=search
+    if (!pid && phone) {
+      try {
+        const digits  = phone.replace(/\D/g, "");
+        const url     = `${BASE_URL}/api/v2/patients?facilityId=${FACILITY_ID}&q=${encodeURIComponent(digits)}&page=0&pageSize=5`;
+        const sr      = await docFetch(url);
+        if (sr.ok) {
+          const sd       = await sr.json();
+          const patients = Array.isArray(sd) ? sd : (sd.data || sd.items || sd.patients || []);
+          if (patients.length > 0) pid = patients[0].id;
+        }
+        if (!pid) return res.json({ patientId: null, events: [], total: 0, notFound: true });
+      } catch (e) {
+        console.error("[doctoralia/patient_events] busca por telefone falhou:", e.message);
+        return res.status(500).json({ error: e.message });
+      }
+    }
+
+    if (!pid) return res.status(400).json({ error: "patientId ou phone obrigatório" });
+
+    try {
+      const params = new URLSearchParams({ page, pageSize });
+      if (type && type !== "all") params.set("type", type);
+      const url = `${BASE_URL}/api/v2/patients/${pid}/events?${params}`;
+      const r = await docFetch(url);
+
+      if (!r.ok) {
+        const txt = await r.text().catch(() => "");
+        return res.status(r.status).json({ error: `Doctoralia ${r.status}`, detail: txt.slice(0, 300) });
+      }
+
+      const data = await r.json();
+      console.log(`[doctoralia/patient_events] patientId=${pid} type=${type} total=${data.total ?? "?"}`);
+      return res.json({ ...data, patientId: pid });
+    } catch (e) {
+      console.error("[doctoralia/patient_events]", e.message);
+      return res.status(500).json({ error: e.message });
+    }
+  }
+
   return res.status(400).json({ error: `Ação desconhecida: ${action}` });
 }
