@@ -1041,6 +1041,44 @@ function MessageBubble({ msg, currentOperator, onContextMenu, onOcrResult }) {
             </div>
           )}
 
+          {/* Mensagem citada (reply) */}
+          {msg.replyTo && (
+            <div style={{
+              borderLeft: `3px solid ${isPatient ? T.accent : "#aaa"}`,
+              background: isPatient ? "rgba(255,255,255,.06)" : "rgba(0,0,0,.15)",
+              borderRadius: "0 6px 6px 0",
+              padding: "4px 8px",
+              margin: msg.media ? "4px 4px 0" : "0 0 6px",
+              maxWidth: "100%",
+              overflow: "hidden",
+            }}>
+              {msg.replyTo.hasMedia && !msg.replyTo.body && (
+                <span style={{ fontSize:11, color:T.sub }}>
+                  {msg.replyTo.media?.type === "image" ? "📷 Imagem"
+                   : msg.replyTo.media?.type === "video" ? "🎥 Vídeo"
+                   : msg.replyTo.media?.type === "audio" ? "🎵 Áudio"
+                   : "📎 Arquivo"}
+                </span>
+              )}
+              {msg.replyTo.body ? (
+                <div style={{ fontSize:12, color:T.sub, lineHeight:1.4,
+                  whiteSpace:"pre-wrap", overflow:"hidden",
+                  display:"-webkit-box", WebkitLineClamp:2,
+                  WebkitBoxOrient:"vertical" }}>
+                  {msg.replyTo.hasMedia && (
+                    <span style={{ marginRight:4 }}>
+                      {msg.replyTo.media?.type === "image" ? "📷"
+                       : msg.replyTo.media?.type === "video" ? "🎥"
+                       : msg.replyTo.media?.type === "audio" ? "🎵"
+                       : msg.replyTo.hasMedia ? "📎" : ""}
+                    </span>
+                  )}
+                  {msg.replyTo.body}
+                </div>
+              ) : null}
+            </div>
+          )}
+
           {/* Localização */}
           {msg.location && <LocationBubble location={msg.location} />}
 

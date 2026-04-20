@@ -367,6 +367,24 @@ export function normalizeMessage(wahaMsg) {
     ? reactionsRaw
     : null;
 
+  // ── Mensagem citada (reply) ──────────────────────────────────────
+  const rt = wahaMsg.replyTo || null;
+  const replyTo = rt ? {
+    id:       rt.id || null,
+    body:     rt.body || "",
+    hasMedia: rt.hasMedia || false,
+    media:    rt.media ? {
+      type:     rt.media.mimetype?.startsWith("image/") ? "image"
+               : rt.media.mimetype?.startsWith("video/") ? "video"
+               : rt.media.mimetype?.startsWith("audio/") ? "audio"
+               : "document",
+      mimetype: rt.media.mimetype || null,
+      url:      rt.media.url || null,
+      filename: rt.media.filename || null,
+    } : null,
+    participant: rt.participant || null,
+  } : null;
+
   return {
     id:       wahaMsg.id || `tmp-${tsMs}`,
     from:     wahaMsg.fromMe ? "operator" : "patient",
@@ -378,6 +396,7 @@ export function normalizeMessage(wahaMsg) {
     media,
     location,
     reactions,
+    replyTo,
     pushname: wahaMsg.notifyName || wahaMsg._data?.notifyName || "",
     // JID de quem enviou dentro do grupo (ex: "5561999@c.us"), só existe em grupos
     senderJid: (wahaMsg.author || wahaMsg.participant || wahaMsg._data?.author || wahaMsg._data?.participant || "").replace(/:\d+@/, "@") || null,
