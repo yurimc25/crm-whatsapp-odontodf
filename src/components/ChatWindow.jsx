@@ -722,7 +722,8 @@ export default function ChatWindow({
             setMsgCtxMenu(null);
           }}
           onEdit={msg => { setEditingId(msg.id); setText(msg.text || ""); setMsgCtxMenu(null); }}
-          onDelete={msg => { onDeleteMsg?.(msg.id); setMsgCtxMenu(null); }}
+          onDeleteForMe={msg => { onDeleteMsg?.(msg.id, false); setMsgCtxMenu(null); }}
+          onDeleteForAll={msg => { onDeleteMsg?.(msg.id, true); setMsgCtxMenu(null); }}
           onReact={async (msg, emoji) => { try { await sendReaction(chat.id, msg.id, emoji); } catch {} setMsgCtxMenu(null); }}
           onForward={msg => { onForward?.("recepcao"); setMsgCtxMenu(null); }}
         />
@@ -1205,7 +1206,7 @@ function LinkPreview({ url }) {
 
 // ── Message Context Menu ──────────────────────────────────────────
 const REACTION_EMOJIS = ["👍","❤️","😂","😮","😢","🙏"];
-function MsgContextMenu({ msg, x, y, isOwn, onClose, onReply, onEdit, onDelete, onReact, onForward }) {
+function MsgContextMenu({ msg, x, y, isOwn, onClose, onReply, onEdit, onDeleteForMe, onDeleteForAll, onReact, onForward }) {
   const menuRef = useRef(null);
   useEffect(() => {
     if (!menuRef.current) return;
@@ -1253,11 +1254,11 @@ function MsgContextMenu({ msg, x, y, isOwn, onClose, onReply, onEdit, onDelete, 
         ))}
       </div>
       {menuItem("↩ Responder", () => onReply(msg))}
-      {isOwn && menuItem("✏️ Editar", () => onEdit(msg))}
+      {isOwn && !msg.revoked && menuItem("✏️ Editar", () => onEdit(msg))}
       {menuItem("↗ Encaminhar", () => onForward(msg))}
       <div style={{ height:1, background:"#333", margin:"4px 0" }} />
-      {isOwn && menuItem("🗑 Apagar para mim", () => onDelete(msg), "#e57373")}
-      {isOwn && menuItem("🗑 Apagar para todos", () => onDelete(msg), "#e57373")}
+      {isOwn && menuItem("🗑 Apagar para mim", () => onDeleteForMe(msg), "#e57373")}
+      {isOwn && !msg.revoked && menuItem("🗑 Apagar para todos", () => onDeleteForAll(msg), "#e57373")}
     </div>
   );
 }

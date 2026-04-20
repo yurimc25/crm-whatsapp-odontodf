@@ -499,7 +499,7 @@ export async function deleteMessage(chatId, msgId, forEveryone = false) {
   const r = await fetch(`${WAHA_URL}/api/${SESSION}/chats/${id}/messages/${mid}`, {
     method: "DELETE",
     headers: headers(),
-    body: JSON.stringify({ deleteMedia: true }),
+    body: JSON.stringify({ deleteMedia: true, forEveryone }),
   });
   if (!r.ok) throw new Error(`WAHA deleteMessage: ${r.status}`);
   return r.json().catch(() => ({}));

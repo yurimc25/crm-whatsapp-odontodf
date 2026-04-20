@@ -2264,10 +2264,15 @@ export function useWAHA(operator) {
   }, []);
 
   // ── Apagar/editar mensagem ────────────────────────────────────
-  const deleteMsg = useCallback(async (chatId, msgId) => {
-    try { await wahaDeleteMessage(chatId, msgId); } catch {}
+  const deleteMsg = useCallback(async (chatId, msgId, forEveryone = false) => {
+    try { await wahaDeleteMessage(chatId, msgId, forEveryone); } catch {}
     setMessages(prev => {
-      const updated = (prev[chatId] || []).filter(m => m.id !== msgId);
+      const cur = prev[chatId] || [];
+      const updated = forEveryone
+        // "Para todos": marca revoked (visualmente riscado, como o webhook faz)
+        ? cur.map(m => m.id === msgId ? { ...m, revoked: true } : m)
+        // "Para mim": remove apenas do estado local
+        : cur.filter(m => m.id !== msgId);
       _sessionMsgs.set(chatId, updated);
       return { ...prev, [chatId]: updated };
     });

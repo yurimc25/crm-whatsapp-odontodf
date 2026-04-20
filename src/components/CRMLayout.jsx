@@ -402,7 +402,7 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
               onSend={(text, replyToId) => send(activeChat.id, text, operator.name, replyToId)}
               onForward={toRole => forwardChat(activeChat.id, toRole)}
               onResolve={() => resolveChat(activeChat.id)}
-              onDeleteMsg={(msgId) => deleteMsg(activeChat.id, msgId)}
+              onDeleteMsg={(msgId, forEveryone) => deleteMsg(activeChat.id, msgId, forEveryone)}
               onEditMsg={(msgId, text) => editMsg(activeChat.id, msgId, text)}
               canForwardToAdmin={perms.verAdmin}
               onLoadOlder={loadOlderMessages}
