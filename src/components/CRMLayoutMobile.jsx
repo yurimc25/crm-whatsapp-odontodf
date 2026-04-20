@@ -374,7 +374,7 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
             onResolve={() => resolveChat(activeChat.id)}
             canForwardToAdmin={perms.verAdmin}
             onLoadOlder={loadOlderMessages}
-            onSyncMedia={syncMediaToR2}
+            onSyncMedia={operator.role === "admin" ? syncMediaToR2 : undefined}
             onDeleteMsg={(msgId, forEveryone) => deleteMsg?.(activeChat.id, msgId, forEveryone)}
             onEditMsg={(msgId, newText) => editMsg?.(activeChat.id, msgId, newText)}
             onReactMsg={(msgId, emoji) => reactMsg?.(activeChat.id, msgId, emoji)}

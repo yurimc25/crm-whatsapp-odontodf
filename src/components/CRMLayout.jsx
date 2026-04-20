@@ -407,7 +407,7 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
               onReactMsg={(msgId, emoji) => reactMsg(activeChat.id, msgId, emoji)}
               canForwardToAdmin={perms.verAdmin}
               onLoadOlder={loadOlderMessages}
-              onSyncMedia={syncMediaToR2}
+              onSyncMedia={operator.role === "admin" ? syncMediaToR2 : undefined}
             />
           ) : (
             <div style={{

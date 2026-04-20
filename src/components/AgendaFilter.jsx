@@ -5,6 +5,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { phoneVariants, formatPhone } from "../hooks/useContacts";
+import { useContactsCtx } from "../App";
 
 const iKey = () => import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
 
@@ -50,6 +51,7 @@ function shiftDate(dateStr, delta) {
 }
 
 export default function AgendaFilter({ chats, onSelectChat, onStartNewChat }) {
+  const { addLocalContact, contactMap } = useContactsCtx();
   const [date, setDate]           = useState(todayStr());
   const [doctors, setDoctors]     = useState([]);
   const [loadingDoc, setLoadingDoc] = useState(false);
@@ -263,6 +265,15 @@ export default function AgendaFilter({ chats, onSelectChat, onStartNewChat }) {
                   chat={chat}
                   isCancelled={isCancelled}
                   onOpen={() => {
+                    // Registra no mapa de contatos se tiver nome+telefone e não estiver mapeado
+                    if (appt.patientName && appt.patientPhone) {
+                      const digits = appt.patientPhone.replace(/\D/g, "");
+                      const phone8 = digits.slice(-8);
+                      const alreadyMapped = Object.keys(contactMap).some(k => k.replace(/\D/g,"").slice(-8) === phone8);
+                      if (!alreadyMapped) {
+                        addLocalContact({ phone: digits, name: appt.patientName });
+                      }
+                    }
                     if (chat) { onSelectChat(chat); return; }
                     if (appt.patientPhone) onStartNewChat?.(appt.patientPhone);
                   }}
