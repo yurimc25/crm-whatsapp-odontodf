@@ -177,13 +177,28 @@ export default function PatientPanel({ chat, operator, activeTab, onTabChange, t
           result = { ...result, patients: filtered };
         }
         if (!result?.patients?.length && info.hasContact) {
-          const nameResult = await searchByName(info.name.split(" ").slice(0,3).join(" "));
-          // Para busca por nome, ainda filtra por telefone se possível
-          if (nameResult?.patients?.length > 0 && tail8.length === 8) {
-            const filtered = nameResult.patients.filter(matchesPhone);
-            result = { ...nameResult, patients: filtered };
-          } else {
-            result = nameResult;
+          const cleanName = info.name.trim();
+          // Ignora nome que contém CPF embutido (ex: "João Silva 123.456.789-00")
+          const nameHasCpf = /\d{3}\.?\d{3}\.?\d{3}[-.]?\d{2}/.test(cleanName)
+            || /\d{11}/.test(cleanName.replace(/\D/g, ""));
+          if (!nameHasCpf && tail8.length === 8) {
+            const words = cleanName.split(/\s+/).filter(Boolean);
+            // Tenta progressivamente: 3 palavras → 2 → só o primeiro nome
+            const attempts = [
+              words.slice(0, 3).join(" "),
+              words.slice(0, 2).join(" "),
+              words[0],
+            ].filter((v, i, a) => v && a.indexOf(v) === i);
+            for (const attempt of attempts) {
+              const nameResult = await searchByName(attempt);
+              if (nameResult?.patients?.length > 0) {
+                const filtered = nameResult.patients.filter(matchesPhone);
+                if (filtered.length > 0) {
+                  result = { ...nameResult, patients: filtered };
+                  break;
+                }
+              }
+            }
           }
         }
         console.log("[buscar] result patients=", result?.patients?.length);
