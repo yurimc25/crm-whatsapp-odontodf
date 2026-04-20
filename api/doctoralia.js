@@ -538,7 +538,7 @@ export default async function handler(req, res) {
     const query    = isPhone ? cleaned : q.trim();
 
     try {
-      const url = `${BASE_URL}/api/v2/patients?facilityId=${FACILITY_ID}&q=${encodeURIComponent(query)}&page=0&pageSize=${results}`;
+      const url = `${BASE_URL}/api/patients/search/withappointments?filter=${encodeURIComponent(query)}&results=${results}`;
       const r   = await docFetch(url);
       if (!r.ok) {
         const txt = await r.text().catch(() => "");
@@ -573,7 +573,7 @@ export default async function handler(req, res) {
     let pid = patientId;
 
     async function searchByQ(q) {
-      const url = `${BASE_URL}/api/v2/patients?facilityId=${FACILITY_ID}&q=${encodeURIComponent(q)}&page=0&pageSize=5`;
+      const url = `${BASE_URL}/api/patients/search/withappointments?filter=${encodeURIComponent(q)}&results=5`;
       const r   = await docFetch(url);
       if (!r.ok) return null;
       const sd  = await r.json();
