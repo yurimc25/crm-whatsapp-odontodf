@@ -678,7 +678,7 @@ function AgendamentosTab({ paciente }) {
     if (phone) params.set("phone", phone);
 
     fetch(`/api/doctoralia?${params}`, {
-      headers: { "X-Internal-Key": "crm-interno-2025" },
+      headers: { "X-Internal-Key": import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10" },
     })
       .then(r => r.json())
       .then(d => {
