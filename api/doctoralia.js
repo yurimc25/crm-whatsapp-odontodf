@@ -604,9 +604,17 @@ export default async function handler(req, res) {
 
     try {
       const params = new URLSearchParams({ page, pageSize });
-      if (type && type !== "all") params.set("type", type);
-      const url = `${BASE_URL}/api/v2/patients/${pid}/events?${params}`;
-      const r = await docFetch(url);
+      if (type === "future") params.set("type", "future");
+      if (type === "past")   params.set("type", "past");
+
+      // Tenta /api/v2/patients/{id}/appointments primeiro; fallback para /events
+      let url = `${BASE_URL}/api/v2/patients/${pid}/appointments?${params}`;
+      let r   = await docFetch(url);
+
+      if (r.status === 404) {
+        url = `${BASE_URL}/api/v2/patients/${pid}/events?${params}`;
+        r   = await docFetch(url);
+      }
 
       if (!r.ok) {
         const txt = await r.text().catch(() => "");
@@ -614,9 +622,9 @@ export default async function handler(req, res) {
         return res.status(r.status).json({ error: `Doctoralia ${r.status}`, detail: txt.slice(0, 300) });
       }
 
-      const data = await r.json();
-      const events = data.events ?? data.items ?? data.data ?? data.appointments ?? (Array.isArray(data) ? data : []);
-      console.log(`[doctoralia/patient_events] patientId=${pid} type=${type} total=${data.total ?? events.length} keys=${Object.keys(data).join(",")}`);
+      const data   = await r.json();
+      const events = data.appointments ?? data.events ?? data.items ?? data.data ?? (Array.isArray(data) ? data : []);
+      console.log(`[doctoralia/patient_events] patientId=${pid} type=${type} total=${data.total ?? events.length} url=${url} keys=${Object.keys(data).join(",")}`);
       return res.json({ ...data, events, patientId: pid });
     } catch (e) {
       console.error("[doctoralia/patient_events]", e.message);
