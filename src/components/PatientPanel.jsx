@@ -659,7 +659,7 @@ function EventCard({ ev }) {
 }
 
 function AgendamentosTab({ paciente }) {
-  const [view, setView]       = useState("future"); // "future" | "past"
+  const [view, setView]       = useState("all"); // "all" | "future" | "past"
   const [events, setEvents]   = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState(null);
@@ -674,8 +674,10 @@ function AgendamentosTab({ paciente }) {
     setLoading(true);
 
     const phone = (paciente.telefone || paciente.phone || paciente.cellphone_formated || "").replace(/\D/g, "");
+    const name  = paciente.full_name || paciente.nome || paciente.name || "";
     const params = new URLSearchParams({ action: "patient_events", type: view });
     if (phone) params.set("phone", phone);
+    if (name)  params.set("name", name);
 
     fetch(`/api/doctoralia?${params}`, {
       headers: { "X-Internal-Key": import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10" },
@@ -707,9 +709,9 @@ function AgendamentosTab({ paciente }) {
     <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
       <Section label="Consultas (Doctoralia)">
         <div style={{ display:"flex", gap:6, marginBottom:10 }}>
+          {tabBtn("all",    "Todas")}
           {tabBtn("future", "Próximas")}
           {tabBtn("past",   "Histórico")}
-          {tabBtn("all",    "Todas")}
         </div>
 
         {!paciente && (

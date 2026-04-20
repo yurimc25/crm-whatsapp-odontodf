@@ -568,29 +568,38 @@ export default async function handler(req, res) {
 
   // ── Consultas do paciente (histórico + próximas) ─────────────────
   if (action === "patient_events") {
-    const { patientId, phone, type = "all", page = 0, pageSize = 20 } = req.query;
+    const { patientId, phone, name, type = "all", page = 0, pageSize = 20 } = req.query;
 
     let pid = patientId;
 
-    // Se não veio patientId, busca pelo telefone via action=search
+    async function searchByQ(q) {
+      const url = `${BASE_URL}/api/v2/patients?facilityId=${FACILITY_ID}&q=${encodeURIComponent(q)}&page=0&pageSize=5`;
+      const r   = await docFetch(url);
+      if (!r.ok) return null;
+      const sd  = await r.json();
+      const list = Array.isArray(sd) ? sd : (sd.data || sd.items || sd.patients || []);
+      return list.length > 0 ? list[0].id : null;
+    }
+
     if (!pid && phone) {
       try {
-        const digits  = phone.replace(/\D/g, "");
-        const url     = `${BASE_URL}/api/v2/patients?facilityId=${FACILITY_ID}&q=${encodeURIComponent(digits)}&page=0&pageSize=5`;
-        const sr      = await docFetch(url);
-        if (sr.ok) {
-          const sd       = await sr.json();
-          const patients = Array.isArray(sd) ? sd : (sd.data || sd.items || sd.patients || []);
-          if (patients.length > 0) pid = patients[0].id;
+        const digits8 = phone.replace(/\D/g, "").slice(-8);
+        pid = await searchByQ(digits8);
+
+        // Fallback por nome completo
+        if (!pid && name) {
+          console.log(`[doctoralia/patient_events] telefone sem resultado, tentando nome: "${name}"`);
+          pid = await searchByQ(name.trim());
         }
+
         if (!pid) return res.json({ patientId: null, events: [], total: 0, notFound: true });
       } catch (e) {
-        console.error("[doctoralia/patient_events] busca por telefone falhou:", e.message);
+        console.error("[doctoralia/patient_events] busca falhou:", e.message);
         return res.status(500).json({ error: e.message });
       }
     }
 
-    if (!pid) return res.status(400).json({ error: "patientId ou phone obrigatório" });
+    if (!pid) return res.status(400).json({ error: "patientId, phone ou name obrigatório" });
 
     try {
       const params = new URLSearchParams({ page, pageSize });
