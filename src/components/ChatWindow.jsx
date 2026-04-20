@@ -265,10 +265,11 @@ export default function ChatWindow({
     });
   }
 
-  const bottomRef      = useRef(null);
-  const scrollRef      = useRef(null);
-  const prevScrollH    = useRef(0);
-  const scrollToChatId = useRef(null);
+  const bottomRef        = useRef(null);
+  const scrollRef        = useRef(null);
+  const prevScrollH      = useRef(0);
+  const scrollToChatId   = useRef(null);
+  const initialLoadDone  = useRef(false); // bloqueia loadOlderNow até chat renderizar
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const { displayInfo, addLocalContact, removeContact, lidPhoneMap } = useContactsCtx();
   const info = displayInfo(chat.id, chat.name, chat.pushname);
@@ -295,26 +296,29 @@ export default function ChatWindow({
     setHasMore(true); setOldestDate(null); setLoadingMore(false);
     setShowScrollBtn(false);
     scrollToChatId.current = chat.id;
-    // Garante scroll ao fundo na troca de chat, independente de quantas vezes
-    // setMessages for chamado (cache, R2 async, etc.)
-    requestAnimationFrame(() => {
-      bottomRef.current?.scrollIntoView({ behavior: "instant" });
-    });
+    initialLoadDone.current = false; // reseta guard de scroll infinito
   }, [chat.id]);
 
   useEffect(() => {
     const el = scrollRef.current;
-    if (!el) return;
-    // Troca de chat: vai para o fundo imediatamente
-    if (scrollToChatId.current) {
-      scrollToChatId.current = null;
-      requestAnimationFrame(() => {
+    if (!el || !messages?.length) return;
+
+    const scrollToBottom = () => {
+      // Duplo rAF: garante que o DOM foi pintado antes de medir/scrollar
+      requestAnimationFrame(() => requestAnimationFrame(() => {
         bottomRef.current?.scrollIntoView({ behavior: "instant" });
-      });
+        initialLoadDone.current = true;
+      }));
+    };
+
+    // Carga inicial do chat (primeira vez que mensagens chegam)
+    if (!initialLoadDone.current) {
+      scrollToChatId.current = null;
+      scrollToBottom();
       return;
     }
-    // Nova mensagem ou reload do R2: só scrolla se já estava perto do fundo
-    // Usa rAF para esperar o DOM renderizar o novo conteúdo antes de medir
+
+    // Nova mensagem em tempo real ou reload do R2: scrolla só se perto do fundo
     requestAnimationFrame(() => {
       if (!el) return;
       const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 350;
@@ -340,7 +344,8 @@ export default function ChatWindow({
     if (!el) return;
     const distBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     setShowScrollBtn(distBottom > 400);
-    if (el.scrollTop <= 80) loadOlderNow();
+    // Não carrega mensagens mais antigas enquanto carga inicial não terminou
+    if (initialLoadDone.current && el.scrollTop <= 80) loadOlderNow();
   }, [loadOlderNow]);
 
   useEffect(() => {
