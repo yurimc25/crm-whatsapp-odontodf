@@ -273,7 +273,7 @@ export default function ChatWindow({
   const scrollToChatId   = useRef(null);
   const initialLoadDone  = useRef(false); // bloqueia loadOlderNow até chat renderizar
   const [showScrollBtn, setShowScrollBtn] = useState(false);
-  const { displayInfo, addLocalContact, removeContact, lidPhoneMap } = useContactsCtx();
+  const { displayInfo, addLocalContact, removeContact, lidPhoneMap, contactMap } = useContactsCtx();
   const info = displayInfo(chat.id, chat.name, chat.pushname);
   const [photoUrl, setPhotoUrl] = useState(() => readPhotoCache()[chat.id] || chat.photoUrl || null);
 
@@ -920,6 +920,7 @@ export default function ChatWindow({
         <ContactLookupModal
           phoneNumber={info.phone}
           chatId={chat.id}
+          contactMap={contactMap}
           onClose={() => setShowContactLookup(false)}
           onSelectContact={(contact) => {
             // contact can be a string (legacy) or an object { name, phone, variants }

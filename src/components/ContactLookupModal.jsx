@@ -14,7 +14,7 @@ const T = {
   inputBg:  "#1a1a1a",
 };
 
-export function ContactLookupModal({ phoneNumber, chatId, onClose, onSelectContact }) {
+export function ContactLookupModal({ phoneNumber, chatId, contactMap = {}, onClose, onSelectContact }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -51,6 +51,24 @@ export function ContactLookupModal({ phoneNumber, chatId, onClose, onSelectConta
         const cp = (cPhone || "").replace(/\D/g, "");
         if (!cp || cp.length < 8) return false;
         return cp.slice(-8) === chatTail8;
+      }
+
+      // ── Mapa local de contatos — busca instantânea por nome ou número ──
+      let localResults = [];
+      {
+        const q = query.trim().toLowerCase();
+        const seen = new Map(); // phone → name (dedup por telefone)
+        for (const [key, name] of Object.entries(contactMap)) {
+          if (!name) continue;
+          const matches = isDigits
+            ? key.includes(digits) || digits.slice(-4).length >= 4 && key.slice(-4) === digits.slice(-4)
+            : name.toLowerCase().includes(q);
+          if (!matches) continue;
+          // agrupa por nome para evitar múltiplas entradas da mesma pessoa (variantes de número)
+          const tail8 = key.replace(/\D/g, "").slice(-8);
+          if (!seen.has(tail8)) seen.set(tail8, { name, phone: key.replace(/\D/g, "") });
+        }
+        localResults = [...seen.values()].slice(0, 10).map(c => ({ ...c, source: "local" }));
       }
 
       // ── Google Contacts — busca pelos últimos 4 dígitos (ou nome) ──
@@ -109,7 +127,7 @@ export function ContactLookupModal({ phoneNumber, chatId, onClose, onSelectConta
 
       // ── Mescla resultados removendo duplicatas por número ────────
       const seen = new Set();
-      const merged = [...googleResults, ...codentalResults].filter(c => {
+      const merged = [...localResults, ...googleResults, ...codentalResults].filter(c => {
         const key = (c.phone || "").replace(/\D/g, "").slice(-8) + "|" + (c.name || "").toLowerCase();
         if (seen.has(key)) return false;
         seen.add(key);
@@ -300,11 +318,11 @@ export function ContactLookupModal({ phoneNumber, chatId, onClose, onSelectConta
                       <span style={{
                         fontSize: 9, fontWeight: 700, padding: "1px 5px",
                         borderRadius: 4, flexShrink: 0,
-                        background: contact.source === "codental" ? "#1a2e40" : "#1a2e22",
-                        color:      contact.source === "codental" ? "#4a9fd4" : T.green,
-                        border:     `1px solid ${contact.source === "codental" ? "#4a9fd444" : T.green + "44"}`,
+                        background: contact.source === "codental" ? "#1a2e40" : contact.source === "local" ? "#2a2a1a" : "#1a2e22",
+                        color:      contact.source === "codental" ? "#4a9fd4" : contact.source === "local" ? "#d4c46a" : T.green,
+                        border:     `1px solid ${contact.source === "codental" ? "#4a9fd444" : contact.source === "local" ? "#d4c46a44" : T.green + "44"}`,
                       }}>
-                        {contact.source === "codental" ? "Codental" : "Google"}
+                        {contact.source === "codental" ? "Codental" : contact.source === "local" ? "Local" : "Google"}
                       </span>
                     )}
                   </div>
