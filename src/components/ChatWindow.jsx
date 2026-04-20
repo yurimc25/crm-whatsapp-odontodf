@@ -254,14 +254,15 @@ export default function ChatWindow({
   // Auto-refresh a cada 5s
   const [lastRefresh, setLastRefresh] = useState(Date.now());
 
-  function handleOcrResult(text) {
+  function handleOcrResult(text, afterMsgId) {
     addExtraMessage({
-      id:             `ocr-${Date.now()}`,
+      id:          `ocr-${Date.now()}`,
       hasPatientCard: true,
       text,
-      from:           "operator",
-      time:           new Date().toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" }),
-      ts:             new Date().toISOString(),
+      from:        "operator",
+      time:        new Date().toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" }),
+      ts:          new Date().toISOString(),
+      afterMsgId:  afterMsgId || null,
     });
   }
 
@@ -461,16 +462,25 @@ export default function ChatWindow({
     ...(canForwardToAdmin ? [{ label:"Administrativo 🔒", value:"admin" }] : []),
   ].filter(t => t.value !== chat.assignedTo);
 
-  // Separadores de dia — inclui mensagens sintéticas (PatientCards de OCR) ao final
+  // Separadores de dia — insere PatientCards de OCR logo após a imagem que os gerou
+  const extraByAnchor = {};
+  const extraFloating = [];
+  for (const e of extraMessages) {
+    if (e.afterMsgId) (extraByAnchor[e.afterMsgId] ||= []).push(e);
+    else extraFloating.push(e);
+  }
   const msgsWithSeps = [];
   let lastDay = null;
-  for (const msg of [...messages, ...extraMessages]) {
+  for (const msg of [...messages, ...extraFloating]) {
     const dk = dayKey(msg.ts);
     if (dk && dk !== lastDay) {
       msgsWithSeps.push({ __sep:true, ts:msg.ts, label:dayLabel(msg.ts) });
       lastDay = dk;
     }
     msgsWithSeps.push(msg);
+    for (const extra of (extraByAnchor[msg.id] || [])) {
+      msgsWithSeps.push(extra);
+    }
   }
 
 
@@ -1089,7 +1099,7 @@ function MessageBubble({ msg, currentOperator, onContextMenu, onOcrResult }) {
               r2MsgId={msg.id}
               chatId={msg.chatId}
               chatSession={import.meta.env.VITE_WAHA_SESSION || "default"}
-              onOcrResult={onOcrResult}
+              onOcrResult={text => onOcrResult?.(text, msg.id)}
             />
           )}
 

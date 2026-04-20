@@ -75,33 +75,26 @@ export default function ChatList({
 
   const sorted = useMemo(() => {
     return [...chats].sort((a, b) => {
-      // Resolvidos sempre no final
-      const aResolved = a.status === "resolved";
-      const bResolved = b.status === "resolved";
-      if (aResolved !== bResolved) return aResolved ? 1 : -1;
-
-      // Entre resolvidos: mais recente primeiro (por lastTs)
-      if (aResolved && bResolved) {
-        const ta = a.lastTs ? new Date(a.lastTs).getTime() : 0;
-        const tb = b.lastTs ? new Date(b.lastTs).getTime() : 0;
-        return tb - ta;
-      }
-
-      // Abertos/aguardando: quem tem lastPatientTs mais ANTIGO fica no topo (esperando há mais tempo)
-      // Chats silenciados não entram na fila de pendentes
+      // Chats em espera (com lastPatientTs, não silenciados, não resolvidos) ficam no topo
+      // ordenados do mais antigo para o mais recente (quem espera há mais tempo sobe primeiro)
       const aMuted = mutedChats?.has(a.id);
       const bMuted = mutedChats?.has(b.id);
-      const tsA = !aMuted && a.lastPatientTs ? new Date(a.lastPatientTs).getTime() : 0;
-      const tsB = !bMuted && b.lastPatientTs ? new Date(b.lastPatientTs).getTime() : 0;
-      if (tsA && tsB) return tsA - tsB;   // mais antigo no topo
-      if (tsA) return -1;                  // tem pendência → sobe
-      if (tsB) return 1;                   // tem pendência → sobe
-      // Sem pendência: mais recente no topo
+      const aWaiting = !aMuted && a.status !== "resolved" && !!a.lastPatientTs;
+      const bWaiting = !bMuted && b.status !== "resolved" && !!b.lastPatientTs;
+
+      if (aWaiting !== bWaiting) return aWaiting ? -1 : 1;
+
+      if (aWaiting && bWaiting) {
+        // Mais antigo no topo (esperando há mais tempo)
+        return new Date(a.lastPatientTs).getTime() - new Date(b.lastPatientTs).getTime();
+      }
+
+      // Demais chats (abertos sem pendência + resolvidos): mais recente no topo por lastTs
       const ta = a.lastTs ? new Date(a.lastTs).getTime() : 0;
       const tb = b.lastTs ? new Date(b.lastTs).getTime() : 0;
       return tb - ta;
     });
-  }, [chats]);
+  }, [chats, mutedChats]);
 
   const filtered = useMemo(() => {
     if (!search) return sorted;
