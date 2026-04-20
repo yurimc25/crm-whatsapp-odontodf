@@ -981,14 +981,21 @@ function MessageBubble({ msg, currentOperator, onContextMenu, onOcrResult }) {
   // Link preview
   const urls = msg.text ? extractUrls(msg.text) : [];
 
-  const { displayName } = useContactsCtx();
+  const { resolveName } = useContactsCtx();
   const isGroupMsg = isPatient && msg.chatId?.endsWith("@g.us");
-  // Nome do remetente no grupo: contacto resolvido > pushname > telefone extraído do senderJid
-  const senderPhone = msg.senderJid ? msg.senderJid.replace("@c.us","").replace("@s.whatsapp.net","") : null;
-  const senderLabel = isGroupMsg
-    ? (displayName(msg.senderJid, msg.pushname, msg.pushname) || msg.pushname || senderPhone || null)
-    : null;
-  const senderSub = isGroupMsg && senderPhone && senderLabel !== senderPhone
+  // Remetente em grupo: só resolve @c.us no contactMap, nunca tenta converter @lid
+  const isSenderCus = msg.senderJid?.endsWith("@c.us") || msg.senderJid?.endsWith("@s.whatsapp.net");
+  const senderPhone = isSenderCus ? msg.senderJid.replace(/@.*$/, "") : null;
+  const senderLabel = (() => {
+    if (!isGroupMsg) return null;
+    if (isSenderCus) {
+      const contactName = resolveName(msg.senderJid, msg.pushname);
+      return contactName || msg.pushname || (senderPhone ? `+${senderPhone}` : null);
+    }
+    // @lid ou sem senderJid: só pushname
+    return msg.pushname || null;
+  })();
+  const senderSub = isGroupMsg && senderPhone && senderLabel !== `+${senderPhone}`
     ? `+${senderPhone}`
     : null;
 
