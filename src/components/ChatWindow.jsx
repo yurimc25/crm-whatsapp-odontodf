@@ -269,6 +269,7 @@ export default function ChatWindow({
   const scrollRef      = useRef(null);
   const prevScrollH    = useRef(0);
   const scrollToChatId = useRef(null);
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
   const { displayInfo, addLocalContact, removeContact, lidPhoneMap } = useContactsCtx();
   const info = displayInfo(chat.id, chat.name, chat.pushname);
   const [photoUrl, setPhotoUrl] = useState(() => readPhotoCache()[chat.id] || chat.photoUrl || null);
@@ -292,19 +293,33 @@ export default function ChatWindow({
 
   useEffect(() => {
     setHasMore(true); setOldestDate(null); setLoadingMore(false);
+    setShowScrollBtn(false);
     scrollToChatId.current = chat.id;
+    // Garante scroll ao fundo na troca de chat, independente de quantas vezes
+    // setMessages for chamado (cache, R2 async, etc.)
+    requestAnimationFrame(() => {
+      bottomRef.current?.scrollIntoView({ behavior: "instant" });
+    });
   }, [chat.id]);
 
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
+    // Troca de chat: vai para o fundo imediatamente
     if (scrollToChatId.current) {
       scrollToChatId.current = null;
-      bottomRef.current?.scrollIntoView({ behavior:"instant" });
+      requestAnimationFrame(() => {
+        bottomRef.current?.scrollIntoView({ behavior: "instant" });
+      });
       return;
     }
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 300;
-    if (nearBottom) bottomRef.current?.scrollIntoView({ behavior:"instant" });
+    // Nova mensagem ou reload do R2: só scrolla se já estava perto do fundo
+    // Usa rAF para esperar o DOM renderizar o novo conteúdo antes de medir
+    requestAnimationFrame(() => {
+      if (!el) return;
+      const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 350;
+      if (nearBottom) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    });
   }, [messages]);
 
   const loadOlderNow = useCallback(async () => {
@@ -322,8 +337,10 @@ export default function ChatWindow({
 
   const handleScroll = useCallback(async () => {
     const el = scrollRef.current;
-    if (!el || el.scrollTop > 80) return;
-    loadOlderNow();
+    if (!el) return;
+    const distBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    setShowScrollBtn(distBottom > 400);
+    if (el.scrollTop <= 80) loadOlderNow();
   }, [loadOlderNow]);
 
   useEffect(() => {
@@ -455,7 +472,7 @@ export default function ChatWindow({
 
   return (
     <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden",
-      background:T.bg, fontFamily:"'DM Sans', sans-serif" }}>
+      background:T.bg, fontFamily:"'DM Sans', sans-serif", position:"relative" }}>
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
         @keyframes alertPulse {
@@ -644,6 +661,28 @@ export default function ChatWindow({
         })}
         <div ref={bottomRef} />
       </div>
+
+      {/* Botão de seta — aparece quando usuário está longe do fundo */}
+      {showScrollBtn && (
+        <button
+          onClick={() => {
+            bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+            setShowScrollBtn(false);
+          }}
+          style={{
+            position: "absolute", bottom: 80, right: 20,
+            width: 36, height: 36, borderRadius: "50%",
+            background: "#2d2d2d", border: "1px solid #444",
+            color: "#ccc", fontSize: 18, cursor: "pointer",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            boxShadow: "0 2px 8px #0006", zIndex: 10,
+            transition: "opacity .2s",
+          }}
+          title="Ir para o final"
+        >
+          ↓
+        </button>
+      )}
 
       {/* Mensagem de contexto do menu */}
       {msgCtxMenu && (
