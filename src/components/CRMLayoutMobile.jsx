@@ -50,6 +50,7 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
   const [showNewChat, setShowNewChat] = useState(false);
   const [newChatPhone, setNewChatPhone] = useState(null);
   const [agendaOpen, setAgendaOpen]   = useState(false);
+  const [photoModal, setPhotoModal]   = useState(false);
 
   const { displayName, lidPhoneMap } = useContactsCtx();
   const {
@@ -169,6 +170,13 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
         }
         .mob-backdrop.open  { opacity:1; pointer-events:all; }
         .mob-backdrop.closed{ opacity:0; pointer-events:none; }
+        @keyframes slideInRight {
+          from { transform: translateX(100%); }
+          to   { transform: translateX(0); }
+        }
+        .patient-slide {
+          animation: slideInRight .25s cubic-bezier(.4,0,.2,1);
+        }
       `}</style>
 
       {/* ── Top bar ────────────────────────────────────────────────── */}
@@ -193,26 +201,43 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
           </button>
         )}
 
-        <span style={{ fontSize:15, flexShrink:0 }}>🦷</span>
-        <span style={{ color:T.text, fontWeight:600, fontSize:14, flex:1,
-          overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+        {/* Foto do contato (clicável para ampliar) */}
+        {screen === "chat" && activeChat ? (
+          activeChat.photoUrl ? (
+            <img src={activeChat.photoUrl} alt=""
+              onClick={() => setPhotoModal(true)}
+              style={{ width:32, height:32, borderRadius:"50%", objectFit:"cover",
+                flexShrink:0, border:`2px solid ${T.border}`, cursor:"pointer" }}
+              onError={e => { e.target.style.display="none"; }} />
+          ) : (
+            <div style={{ width:32, height:32, borderRadius:"50%", flexShrink:0,
+              background:(activeChat.avatarColor||T.accent)+"33", color:activeChat.avatarColor||T.accent,
+              display:"flex", alignItems:"center", justifyContent:"center",
+              fontSize:11, fontWeight:700, border:`2px solid ${(activeChat.avatarColor||T.accent)}44`,
+              cursor:"default" }}>
+              {(activeChat.name||activeChat.pushname||"?").slice(0,2).toUpperCase()}
+            </div>
+          )
+        ) : (
+          <span style={{ fontSize:15, flexShrink:0 }}>🦷</span>
+        )}
+
+        {/* Nome clicável para abrir painel do paciente */}
+        <span
+          onClick={screen === "chat" && activeChat ? () => setScreen("patient") : undefined}
+          style={{ color:T.text, fontWeight:600, fontSize:14, flex:1,
+            overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap",
+            cursor: screen === "chat" && activeChat ? "pointer" : "default" }}>
           {screen === "patient" ? "Paciente"
             : activeChat
               ? displayName(activeChat.id, activeChat.name || activeChat.pushname, activeChat.pushname)
               : "Clínica CRM"}
         </span>
 
-        {/* Status WS + Resync */}
-        <div style={{ display:"flex", alignItems:"center", gap:5, flexShrink:0 }}>
-          <div style={{ width:7, height:7, borderRadius:"50%",
-            background: WS_COLOR[wsStatus] || "#666",
-            boxShadow: wsStatus==="connected" ? `0 0 0 2px ${T.green}33` : "none" }} />
-          <button onClick={resyncChats} disabled={loading} title="Ressincronizar"
-            style={{ background:"none", border:"none", cursor: loading ? "wait" : "pointer",
-              color:T.sub, fontSize:16, padding:"0 2px", opacity: loading ? 0.4 : 1, lineHeight:1 }}>
-            ⟳
-          </button>
-        </div>
+        {/* Status WS */}
+        <div style={{ width:7, height:7, borderRadius:"50%", flexShrink:0,
+          background: WS_COLOR[wsStatus] || "#666",
+          boxShadow: wsStatus==="connected" ? `0 0 0 2px ${T.green}33` : "none" }} />
 
         {/* Ações no chat */}
         {screen === "chat" && activeChat && (
@@ -224,19 +249,11 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
                 color:T.sub, fontSize:10, cursor:"pointer", padding:"3px 6px" }}>
               {activeRaw?.unread > 0 ? "✓" : "◉"}
             </button>
-            <button onClick={() => resolveChat(activeChat.id)}
-              style={{
-                background: isResolved ? "transparent" : T.green+"22",
-                border:`1px solid ${isResolved ? T.border : T.green}`,
-                borderRadius:5, color: isResolved ? T.sub : T.green,
-                fontSize:10, cursor:"pointer", padding:"3px 6px", fontWeight:600,
-              }}>
-              {isResolved ? "Reabrir" : "✓"}
-            </button>
             <button onClick={() => setScreen("patient")}
-              style={{ background:"none", border:`1px solid ${T.border}`, borderRadius:5,
-                color:T.sub, fontSize:10, cursor:"pointer", padding:"3px 6px" }}>
-              👤
+              style={{ background:T.accent+"22", border:`1px solid ${T.accent}44`,
+                borderRadius:5, color:T.accent, fontSize:10, cursor:"pointer",
+                padding:"3px 10px", fontWeight:600 }}>
+              Perfil
             </button>
           </div>
         )}
@@ -259,6 +276,18 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
           </div>
         )}
       </div>
+
+      {/* ── Modal foto de perfil ─────────────────────────────────────── */}
+      {photoModal && activeChat?.photoUrl && (
+        <div onClick={() => setPhotoModal(false)}
+          style={{ position:"fixed", inset:0, zIndex:200, background:"rgba(0,0,0,.85)",
+            display:"flex", alignItems:"center", justifyContent:"center" }}>
+          <img src={activeChat.photoUrl} alt=""
+            style={{ maxWidth:"90vw", maxHeight:"90vh", borderRadius:12,
+              boxShadow:"0 8px 40px rgba(0,0,0,.8)" }}
+            onError={e => { e.target.style.display="none"; }} />
+        </div>
+      )}
 
       {/* ── Backdrop ────────────────────────────────────────────────── */}
       <div
@@ -396,7 +425,9 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
         )}
 
         {screen === "patient" && activeChat && (
-          <PatientPanel chat={activeChat} operator={operator} />
+          <div className="patient-slide" style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+            <PatientPanel chat={activeChat} operator={operator} />
+          </div>
         )}
       </div>
 
