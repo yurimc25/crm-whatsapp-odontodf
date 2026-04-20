@@ -624,36 +624,62 @@ function PerfilTab({ paciente, uploads, evols, buscando, onReload, onPacienteUpd
 }
 
 // ── Aba Agenda ────────────────────────────────────────────────────
+const STATUS_LABEL = {
+  0: "Não confirmada",
+  1: "Cancelada",
+  6: "Confirmada",
+};
 const STATUS_COLOR = {
-  0: T.sub,      // Agendado
-  1: T.red,      // Canc. clínica
-  2: T.red,      // Canc. paciente
-  3: "#f0a500",  // Não confirmado
-  4: T.green,    // Confirmado
-  6: T.green,    // Atendido
+  0: "#f0a500",
+  1: T.red,
+  6: T.green,
+};
+const ATTENDANCE_LABEL = {
+  0: "Sem Status",
+  1: "Faltou",
+  2: "Realizada",
+};
+const ATTENDANCE_COLOR = {
+  0: T.sub,
+  1: T.red,
+  2: T.green,
 };
 
 function EventCard({ ev }) {
-  const date = ev.start ? new Date(ev.start) : null;
+  const raw = ev.startDateTime || ev.start || "";
+  const date = raw ? new Date(raw) : null;
   const dateStr = date
     ? date.toLocaleDateString("pt-BR", { day:"2-digit", month:"2-digit", year:"numeric" })
     : "—";
   const timeStr = date
     ? date.toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" })
     : "";
-  const color = STATUS_COLOR[ev.status] ?? T.sub;
+
+  const statusLabel     = STATUS_LABEL[ev.status]     ?? `Status ${ev.status}`;
+  const statusColor     = STATUS_COLOR[ev.status]     ?? T.sub;
+  const attendanceLabel = ATTENDANCE_LABEL[ev.attendance] ?? null;
+  const attendanceColor = ATTENDANCE_COLOR[ev.attendance] ?? T.sub;
+
+  const service = ev.serviceName || ev.service || null;
+  const doctor  = ev.doctorFullName || ev.doctor || null;
 
   return (
     <div style={{ paddingBottom:10, marginBottom:10, borderBottom:`1px solid ${T.border}` }}>
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:3 }}>
-        <span style={{ color:T.text, fontSize:13, fontWeight:600 }}>{dateStr} {timeStr && `· ${timeStr}`}</span>
-        <span style={{ color, fontSize:11, fontWeight:600, background:`${color}18`, borderRadius:4, padding:"2px 6px" }}>
-          {ev.statusLabel || `Status ${ev.status}`}
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:6, marginBottom:4 }}>
+        <span style={{ color:T.text, fontSize:12, fontWeight:600 }}>
+          {timeStr && `${timeStr} · `}{dateStr}
         </span>
+        <div style={{ display:"flex", gap:4, flexShrink:0 }}>
+          <span style={{ color:statusColor, fontSize:10, fontWeight:700, background:`${statusColor}22`, borderRadius:4, padding:"2px 6px", whiteSpace:"nowrap" }}>
+            {statusLabel}
+          </span>
+          <span style={{ color:attendanceColor, fontSize:10, fontWeight:700, background:`${attendanceColor}22`, borderRadius:4, padding:"2px 6px", whiteSpace:"nowrap" }}>
+            {attendanceLabel}
+          </span>
+        </div>
       </div>
-      {ev.service && <div style={{ color:T.sub, fontSize:11, marginBottom:2 }}>{ev.service}</div>}
-      {ev.doctor && <div style={{ color:T.sub, fontSize:11 }}>Dr(a). {ev.doctor}</div>}
-      {ev.facilityName && <div style={{ color:T.stub, fontSize:10, marginTop:2 }}>{ev.facilityName}</div>}
+      {service && <div style={{ color:T.text, fontSize:12, fontWeight:500, marginBottom:2 }}>{service}</div>}
+      {doctor  && <div style={{ color:T.sub,  fontSize:11 }}>Dr(a). {doctor}</div>}
     </div>
   );
 }
