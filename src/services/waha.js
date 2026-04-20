@@ -399,7 +399,11 @@ function detectPatientCard(text) {
     const isFormLabel = /^(nome|cpf|e-?mail|telefone|convên|convenio|nasc|data|carteirinha|whatsapp)/i.test(beforeColon);
     if (!isFormLabel && afterColon.length > 20 &&
         !RE_CPF_SIMPLE.test(afterColon) && !RE_EMAIL.test(afterColon)) {
-      return false; // ex: "Recepcionista: Para agendamento..."
+      // Verifica se o restante da mensagem (abaixo da primeira linha) tem dados de paciente
+      const restOfText = text.split("\n").slice(1).join("\n");
+      if (!RE_CPF_SIMPLE.test(restOfText) && !RE_EMAIL.test(restOfText)) {
+        return false; // ex: "Recepcionista: Para agendamento..."
+      }
     }
   }
 
@@ -421,7 +425,8 @@ function detectPatientCard(text) {
   const temCpf      = RE_CPF_FLEX.test(text);   // aceita espaços entre grupos
   const temData     = RE_DATA_FLEX.test(text);   // aceita espaços entre dia/mês/ano
   const temTelefone = RE_TELEFONE.test(text);
-  const temNome     = /[A-ZÀ-Ú][a-zà-ú]+ [A-ZÀ-Ú][a-zà-ú]+/.test(text);
+  const temNome     = /[A-ZÀ-Ú][a-zà-ú]+ [A-ZÀ-Ú][a-zà-ú]+/.test(text) ||
+                      (text.match(/\b[A-ZÀ-Ú][a-zà-ú]{2,}\b/g) || []).length >= 2;
 
   const score = [temEmail, temCpf, temData, temTelefone].filter(Boolean).length;
   return temNome && score >= 2;
