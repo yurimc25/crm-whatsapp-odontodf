@@ -205,7 +205,7 @@ async function revokeMessage(chatId, msgId) {
   const msgs = await r2Json(key, []);
   const idx  = msgs.findIndex(m => m.id === msgId);
   if (idx < 0) return;
-  msgs[idx] = { ...msgs[idx], revoked: true, body: "" };
+  msgs[idx] = { ...msgs[idx], revoked: true };
   await r2WriteJson(key, msgs);
 }
 

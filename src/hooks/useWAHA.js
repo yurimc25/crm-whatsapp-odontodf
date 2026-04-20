@@ -1450,7 +1450,7 @@ export function useWAHA(operator) {
             const cur = prev[chatId];
             if (!cur) return prev;
             // Risca a mensagem em vez de removê-la
-            const updated = cur.map(m => m.id === msgId ? { ...m, revoked: true, text: "" } : m);
+            const updated = cur.map(m => m.id === msgId ? { ...m, revoked: true } : m);
             _sessionMsgs.set(chatId, updated);
             return { ...prev, [chatId]: updated };
           });
@@ -1592,16 +1592,16 @@ export function useWAHA(operator) {
       id:       m.id,
       chatId:   m.chatId,
       from:     m.fromMe ? "operator" : "patient",
-      text:     m.revoked ? "" : (m.body || ""),
+      text:     m.body || "",
       type:     m.type || "chat",
       ts:       tsMs ? new Date(tsMs).toISOString() : null,
       time:     tsMs ? new Date(tsMs).toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" }) : "",
-      hasMedia: m.revoked ? false : hasMedia,
+      hasMedia,
       pushname: m.pushname || "",
-      replyTo:  m.revoked ? null : replyTo,
+      replyTo,
       revoked:  m.revoked || false,
       reactions: m.reactions || null,
-      media:    (!m.revoked && hasMedia) ? {
+      media:    hasMedia ? {
         msgId,
         type:     MEDIA_TYPES.includes(t) ? t : "document", // fallback "document" — NOWEB armazena type="text" p/ arquivos
         mimetype: m.mimetype ||

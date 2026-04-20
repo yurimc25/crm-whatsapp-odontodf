@@ -1050,18 +1050,8 @@ function MessageBubble({ msg, currentOperator, onContextMenu, onOcrResult }) {
             </div>
           )}
 
-          {/* Mensagem apagada */}
-          {msg.revoked && (
-            <div style={{ color: T.sub, fontSize:13, fontStyle:"italic",
-              display:"flex", alignItems:"center", gap:5, opacity:.7 }}>
-              <span style={{ fontSize:15 }}>🚫</span>
-              <span style={{ textDecoration:"line-through" }}>Mensagem apagada</span>
-            </div>
-          )}
-
-          {/* Conteúdo normal (oculto quando apagada) */}
-          {/* Mensagem citada (reply) */}
-          {!msg.revoked && msg.replyTo && (
+          {/* Mensagem citada (reply) — mantida mesmo se apagada, mas riscada */}
+          {msg.replyTo && (
             <div style={{
               borderLeft: `3px solid ${isPatient ? T.accent : "#aaa"}`,
               background: isPatient ? "rgba(255,255,255,.06)" : "rgba(0,0,0,.15)",
@@ -1070,6 +1060,8 @@ function MessageBubble({ msg, currentOperator, onContextMenu, onOcrResult }) {
               margin: msg.media ? "4px 4px 0" : "0 0 6px",
               maxWidth: "100%",
               overflow: "hidden",
+              textDecoration: msg.revoked ? "line-through" : "none",
+              opacity: msg.revoked ? 0.55 : 1,
             }}>
               {msg.replyTo.hasMedia && !msg.replyTo.body && (
                 <span style={{ fontSize:11, color:T.sub }}>
@@ -1099,32 +1091,57 @@ function MessageBubble({ msg, currentOperator, onContextMenu, onOcrResult }) {
           )}
 
           {/* Localização */}
-          {!msg.revoked && msg.location && <LocationBubble location={msg.location} />}
+          {msg.location && <LocationBubble location={msg.location} />}
 
-          {/* Mídia */}
-          {!msg.revoked && msg.media && (
-            <MediaContent
-              media={msg.media}
-              msgId={msg.media.msgId || msg.id}
-              r2MsgId={msg.id}
-              chatId={msg.chatId}
-              chatSession={import.meta.env.VITE_WAHA_SESSION || "default"}
-              onOcrResult={text => onOcrResult?.(text, msg.id)}
-            />
+          {/* Mídia — overlay cinza com "Apagado" quando revoked */}
+          {msg.media && (
+            <div style={{ position:"relative" }}>
+              <div style={{ filter: msg.revoked ? "grayscale(1) brightness(0.45)" : "none",
+                pointerEvents: msg.revoked ? "none" : "auto" }}>
+                <MediaContent
+                  media={msg.media}
+                  msgId={msg.media.msgId || msg.id}
+                  r2MsgId={msg.id}
+                  chatId={msg.chatId}
+                  chatSession={import.meta.env.VITE_WAHA_SESSION || "default"}
+                  onOcrResult={text => onOcrResult?.(text, msg.id)}
+                />
+              </div>
+              {msg.revoked && (
+                <div style={{ position:"absolute", inset:0, display:"flex",
+                  flexDirection:"column", alignItems:"center", justifyContent:"center",
+                  gap:4, pointerEvents:"none" }}>
+                  <span style={{ fontSize:20 }}>🚫</span>
+                  <span style={{ fontSize:11, color:"#ccc", fontStyle:"italic" }}>Apagado</span>
+                </div>
+              )}
+            </div>
           )}
 
-          {/* Texto */}
-          {!msg.revoked && (isDentistAlert ? alertText : msg.text) && (
-            <div style={{ color: isDentistAlert ? "#ffe082" : T.text,
+          {/* Texto — riscado no meio quando apagado */}
+          {(isDentistAlert ? alertText : msg.text) && (
+            <div style={{ color: isDentistAlert ? "#ffe082" : msg.revoked ? T.sub : T.text,
               fontSize:13, lineHeight:1.55, whiteSpace:"pre-wrap",
               fontWeight: isDentistAlert ? 600 : 400,
+              fontStyle: msg.revoked ? "italic" : "normal",
+              textDecoration: msg.revoked ? "line-through" : "none",
+              opacity: msg.revoked ? 0.6 : 1,
               padding: msg.media ? "6px 8px 2px" : 0 }}>
-              {renderText(isDentistAlert ? alertText : msg.text)}
+              {msg.revoked ? (isDentistAlert ? alertText : msg.text) : renderText(isDentistAlert ? alertText : msg.text)}
+            </div>
+          )}
+
+          {/* Indicador "apagada" — só quando não há texto nem mídia visível */}
+          {msg.revoked && !msg.text && !msg.media && !msg.location && (
+            <div style={{ color: T.sub, fontSize:12, fontStyle:"italic", opacity:.65,
+              display:"flex", alignItems:"center", gap:4 }}>
+              <span>🚫</span>
+              <span style={{ textDecoration:"line-through" }}>Mensagem apagada</span>
             </div>
           )}
 
           {/* Link preview (primeira URL) */}
-          {!msg.revoked && urls.length > 0 && !msg.media && (
+          {urls.length > 0 && !msg.media && (
             <LinkPreview url={urls[0]} />
           )}
 
