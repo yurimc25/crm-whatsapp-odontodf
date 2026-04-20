@@ -100,9 +100,22 @@ function normalizeMsg(payload) {
     ? ([...rawId.split("_")].reverse().find(p => !p.includes("@")) || null)
     : null;
 
+  // Mensagem citada (reply)
+  const rt = payload.replyTo || null;
+  const replyTo = rt ? {
+    id:       rt.id || null,
+    body:     rt.body || "",
+    hasMedia: rt.hasMedia || false,
+    media:    rt.media ? {
+      mimetype: rt.media.mimetype || null,
+      url:      rt.media.url || null,
+    } : null,
+  } : null;
+
   return { id, chatId, ts: tsMs, fromMe, body, type, pushname,
            ...(wahaShortId ? { wahaShortId } : {}),
-           ...(mimetype ? { mimetype } : {}) };
+           ...(mimetype ? { mimetype } : {}),
+           ...(replyTo ? { replyTo } : {}) };
 }
 
 // Resolve @lid → JID @c.us real via API de contatos do WAHA (server-side).

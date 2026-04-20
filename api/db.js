@@ -38,19 +38,20 @@ export default async function handler(req, res) {
       const docs = await db.collection("chats").find({}).toArray();
       // Retorna um mapa { chatId: { status, assignedTo, tags } }
       const map = {};
-      for (const d of docs) map[d._id] = { status: d.status, assignedTo: d.assignedTo, tags: d.tags || [] };
+      for (const d of docs) map[d._id] = { status: d.status, assignedTo: d.assignedTo, tags: d.tags || [], muted: d.muted || false };
       return res.json({ chats: map });
     }
 
     // ── PATCH /api/db?action=chat — atualiza metadata de um chat
     if (req.method === "PATCH" && action === "chat") {
-      const { chatId, status, assignedTo, tags } = req.body || {};
+      const { chatId, status, assignedTo, tags, muted } = req.body || {};
       if (!chatId) return res.status(400).json({ error: "chatId obrigatório" });
 
       const update = {};
       if (status     !== undefined) update.status     = status;
       if (assignedTo !== undefined) update.assignedTo = assignedTo;
       if (tags       !== undefined) update.tags        = tags;
+      if (muted      !== undefined) update.muted       = muted;
       update.updatedAt = new Date();
 
       await db.collection("chats").updateOne(

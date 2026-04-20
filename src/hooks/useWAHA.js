@@ -683,6 +683,18 @@ export function useWAHA(operator) {
       const r2Chats = Array.isArray(r2Res) ? r2Res : [];
       const lidPhoneCacheR2 = readLidPhoneMap();
 
+      // Inicializa mutedChats a partir do DB (fonte de verdade multi-usuário)
+      const dbMutedIds = Object.entries(dbMeta)
+        .filter(([, m]) => m.muted === true)
+        .map(([id]) => id);
+      if (dbMutedIds.length > 0) {
+        setMutedChats(prev => {
+          const next = new Set([...prev, ...dbMutedIds]);
+          try { localStorage.setItem("crm_muted", JSON.stringify([...next])); } catch {}
+          return next;
+        });
+      }
+
       // Aplica chats do R2 ao state (mescla com localStorage se já tiver)
       if (r2Chats.length > 0) {
         setChats(prev => {
@@ -1527,6 +1539,22 @@ export function useWAHA(operator) {
     })();
     // Prioriza wahaShortId (WAHA download-media) sobre shortMsgId (Baileys format)
     const msgId = m.wahaShortId || shortMsgId;
+    // Restaura replyTo salvo pelo webhook
+    const rt = m.replyTo || null;
+    const replyTo = rt ? {
+      id:       rt.id || null,
+      body:     rt.body || "",
+      hasMedia: rt.hasMedia || false,
+      media:    rt.media ? {
+        type:     rt.media.mimetype?.startsWith("image/") ? "image"
+                 : rt.media.mimetype?.startsWith("video/") ? "video"
+                 : rt.media.mimetype?.startsWith("audio/") ? "audio"
+                 : "document",
+        mimetype: rt.media.mimetype || null,
+        url:      rt.media.url || null,
+      } : null,
+    } : null;
+
     return {
       id:       m.id,
       chatId:   m.chatId,
@@ -1537,6 +1565,7 @@ export function useWAHA(operator) {
       time:     tsMs ? new Date(tsMs).toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" }) : "",
       hasMedia,
       pushname: m.pushname || "",
+      replyTo,
       media:    hasMedia ? {
         msgId,
         type:     MEDIA_TYPES.includes(t) ? t : "document", // fallback "document" — NOWEB armazena type="text" p/ arquivos
@@ -2288,6 +2317,7 @@ export function useWAHA(operator) {
       persistChats(updated);
       return updated;
     });
+    persistChat(chatId, { muted: true });
   }, []);
 
   const unmuteChat = useCallback((chatId) => {
@@ -2297,6 +2327,7 @@ export function useWAHA(operator) {
       try { localStorage.setItem("crm_muted", JSON.stringify([...next])); } catch {}
       return next;
     });
+    persistChat(chatId, { muted: false });
   }, []);
 
   // ── Pesquisa em conteúdo de mensagens (cache local) ─────────────
