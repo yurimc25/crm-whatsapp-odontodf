@@ -379,6 +379,8 @@ export function normalizeMessage(wahaMsg) {
     location,
     reactions,
     pushname: wahaMsg.notifyName || wahaMsg._data?.notifyName || "",
+    // JID de quem enviou dentro do grupo (ex: "5561999@c.us"), só existe em grupos
+    senderJid: (wahaMsg.author || wahaMsg.participant || wahaMsg._data?.author || wahaMsg._data?.participant || "").replace(/:\d+@/, "@") || null,
     operator: wahaMsg.fromMe ? (wahaMsg.senderName || wahaMsg._data?.pushName || "Você") : null,
     hasPatientCard: !hasMedia && !location && detectPatientCard(body),
   };
@@ -675,6 +677,19 @@ export async function getContactInfo(contactId) {
   try {
     const r = await fetch(
       `${WAHA_URL}/api/contacts?contactId=${id}&session=${SESSION}`,
+      { headers: headers() }
+    );
+    if (!r.ok) return null;
+    return r.json().catch(() => null);
+  } catch { return null; }
+}
+
+// Busca nome de grupo via /api/{session}/groups/{groupId} (retorna campo "subject")
+export async function getGroupInfo(groupId) {
+  const id = encodeURIComponent(groupId);
+  try {
+    const r = await fetch(
+      `${WAHA_URL}/api/${SESSION}/groups/${id}`,
       { headers: headers() }
     );
     if (!r.ok) return null;

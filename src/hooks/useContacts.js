@@ -8,7 +8,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { cache } from "../utils/cache";
-import { resolveLidToPhone, getContactInfo } from "../services/waha";
+import { resolveLidToPhone, getContactInfo, getGroupInfo } from "../services/waha";
 
 const LS_KEY           = "contacts_map";
 const LID_CACHE_KEY    = "lid_phone_map";   // localStorage: { [lid]: realPhone }
@@ -576,8 +576,9 @@ export function useContacts() {
     const existing = contactMap[groupId];
     if (existing) return;
     resolvingGroups.current.add(groupId);
-    getContactInfo(groupId).then(data => {
-      const name = data?.name || data?.pushname || data?.pushName || null;
+    getGroupInfo(groupId).then(data => {
+      // WAHA /api/{session}/groups/{id} retorna "subject" como nome do grupo
+      const name = data?.subject || data?.name || data?.pushname || null;
       if (name) {
         mergeMap({ [groupId]: name }, "local");
         console.log(`[contacts/group] ${groupId} → ${name}`);

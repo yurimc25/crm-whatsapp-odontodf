@@ -981,6 +981,17 @@ function MessageBubble({ msg, currentOperator, onContextMenu, onOcrResult }) {
   // Link preview
   const urls = msg.text ? extractUrls(msg.text) : [];
 
+  const { displayName } = useContactsCtx();
+  const isGroupMsg = isPatient && msg.chatId?.endsWith("@g.us");
+  // Nome do remetente no grupo: contacto resolvido > pushname > telefone extraído do senderJid
+  const senderPhone = msg.senderJid ? msg.senderJid.replace("@c.us","").replace("@s.whatsapp.net","") : null;
+  const senderLabel = isGroupMsg
+    ? (displayName(msg.senderJid, msg.pushname, msg.pushname) || msg.pushname || senderPhone || null)
+    : null;
+  const senderSub = isGroupMsg && senderPhone && senderLabel !== senderPhone
+    ? `+${senderPhone}`
+    : null;
+
   return (
     <div
       onContextMenu={e => onContextMenu?.(e, msg)}
@@ -992,10 +1003,16 @@ function MessageBubble({ msg, currentOperator, onContextMenu, onOcrResult }) {
             {msg.operator || "Operador"}
           </div>
         )}
-        {isPatient && msg.pushname && msg.chatId?.endsWith("@g.us") && (
-          <div style={{ fontSize:10, fontWeight:700, marginBottom:2, textAlign:"left",
-            color:T.accent }}>
-            {msg.pushname}
+        {isGroupMsg && senderLabel && (
+          <div style={{ marginBottom:2, textAlign:"left" }}>
+            <span style={{ fontSize:10, fontWeight:700, color:T.accent }}>
+              {senderLabel}
+            </span>
+            {senderSub && (
+              <span style={{ fontSize:9, color:T.sub, marginLeft:4, fontFamily:"'DM Mono', monospace" }}>
+                {senderSub}
+              </span>
+            )}
           </div>
         )}
         <div style={{
