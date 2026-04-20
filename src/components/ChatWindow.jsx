@@ -447,8 +447,7 @@ export default function ChatWindow({
         return;
       }
 
-      const prefix = replyTo ? `> ${replyTo.text?.slice(0, 60)}\n` : "";
-      await onSend(prefix + text.trim());
+      await onSend(text.trim(), replyTo?.id || null);
       setReplyTo(null);
       setText("");
     }

@@ -107,11 +107,13 @@ export async function getMessagesPaged(chatId, pageSize = 60, maxTotal = 300) {
   return all.slice(0, maxTotal);
 }
 
-export async function sendText(chatId, text) {
+export async function sendText(chatId, text, replyToId = null) {
+  const body = { chatId, text, session: SESSION };
+  if (replyToId) body.reply_to = replyToId;
   const r = await fetch(`${WAHA_URL}/api/sendText`, {
     method: "POST",
     headers: headers(),
-    body: JSON.stringify({ chatId, text, session: SESSION }),
+    body: JSON.stringify(body),
   });
   if (!r.ok) throw new Error(`WAHA sendText: ${r.status}`);
   return r.json();

@@ -1950,7 +1950,7 @@ export function useWAHA(operator) {
   }, [sessionOk]);
 
   // ── 6. Envia mensagem ─────────────────────────────────────────
-  const send = useCallback(async (chatId, text, operatorName) => {
+  const send = useCallback(async (chatId, text, operatorName, replyToId = null) => {
     const now       = new Date();
     const formatted = `${operatorName}: ${text}`;
     const tmpMsg    = {
@@ -1972,7 +1972,7 @@ export function useWAHA(operator) {
     });
     persistChat(chatId, { lastPatientTs: null, unread: 0 });
     if (USE_MOCK) return;
-    try { await sendText(chatId, formatted); }
+    try { await sendText(chatId, formatted, replyToId); }
     catch (e) {
       setMessages(prev => ({
         ...prev,
