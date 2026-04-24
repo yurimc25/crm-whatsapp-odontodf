@@ -117,8 +117,10 @@ function _dedupeChats(chats) {
   for (const chat of chats) {
     if (_deletedChats.has(chat.id)) { _skipDel++; continue; }
     if (!_isValidChatId(chat.id))   { _skipInv++; continue; }
-    const digits = chat.id.replace(/\D/g, "");
-    const tail8  = digits.length >= 8 ? digits.slice(-8) : null;
+    const digits  = _normalizeDigits(chat.id.replace(/\D/g, ""));
+    // Usa os 8 últimos dígitos do número normalizado como chave de dedup
+    // (cobre variações de prefixo país/DDD mas não confunde DDDs diferentes)
+    const tail8   = digits.length >= 8 ? digits.slice(-8) : null;
     if (!tail8) { deduped.push(chat); continue; }
     const existIdx = seen8.get(tail8);
     if (existIdx === undefined) {
@@ -175,17 +177,26 @@ const ikey           = () => import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10"
 // ── Chave canônica por dígitos de telefone ──────────────────────────────────
 // Grupos (@g.us) mantêm o chatId como chave — não têm número de telefone
 // Contatos (@c.us, @lid, etc.) usam apenas os dígitos do número
+// Normaliza dígitos para a chave canônica — mesma lógica do backend (toChatKey em api/db.js)
+function _normalizeDigits(digits) {
+  if (!digits) return digits;
+  // BR sem o 9: 55 + DDD(2) + 8 digits = 12 → insere 9 após DDD
+  if (digits.length === 12 && digits.startsWith("55")) {
+    return digits.slice(0, 4) + "9" + digits.slice(4);
+  }
+  return digits;
+}
+
 function canonicalKey(chatId, lidPhoneCache) {
   if (!chatId) return chatId;
   if (chatId.endsWith("@g.us")) return chatId;
   if (chatId.endsWith("@lid")) {
     const lidOnly = chatId.replace(/@lid$/, "");
     const phone = lidPhoneCache?.[lidOnly]?.phone;
-    if (phone) return phone.replace(/\D/g, "");
-    // Sem resolução ainda: usa os dígitos do próprio LID como fallback
-    return chatId.replace(/\D/g, "") || chatId;
+    if (phone) return _normalizeDigits(phone.replace(/\D/g, ""));
+    return _normalizeDigits(chatId.replace(/\D/g, "")) || chatId;
   }
-  return chatId.replace(/\D/g, "") || chatId;
+  return _normalizeDigits(chatId.replace(/\D/g, "")) || chatId;
 }
 
 // ── Overrides manuais de status/leitura — sobrevivem ao reload ──────────────
@@ -1862,10 +1873,21 @@ export function useWAHA(operator) {
           lastTime:      lastAny?.time || c.lastTime,
           lastPatientTs: novoLPTs,
           unread:        ex?.unread ?? 0,
+          status:        autoResolve && c.status !== "resolved" ? "resolved" : c.status,
         });
         persistChats(updated);
         return updated;
       });
+      // Persiste status resolved detectado ao abrir o chat (MongoDB + R2)
+      if (autoResolve) {
+        const current = (_sessionChats.value || []).find(c => c.id === chatId);
+        if (!current || current.status !== "resolved") {
+          const now = Date.now();
+          saveOverride(chatId, { resolvedAt: now, readAt: now });
+          persistChat(chatId, { status: "resolved", unread: 0, lastPatientTs: null });
+          setTimeout(_syncChatsToR2, 1500);
+        }
+      }
     } catch (e) { console.error("loadMessages", e); }
   }, []);
 

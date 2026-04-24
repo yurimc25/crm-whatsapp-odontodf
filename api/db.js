@@ -16,6 +16,21 @@ async function getDb() {
   return client.db("clinica");
 }
 
+// Normaliza qualquer chatId para uma chave canônica estável usada como _id no MongoDB.
+// Grupos (@g.us) mantêm o ID completo. Individuais viram só dígitos com 9 BR inserido.
+// Garante que 5511987654321@c.us e 551187654321@c.us → mesma chave "5511987654321".
+function toChatKey(chatId) {
+  if (!chatId) return chatId;
+  if (chatId.endsWith("@g.us")) return chatId;
+  const digits = chatId.replace(/\D/g, "");
+  if (!digits) return chatId;
+  // Número BR sem o dígito 9: 55 + DDD(2) + 8 digits = 12 → insere 9 após DDD
+  if (digits.length === 12 && digits.startsWith("55")) {
+    return digits.slice(0, 4) + "9" + digits.slice(4);
+  }
+  return digits;
+}
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS");
@@ -36,9 +51,14 @@ export default async function handler(req, res) {
     // ── GET /api/db?action=chats — carrega metadata de todos os chats
     if (req.method === "GET" && action === "chats") {
       const docs = await db.collection("chats").find({}).toArray();
-      // Retorna um mapa { chatId: { status, assignedTo, tags } }
+      // Retorna mapa keyed pela chave canônica E por cada alias conhecido
+      // Assim o cliente encontra o status independente do formato de ID que usar
       const map = {};
-      for (const d of docs) map[d._id] = { status: d.status, assignedTo: d.assignedTo, tags: d.tags || [], muted: d.muted || false };
+      for (const d of docs) {
+        const entry = { status: d.status, assignedTo: d.assignedTo, tags: d.tags || [], muted: d.muted || false };
+        map[d._id] = entry;
+        for (const alias of (d.aliases || [])) map[alias] = entry;
+      }
       return res.json({ chats: map });
     }
 
@@ -47,6 +67,9 @@ export default async function handler(req, res) {
       const { chatId, status, assignedTo, tags, muted } = req.body || {};
       if (!chatId) return res.status(400).json({ error: "chatId obrigatório" });
 
+      // Usa chave canônica como _id — qualquer alias do mesmo número atualiza o mesmo doc
+      const canonicalId = toChatKey(chatId);
+
       const update = {};
       if (status     !== undefined) update.status     = status;
       if (assignedTo !== undefined) update.assignedTo = assignedTo;
@@ -54,9 +77,10 @@ export default async function handler(req, res) {
       if (muted      !== undefined) update.muted       = muted;
       update.updatedAt = new Date();
 
+      // $addToSet garante que o alias original fique registrado sem duplicar
       await db.collection("chats").updateOne(
-        { _id: chatId },
-        { $set: update },
+        { _id: canonicalId },
+        { $set: update, $addToSet: { aliases: chatId } },
         { upsert: true }
       );
       return res.json({ ok: true });
@@ -131,6 +155,37 @@ export default async function handler(req, res) {
       const hasMore = docs.length === parseInt(limit);
 
       return res.json({ messages: msgs, oldest, hasMore });
+    }
+
+    // ── POST /api/db?action=migrate_chat_keys — unifica docs com IDs não-canônicos (one-shot)
+    if (req.method === "POST" && action === "migrate_chat_keys") {
+      const docs = await db.collection("chats").find({}).toArray();
+      let merged = 0, renamed = 0;
+      for (const doc of docs) {
+        const canonical = toChatKey(doc._id);
+        if (canonical === doc._id) continue; // já é canônico, pula
+        const existing = await db.collection("chats").findOne({ _id: canonical });
+        if (existing) {
+          // Mescla: mantém status mais restrito (resolved > open), acumula aliases
+          const aliases = [...new Set([...(existing.aliases || []), ...(doc.aliases || []), doc._id])];
+          const status = (existing.status === "resolved" || doc.status === "resolved") ? "resolved" : (existing.status || doc.status);
+          await db.collection("chats").updateOne(
+            { _id: canonical },
+            { $set: { status, aliases, updatedAt: new Date() },
+              $max: { updatedAt: existing.updatedAt || new Date(0) } }
+          );
+          await db.collection("chats").deleteOne({ _id: doc._id });
+          merged++;
+        } else {
+          // Renomeia: cria com chave canônica e remove o antigo
+          const { _id, ...rest } = doc;
+          const aliases = [...new Set([...(rest.aliases || []), _id])];
+          await db.collection("chats").insertOne({ _id: canonical, ...rest, aliases });
+          await db.collection("chats").deleteOne({ _id: doc._id });
+          renamed++;
+        }
+      }
+      return res.json({ ok: true, merged, renamed, total: docs.length });
     }
 
     return res.status(404).json({ error: `Ação desconhecida: ${action}` });
