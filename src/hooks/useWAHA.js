@@ -205,7 +205,30 @@ function canonicalKey(chatId, lidPhoneCache) {
 // readAt: timestamp quando o operador marcou como lido (R2 não sobrescreve se lastPatientTs <= readAt)
 const OVERRIDE_KEY = "crm_status_overrides";
 function readOverrides() {
-  try { return JSON.parse(localStorage.getItem(OVERRIDE_KEY) || "{}"); } catch { return {}; }
+  try {
+    const raw = JSON.parse(localStorage.getItem(OVERRIDE_KEY) || "{}");
+    // Migra chaves antigas (dígitos não-normalizados) para o formato canônico atual
+    // Necessário após introdução do _normalizeDigits (inserção do 9 BR)
+    const normalized = {};
+    let changed = false;
+    for (const [k, v] of Object.entries(raw)) {
+      const nk = k.endsWith("@g.us") ? k : _normalizeDigits(k.replace(/\D/g, "")) || k;
+      if (nk !== k) changed = true;
+      // Se já existe entrada normalizada, mescla mantendo o mais recente
+      if (normalized[nk]) {
+        normalized[nk] = {
+          resolvedAt: Math.max(normalized[nk].resolvedAt || 0, v.resolvedAt || 0) || undefined,
+          readAt:     Math.max(normalized[nk].readAt     || 0, v.readAt     || 0) || undefined,
+        };
+      } else {
+        normalized[nk] = v;
+      }
+    }
+    if (changed) {
+      try { localStorage.setItem(OVERRIDE_KEY, JSON.stringify(normalized)); } catch {}
+    }
+    return normalized;
+  } catch { return {}; }
 }
 function saveOverride(chatId, patch) {
   try {
@@ -784,7 +807,10 @@ export function useWAHA(operator) {
             const lpt        = isMuted || closing || ovRead || ovResolved ? null
               : (r2.lastPatientTs ? new Date(r2.lastPatientTs).toISOString() : null);
             const unread = isMuted || closing || !lpt || ovRead || ovResolved ? 0 : r2.unread || 0;
-            const status = closing || ovResolved ? "resolved" : "open";
+            // Status: respeita local (pode estar "resolved" por ação do operador),
+            // só força "resolved" se closing/ovResolved, nunca força "open" sobre um resolved local
+            const localResolved = local?.status === "resolved";
+            const status = closing || ovResolved || localResolved ? "resolved" : (local?.status || "open");
 
             if (local) {
               // Atualiza chat existente com dados mais recentes do R2
@@ -800,6 +826,7 @@ export function useWAHA(operator) {
                   lastPatientTs: lpt ?? local.lastPatientTs,
                   unread:        Math.max(unread, local.unread || 0),
                   pushname:      local.pushname || r2.pushname,
+                  status,
                 };
               }
             } else {
