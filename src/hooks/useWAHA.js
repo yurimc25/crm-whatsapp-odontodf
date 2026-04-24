@@ -671,7 +671,7 @@ export function useWAHA(operator) {
     return () => clearInterval(iv);
   }, [sessionOk]);
 
-  // Auto-resync leve a cada 2.5 minutos (era 5 min) + sync R2 + resolução de LIDs
+  // Auto-resync leve a cada 2.5 minutos + sync R2 + resolução de LIDs
   useEffect(() => {
     if (!sessionOk || USE_MOCK) return;
     const iv = setInterval(() => {
@@ -681,6 +681,35 @@ export function useWAHA(operator) {
     }, 2.5 * 60 * 1000);
     return () => clearInterval(iv);
   }, [sessionOk]);
+
+  // Dedup imediato + resync leve ao voltar para a aba (crítico no mobile)
+  // No Android Chrome, quando o usuário troca de app e volta, os timers acumulados
+  // disparam simultaneamente — dedup antecipado evita flicker de duplicatas visíveis
+  useEffect(() => {
+    if (!sessionOk || USE_MOCK) return;
+    let lastHidden = 0;
+    function onVisibility() {
+      if (document.visibilityState === "hidden") {
+        lastHidden = Date.now();
+        return;
+      }
+      // Voltou para a aba
+      const awayMs = Date.now() - lastHidden;
+      // Dedup imediato do estado atual (pode ter ficado stale enquanto suspenso)
+      setChats(prev => {
+        const deduped = _dedupeChats(prev);
+        if (deduped.length === prev.length) return prev;
+        persistChats(deduped);
+        return deduped;
+      });
+      // Se ficou fora por mais de 30 s, faz resync leve
+      if (awayMs > 30_000) {
+        _lightResync();
+      }
+    }
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [sessionOk, setChats]);
 
   async function loadChats(forceFullSync = false) {
     setLoading(true);
@@ -2567,6 +2596,8 @@ export function useWAHA(operator) {
             }
           } else if (!c.id.endsWith("@g.us")) {
             resolvedPhone = c.id.replace(/@.*$/, "").replace(/\D/g, "") || null;
+            // Normaliza para chave canônica (mesma lógica do backend) — evita duplicatas no R2
+            resolvedId = _normalizeDigits(resolvedPhone || "") || resolvedId;
           }
 
           // Nome: usa displayName (via ref para evitar closure stale)
