@@ -937,12 +937,11 @@ export function useWAHA(operator) {
           const ck = canonicalKey(c.id, lidPhoneCache);
           if (ck) prevByPhone[ck] = c;
         }
-        const coveredPrevIds = new Set();
-
+        // Rastreia quais entradas do prev já foram cobertas pelo merge com WAHA
+        // para evitar re-adicioná-las no loop abaixo (causaria duplicatas)
         const merged  = normalized.map(n => {
           const ck = canonicalKey(n.id, lidPhoneCache);
           const local   = prevMap[n.id] || (ck ? prevByPhone[ck] : undefined);
-          if (local) coveredPrevIds.add(local.id);
           const r2      = r2Map[n.id] || (ck ? r2Map[ck] : undefined);
           const isMuted = mutedChatsRef.current.has(n.id);
 
@@ -1006,7 +1005,6 @@ export function useWAHA(operator) {
 
           return {
             ...n,
-            id:            local.id,
             lastMsg:       bestLastMsg,
             lastTs:        bestLastTs,
             lastPatientTs: (resolvedLocally || shouldAutoResolve || ovRead) ? null : lpt,
@@ -1023,9 +1021,11 @@ export function useWAHA(operator) {
         });
 
         // ── CRÍTICO: preserva chats locais que o WAHA não retornou (mais antigos que fromTs)
-        const wahaIds = new Set(normalized.map(c => c.id));
+        const wahaIds   = new Set(normalized.map(c => c.id));
+        const wahaCKeys = new Set(normalized.map(c => canonicalKey(c.id, lidPhoneCache)).filter(Boolean));
         for (const c of prev) {
-          if (!wahaIds.has(c.id) && !coveredPrevIds.has(c.id)) merged.push(c);
+          const ck = canonicalKey(c.id, lidPhoneCache);
+          if (!wahaIds.has(c.id) && !(ck && wahaCKeys.has(ck))) merged.push(c);
         }
 
         // ── Sessão nova (prev vazio): adiciona chats do R2 que WAHA não retornou
