@@ -822,7 +822,7 @@ export function useWAHA(operator) {
                 const bestTsMs  = Math.max(localTsMs, r2TsMs);
                 merged[idx] = {
                   ...merged[idx],
-                  lastMsg:       r2TsMs >= localTsMs ? (r2.lastMsg || local.lastMsg) : local.lastMsg,
+                  lastMsg:       r2TsMs > localTsMs ? (r2.lastMsg || local.lastMsg) : local.lastMsg,
                   lastTs:        bestTsMs ? new Date(bestTsMs).toISOString() : local.lastTs,
                   lastPatientTs: lpt ?? local.lastPatientTs,
                   unread:        Math.max(unread, local.unread || 0),
@@ -943,15 +943,15 @@ export function useWAHA(operator) {
           const r2      = r2Map[n.id] || (ck ? r2Map[ck] : undefined);
           const isMuted = mutedChatsRef.current.has(n.id);
 
-          // Seleciona melhor lastTs / lastMsg entre WAHA, R2 e local
+          // lastTs: local e R2 são fontes de verdade; WAHA só como fallback se ambos ausentes
           const wahaTsMs  = n.lastTs     ? new Date(n.lastTs).getTime()     : 0;
           const r2TsMs    = r2?.lastTs   || 0;
           const localTsMs = local?.lastTs ? new Date(local.lastTs).getTime() : 0;
-          const bestTsMs  = Math.max(wahaTsMs, r2TsMs, localTsMs);
-          const bestLastTs = bestTsMs ? new Date(bestTsMs).toISOString() : (n.lastTs || local?.lastTs);
-          const bestLastMsg = r2TsMs > wahaTsMs && r2TsMs > localTsMs && r2?.lastMsg ? r2.lastMsg
-            : wahaTsMs >= r2TsMs && n.lastMsg ? n.lastMsg
-            : local?.lastMsg || n.lastMsg || r2?.lastMsg || "";
+          const bestTsMs  = Math.max(r2TsMs, localTsMs) || wahaTsMs;
+          const bestLastTs = bestTsMs ? new Date(bestTsMs).toISOString() : (local?.lastTs || n.lastTs);
+          // WAHA não entra na comparação de recência — só é fallback se local e R2 não tiverem lastMsg
+          const bestLastMsg = (local?.lastMsg && localTsMs >= r2TsMs) ? local.lastMsg
+            : r2?.lastMsg || local?.lastMsg || n.lastMsg || "";
 
           // Override manual do operador (markRead / resolveChat) — keyed por dígitos canônicos
           const ov = ck ? overrides[ck] : (overrides[n.id] || null);
@@ -2752,13 +2752,12 @@ export function useWAHA(operator) {
           const wahaTsMs  = n.lastTs   ? new Date(n.lastTs).getTime()   : 0;
           const r2TsMs    = r2?.lastTs || 0;
           const localTsMs = local?.lastTs ? new Date(local.lastTs).getTime() : 0;
-          const bestTsMs  = Math.max(wahaTsMs, r2TsMs, localTsMs);
+          const bestTsMs  = Math.max(r2TsMs, localTsMs) || wahaTsMs;
 
-          const lastMsg = r2TsMs > wahaTsMs && r2TsMs > localTsMs && r2?.lastMsg ? r2.lastMsg
-            : wahaTsMs >= r2TsMs && wahaTsMs >= localTsMs && n.lastMsg           ? n.lastMsg
-            : local?.lastMsg || n.lastMsg || r2?.lastMsg || "";
+          const lastMsg = (local?.lastMsg && localTsMs >= r2TsMs) ? local.lastMsg
+            : r2?.lastMsg || local?.lastMsg || n.lastMsg || "";
 
-          const lastTs = bestTsMs ? new Date(bestTsMs).toISOString() : (n.lastTs || local?.lastTs);
+          const lastTs = bestTsMs ? new Date(bestTsMs).toISOString() : (local?.lastTs || n.lastTs);
 
           const ov = nck ? overrides[nck] : overrides[n.id];
           const r2LptMs = r2?.lastPatientTs ? new Date(r2.lastPatientTs).getTime() : 0;

@@ -435,13 +435,14 @@ export function readPhotoCache() {
 }
 export function writePhotoCache(map) {
   try {
-    // Limita a 200 entradas para não lotar o localStorage
-    const entries = Object.entries(map).filter(([, v]) => v); // só URLs reais (não null)
-    const trimmed = entries.length > 200
-      ? Object.fromEntries(entries.slice(entries.length - 200))
-      : Object.fromEntries(entries);
+    // Inclui nulls (sentinel "sem foto") para evitar re-fetch infinito
+    const entries = Object.entries(map);
+    // Prioriza entradas com URL real; se > 300, remove nulls mais antigos
+    const withUrl  = entries.filter(([, v]) => v);
+    const nulls    = entries.filter(([, v]) => !v);
+    const combined = withUrl.length >= 300 ? withUrl.slice(-300) : [...withUrl, ...nulls].slice(-300);
     localStorage.setItem(PHOTO_CACHE_KEY, JSON.stringify({
-      value: trimmed, expires: Date.now() + PHOTO_TTL,
+      value: Object.fromEntries(combined), expires: Date.now() + PHOTO_TTL,
     }));
   } catch {}
 }
@@ -456,29 +457,52 @@ export function resolvePhotoChatId(chatId, lidPhoneMap) {
   return phone ? phone + "@c.us" : null;
 }
 
+// In-memory dedup: evita requisições simultâneas para o mesmo ID
+const _photoInFlight = new Map(); // key → Promise<url|null>
+const _photoFetched  = new Set(); // keys já buscados nesta sessão (inclui nulls)
+
 // Busca e cacheia foto via GET /api/{session}/chats/{chatId}/picture
 export async function fetchAndCachePhoto(chatId, lidPhoneMap, cacheKey) {
   const photoChatId = resolvePhotoChatId(chatId, lidPhoneMap);
   if (!photoChatId) return null; // LID ainda não resolvido
 
   const key = cacheKey || chatId;
+
+  // 1. Cache localStorage (sobrevive F5)
   const cache = readPhotoCache();
-  if (cache[key] !== undefined) return cache[key]; // cache hit (null = sem foto)
+  if (cache[key] !== undefined) {
+    _photoFetched.add(key);
+    return cache[key];
+  }
+
+  // 2. Já buscado nesta sessão (null = sem foto, não retenta)
+  if (_photoFetched.has(key)) return null;
+
+  // 3. Requisição já em andamento — reutiliza a mesma Promise
+  if (_photoInFlight.has(key)) return _photoInFlight.get(key);
 
   const encodedId = encodeURIComponent(photoChatId);
-  try {
-    const r = await fetch(
-      `/api/waha?path=/api/${PHOTO_SESSION}/chats/${encodedId}/picture`,
-      { headers: { "X-Internal-Key": PHOTO_IKEY } }
-    );
-    const data = r.ok ? await r.json() : null;
-    const url = data?.url || null;
-    writePhotoCache({ ...readPhotoCache(), [key]: url });
-    return url;
-  } catch {
-    writePhotoCache({ ...readPhotoCache(), [key]: null });
-    return null;
-  }
+  const promise = (async () => {
+    try {
+      const r = await fetch(
+        `/api/waha?path=/api/${PHOTO_SESSION}/chats/${encodedId}/picture`,
+        { headers: { "X-Internal-Key": PHOTO_IKEY } }
+      );
+      const data = r.ok ? await r.json() : null;
+      const url = data?.url || null;
+      writePhotoCache({ ...readPhotoCache(), [key]: url });
+      return url;
+    } catch {
+      writePhotoCache({ ...readPhotoCache(), [key]: null });
+      return null;
+    } finally {
+      _photoFetched.add(key);
+      _photoInFlight.delete(key);
+    }
+  })();
+
+  _photoInFlight.set(key, promise);
+  return promise;
 }
 
 function ChatItem({ chat, active, onClick, onOpenMenu, isMuted, now }) {
@@ -498,13 +522,19 @@ function ChatItem({ chat, active, onClick, onOpenMenu, isMuted, now }) {
     }
   }, [chat.id, info.hasContact, resolveLidAsync, lookupPhone, resolveGroupAsync]);
 
-  // Carrega foto: para @lid usa phone resolvido (com DDI) + @c.us
-  // Re-executa quando lidPhoneMap muda (LID recém-resolvido)
+  // Para @lid: extrai apenas o phone resolvido deste chat (evita re-fetch quando outros LIDs mudam)
+  const lidKey   = chat.id?.endsWith("@lid") ? chat.id.replace(/@lid$/, "") : null;
+  const lidPhone = lidKey ? lidPhoneMap?.[lidKey]?.phone ?? null : "__resolved__";
+
+  // Carrega foto: para @lid espera o phone ser resolvido; para @c.us busca imediatamente
+  // Dependência em lidPhone (string/null) em vez de lidPhoneMap inteiro evita re-execução desnecessária
   useEffect(() => {
+    if (lidKey && !lidPhone) return; // LID ainda não resolvido
     fetchAndCachePhoto(chat.id, lidPhoneMap, chat.id).then(url => {
       if (url) setPhotoUrl(url);
     });
-  }, [chat.id, lidPhoneMap]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chat.id, lidPhone]);
 
   const hasUnread = !active && !isMuted && (chat.unread > 0);
 
