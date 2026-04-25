@@ -804,13 +804,14 @@ export function useWAHA(operator) {
             const ovRead     = ov?.readAt     && r2LptMs <= ov.readAt;
             const isMuted    = mutedChatsRef.current.has(r2.id);
             const closing    = lastMsgIsClosing(r2.lastMsg);
-            const lpt        = isMuted || closing || ovRead || ovResolved ? null
+            const r2Resolved = r2.status === "resolved";
+            const lpt        = isMuted || closing || ovRead || ovResolved || r2Resolved ? null
               : (r2.lastPatientTs ? new Date(r2.lastPatientTs).toISOString() : null);
-            const unread = isMuted || closing || !lpt || ovRead || ovResolved ? 0 : r2.unread || 0;
-            // Status: respeita local (pode estar "resolved" por ação do operador),
-            // só força "resolved" se closing/ovResolved, nunca força "open" sobre um resolved local
+            const unread = isMuted || closing || !lpt || ovRead || ovResolved || r2Resolved ? 0 : r2.unread || 0;
+            // Status: r2.status é a fonte mais recente (multi-dispositivo),
+            // nunca força "open" sobre um resolved local ou do R2
             const localResolved = local?.status === "resolved";
-            const status = closing || ovResolved || localResolved ? "resolved" : (local?.status || "open");
+            const status = closing || ovResolved || localResolved || r2Resolved ? "resolved" : (local?.status || "open");
 
             if (local) {
               // Atualiza chat existente com dados mais recentes do R2
@@ -908,8 +909,13 @@ export function useWAHA(operator) {
 
       const normalized = filtered.map(c => {
         const n    = normalizeChat(c);
-        const meta = dbMeta[n.id] || dbMeta[n.id.replace(/\D/g, "")] || {};
-        return { ...n, ...meta };
+        // Lookup por id exato, alias canônico normalizado (com 9 BR), e dígitos brutos
+        const ck   = canonicalKey(n.id, readLidPhoneMap());
+        const meta = dbMeta[n.id] || (ck ? dbMeta[ck] : null) || dbMeta[n.id.replace(/\D/g, "")] || {};
+        // Só aplica campos de metadados do MongoDB — não deixa status antigo contaminar
+        // status só é aplicado se MongoDB tem "resolved" (não sobrescreve com "open" stale)
+        const metaStatus = meta.status === "resolved" ? "resolved" : undefined;
+        return { ...n, ...(metaStatus ? { ...meta, status: metaStatus } : { assignedTo: meta.assignedTo, tags: meta.tags, muted: meta.muted }) };
       });
 
       // Mescla com cache local — cache local TEM PRIORIDADE sobre WAHA
@@ -955,15 +961,19 @@ export function useWAHA(operator) {
           // readAt: considerado válido se não há nova mensagem do paciente após o override
           const ovRead = ov?.readAt && r2LptMs <= ov.readAt;
 
+          // R2 é a fonte de verdade mais atualizada para status (multi-dispositivo)
+          // MongoDB pode estar desatualizado se o write falhou ou vier de outro browser
+          const r2Resolved = r2?.status === "resolved";
+
           // Chat novo sem histórico local — usa WAHA + R2 (mas aplica overrides)
           if (!local) {
             const r2Lpt  = r2?.lastPatientTs ? new Date(r2.lastPatientTs).toISOString() : null;
             const lpt    = isMuted ? null : r2Lpt;
             const closing = lastMsgIsClosing(bestLastMsg);
-            const unread  = isMuted || closing || !lpt || ovRead || ovResolved ? 0 : r2?.unread || 0;
-            const entry   = { ...n, lastMsg: bestLastMsg, lastTs: bestLastTs, lastPatientTs: closing || ovRead || ovResolved ? null : lpt, unread };
+            const unread  = isMuted || closing || !lpt || ovRead || ovResolved || r2Resolved ? 0 : r2?.unread || 0;
+            const entry   = { ...n, lastMsg: bestLastMsg, lastTs: bestLastTs, lastPatientTs: closing || ovRead || ovResolved || r2Resolved ? null : lpt, unread };
             const should30 = lpt && agora - new Date(lpt).getTime() > TRINTA_DIAS;
-            if (closing || should30 || ovResolved) {
+            if (closing || should30 || ovResolved || r2Resolved) {
               if (closing || should30) toAutoResolveIds.add(entry.id);
               return { ...entry, status: "resolved", unread: 0, lastPatientTs: null };
             }
@@ -971,7 +981,8 @@ export function useWAHA(operator) {
           }
 
           // Chat existente — preserva estado local, atualiza com fontes mais recentes
-          const resolvedLocally = local.status === "resolved" || ovResolved;
+          // r2Resolved: outro dispositivo já resolveu e sincronizou para o R2
+          const resolvedLocally = local.status === "resolved" || ovResolved || r2Resolved;
           const closing = lastMsgIsClosing(bestLastMsg);
           const r2Lpt   = r2?.lastPatientTs !== undefined
             ? (r2?.lastPatientTs ? new Date(r2.lastPatientTs).getTime() : null) : undefined;
@@ -2766,10 +2777,11 @@ export function useWAHA(operator) {
                 ? (r2Lpt ? new Date(Math.max(r2Lpt, localLpt || 0)).toISOString() : null)
                 : (local?.lastPatientTs ?? null);
 
-          // Chat é resolvido se: override ativo, lastMsg de fechamento, ou foi resolvido
-          // manualmente (status==="resolved") E não foi reaberto localmente pelo paciente.
+          // Chat é resolvido se: override ativo, lastMsg de fechamento, resolvido localmente,
+          // ou r2.status==="resolved" (outro dispositivo resolveu e sincronizou para o R2).
           const localReopened = local?.status === "open" && localLpt && localLpt > (r2LptMs || 0);
-          const isResolved = (!localReopened && local?.status === "resolved") || ovResolved || lastMsgIsClosing(lastMsg);
+          const r2Resolved = r2?.status === "resolved" && !localReopened;
+          const isResolved = (!localReopened && local?.status === "resolved") || ovResolved || lastMsgIsClosing(lastMsg) || r2Resolved;
           const unread = isMuted || isResolved || !lpt || ovRead ? 0
             : r2?.unread !== undefined
               ? Math.max(r2.unread || 0, local?.unread || 0)
