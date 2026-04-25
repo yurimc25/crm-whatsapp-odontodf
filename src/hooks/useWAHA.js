@@ -937,8 +937,6 @@ export function useWAHA(operator) {
           const ck = canonicalKey(c.id, lidPhoneCache);
           if (ck) prevByPhone[ck] = c;
         }
-        // Rastreia quais entradas do prev já foram cobertas pelo merge com WAHA
-        // para evitar re-adicioná-las no loop abaixo (causaria duplicatas)
         const merged  = normalized.map(n => {
           const ck = canonicalKey(n.id, lidPhoneCache);
           const local   = prevMap[n.id] || (ck ? prevByPhone[ck] : undefined);
@@ -1016,12 +1014,14 @@ export function useWAHA(operator) {
             photoUrl:      local.photoUrl    ?? null,
             tags:          local.tags        ?? n.tags,
             pushname:      n.pushname || local.pushname || r2?.pushname,
-            aliases:       local.aliases,
           };
         });
 
         // ── CRÍTICO: preserva chats locais que o WAHA não retornou (mais antigos que fromTs)
         const wahaIds   = new Set(normalized.map(c => c.id));
+        // Chaves canônicas dos chats já processados pelo WAHA — evita re-adicionar o mesmo
+        // número com ID diferente (ex: WAHA retornou 5511987654321@c.us mas localStorage
+        // tem 551187654321@c.us — sem essa checagem, o localStorage entra duplicado no merged)
         const wahaCKeys = new Set(normalized.map(c => canonicalKey(c.id, lidPhoneCache)).filter(Boolean));
         for (const c of prev) {
           const ck = canonicalKey(c.id, lidPhoneCache);
