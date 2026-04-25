@@ -17,18 +17,25 @@ function mediaKey(msgId) {
   return "media/" + String(msgId).replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
-// Mesma lógica do api/db.js — normaliza chatId para chave canônica estável
-// Garante que 5511987654321@c.us e 551187654321@c.us → mesma entrada no R2
+// Normaliza para chave canônica de mapa (merge) — só dígitos para indivíduos
 function toChatKey(chatId) {
   if (!chatId) return chatId;
   if (chatId.endsWith("@g.us")) return chatId;
   const digits = chatId.replace(/\D/g, "");
   if (!digits) return chatId;
-  // BR sem o 9: 55 + DDD(2) + 8 digits = 12 → insere 9 após DDD
   if (digits.length === 12 && digits.startsWith("55")) {
     return digits.slice(0, 4) + "9" + digits.slice(4);
   }
   return digits;
+}
+
+// ID canônico para armazenar no campo `id` do objeto — preserva sufixo @c.us/@g.us
+// para que o cliente consiga fazer match com IDs do WAHA
+function toCanonicalId(chatId) {
+  if (!chatId) return chatId;
+  if (chatId.endsWith("@g.us")) return chatId;
+  const ck = toChatKey(chatId);
+  return ck.includes("@") ? ck : ck + "@c.us";
 }
 
 export default async function handler(req, res) {
@@ -69,27 +76,29 @@ export default async function handler(req, res) {
         r ? JSON.parse(r.buf.toString("utf8")) : []
       ).catch(() => []);
 
-      // Indexa existentes por chave CANÔNICA — evita duplicatas entre dispositivos
+      // Indexa por chave canônica (mapa interno) mas armazena id com @c.us/@g.us
+      // para que o cliente consiga fazer match com IDs do WAHA (wahaIds.has(r2.id))
       const existMap = {};
       for (const c of existing) {
         if (!c.id) continue;
-        const ck = toChatKey(c.id);
+        const ck  = toChatKey(c.id);
+        const cid = toCanonicalId(c.id);
         const prev = existMap[ck];
-        // Se já existe entrada canônica, mantém a mais recente
         if (!prev || (c.lastTs || 0) >= (prev.lastTs || 0)) {
-          existMap[ck] = { ...c, id: ck };
+          existMap[ck] = { ...c, id: cid };
         }
       }
 
-      // Merge: local vence se mais recente (indexado por chave canônica)
+      // Merge: local vence se mais recente
       for (const c of body) {
         if (!c.id) continue;
-        const ck = toChatKey(c.id);
-        const ex = existMap[ck];
+        const ck  = toChatKey(c.id);
+        const cid = toCanonicalId(c.id);
+        const ex  = existMap[ck];
         const localTs  = c.lastTs  || 0;
         const remoteTs = ex?.lastTs || 0;
         if (!ex || localTs >= remoteTs) {
-          existMap[ck] = { ...c, id: ck };
+          existMap[ck] = { ...c, id: cid };
         }
       }
 

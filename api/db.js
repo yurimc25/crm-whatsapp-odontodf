@@ -57,6 +57,8 @@ export default async function handler(req, res) {
       for (const d of docs) {
         const entry = { status: d.status, assignedTo: d.assignedTo, tags: d.tags || [], muted: d.muted || false };
         map[d._id] = entry;
+        // Expõe também com sufixo @c.us para que o cliente encontre por ID completo do WAHA
+        if (!d._id.includes("@")) map[d._id + "@c.us"] = entry;
         for (const alias of (d.aliases || [])) map[alias] = entry;
       }
       return res.json({ chats: map });
