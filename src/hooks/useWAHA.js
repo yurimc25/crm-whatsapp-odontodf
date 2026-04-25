@@ -150,7 +150,7 @@ function _dedupeChats(chats) {
         unread:        Math.max(ex.unread || 0, chat.unread || 0),
         lastPatientTs: ex.lastPatientTs || chat.lastPatientTs,
         pushname:      ex.pushname   || chat.pushname,
-        status:        ex.status !== "resolved" ? ex.status : chat.status,
+        status:        ex.status === "resolved" || chat.status === "resolved" ? "resolved" : (ex.status || chat.status),
       };
     }
   }
@@ -1018,10 +1018,14 @@ export function useWAHA(operator) {
         });
 
         // ── CRÍTICO: preserva chats locais que o WAHA não retornou (mais antigos que fromTs)
-        const wahaIds = new Set(normalized.map(c => c.id));
-        const wahaPhones = new Set(normalized.map(c => c.id.replace(/\D/g, "")).filter(d => d.length >= 8));
+        const wahaIds   = new Set(normalized.map(c => c.id));
+        // Chaves canônicas dos chats já processados pelo WAHA — evita re-adicionar o mesmo
+        // número com ID diferente (ex: WAHA retornou 5511987654321@c.us mas localStorage
+        // tem 551187654321@c.us — sem essa checagem, o localStorage entra duplicado no merged)
+        const wahaCKeys = new Set(normalized.map(c => canonicalKey(c.id, lidPhoneCache)).filter(Boolean));
         for (const c of prev) {
-          if (!wahaIds.has(c.id)) merged.push(c); // preserva sem modificar
+          const ck = canonicalKey(c.id, lidPhoneCache);
+          if (!wahaIds.has(c.id) && !(ck && wahaCKeys.has(ck))) merged.push(c);
         }
 
         // ── Sessão nova (prev vazio): adiciona chats do R2 que WAHA não retornou
