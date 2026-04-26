@@ -59,10 +59,13 @@ function sortMsgs(msgs) {
 function removeTmp(current, incoming) {
   const realIds          = new Set(incoming.map(m => m.id));
   const realFromMeTexts  = new Set(incoming.filter(m => m.from === "operator").map(m => m.text?.trim()));
+  const hasRealLocation  = incoming.some(m => m.from === "operator" && m.type === "location");
   return current.filter(m => {
     if (!m.id.startsWith("tmp-")) return true;
     if (realIds.has(m.id)) return false;
     if (realFromMeTexts.has(m.text?.trim())) return false;
+    // Remove tmp de localização quando a mensagem real de localização chega
+    if (hasRealLocation && m.id.startsWith("tmp-loc-") && m.type === "location") return false;
     return true;
   });
 }
@@ -1093,8 +1096,23 @@ export function useWAHA(operator) {
       setMessages(prev => {
         const existing = prev[effectiveId] || [];
         if (existing.find(m => m.id === msg.id)) return prev;
-        const semTmp  = removeTmp(existing, [msg]);
-        const updated = sortMsgs([...semTmp, msg]);
+        // Antes de remover tmps de localização, preserva address/thumbnail que a API WAHA não devolve
+        let enrichedMsg = msg;
+        if (msg.type === "location" && msg.location) {
+          const tmpLoc = existing.find(m => m.id.startsWith("tmp-loc-") && m.type === "location");
+          if (tmpLoc?.location) {
+            enrichedMsg = {
+              ...msg,
+              location: {
+                ...msg.location,
+                address:   msg.location.address   || tmpLoc.location.address   || null,
+                thumbnail: msg.location.thumbnail || tmpLoc.location.thumbnail || null,
+              },
+            };
+          }
+        }
+        const semTmp  = removeTmp(existing, [enrichedMsg]);
+        const updated = sortMsgs([...semTmp, enrichedMsg]);
         _sessionMsgs.set(effectiveId, updated);
         return { ...prev, [effectiveId]: updated };
       });
