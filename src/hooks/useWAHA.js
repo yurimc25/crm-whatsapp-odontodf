@@ -1379,25 +1379,18 @@ export function useWAHA(operator) {
         const r2Merged  = existing.filter(m => r2Ids.has(m.id)).map(enrichFromWaha);
         const wsExtras  = existing.filter(m => !r2Ids.has(m.id) && !m.id.startsWith("tmp-")).map(enrichFromWaha);
 
-        // Limite inferior das fontes canônicas — WAHA só preenche histórico ANTERIOR a esse ponto
-        const canonicalTs = [...r2Merged, ...wsExtras].map(m => tsToNum(m.ts)).filter(t => t > 0);
-        const oldestCanonicalTs = canonicalTs.length ? Math.min(...canonicalTs) : 0;
-
-        // IDs canônicos conhecidos e chaves ts+direção para deduplicar por formato de ID diferente
+        // IDs e chaves ts+direção das fontes canônicas — deduplicam WAHA com ID em formato diferente
         const canonicalIds   = new Set([...r2Merged, ...wsExtras].map(m => m.id));
         const canonicalTsKey = new Set([...r2Merged, ...wsExtras].map(m => {
           const tsS = Math.floor(tsToNum(m.ts) / 1000);
           return `${m.from}_${tsS}`;
         }));
 
-        // WAHA preenche apenas mensagens ANTERIORES ao intervalo canônico (histórico mais antigo)
+        // WAHA preenche mensagens ausentes nas fontes canônicas
+        // Descarta apenas: ID idêntico ou mesmo segundo+direção (duplicata com ID em outro formato)
         const wahaExtras = wahaMsgs.filter(m => {
           if (canonicalIds.has(m.id)) return false;
-          const mTs = tsToNum(m.ts);
-          // Rejeita qualquer mensagem WAHA no mesmo período das fontes canônicas — é duplicata com ID diferente
-          if (oldestCanonicalTs > 0 && mTs >= oldestCanonicalTs) return false;
-          // Deduplicação extra por ts+direção (mesmo segundo)
-          const tsS = Math.floor(mTs / 1000);
+          const tsS = Math.floor(tsToNum(m.ts) / 1000);
           return !canonicalTsKey.has(`${m.from}_${tsS}`);
         });
 
