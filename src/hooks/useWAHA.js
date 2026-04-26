@@ -733,10 +733,16 @@ export function useWAHA(operator) {
             const lptMs   = c.lastPatientTs || 0;
             const ovResolved = ov?.resolvedAt && lptMs <= ov.resolvedAt;
             const ovRead     = ov?.readAt     && lptMs <= ov.readAt;
-            const closing    = lastMsgIsClosing(c.lastMsg);
-            const isResolved = (local?.status === "resolved") || ovResolved || closing;
+            // autoResolved vem do servidor (calculado com fromMe e texto limpo de prefixo)
+            // fallback: lastMsgIsClosing ainda verifica o texto raw p/ retrocompatibilidade
+            const r2AutoRes  = c.autoResolved || lastMsgIsClosing(c.lastMsg);
+            const isResolved = (local?.status === "resolved") || ovResolved || r2AutoRes;
+            // lastPatientTs: R2 já calcula null quando operador respondeu por último
+            // se local tem null (operador respondeu) prevalece sobre R2 que possa ter valor stale
+            const localLpt = local?.lastPatientTs;
+            const r2Lpt    = c.lastPatientTs ? new Date(c.lastPatientTs).toISOString() : null;
             const lpt = isMuted || isResolved || ovRead ? null
-              : (c.lastPatientTs ? new Date(c.lastPatientTs).toISOString() : null);
+              : (localLpt === null && local ? null : (localLpt || r2Lpt));
             // Preserva lastMsg/lastTs local quando:
             //   1. local é igual ou mais recente que R2 (>= cobre mesmo evento via WS+webhook), OU
             //   2. R2 não tem lastMsg mas local tem (webhook ainda não chegou)

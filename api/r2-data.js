@@ -543,30 +543,44 @@ export default async function handler(req, res) {
         }
 
         let lastMsg = "", lastTs = 0, pushname = "", unread = 0, lastPatientTs = null;
+        let lastMsgFromMe = false;
         if (msgs.length > 0) {
           const last = msgs[msgs.length - 1];
-          lastMsg  = last.body || last.text || "";
-          lastTs   = last.ts   || 0;
-          pushname = last.pushname || last.notifyName || "";
+          lastMsg       = last.body || last.text || "";
+          lastTs        = last.ts   || 0;
+          lastMsgFromMe = !!last.fromMe;
+          pushname      = last.pushname || last.notifyName || "";
+          // unread = mensagens do paciente sem resposta do operador (da última msg do op em diante)
           let u = 0;
           for (let i = msgs.length - 1; i >= 0; i--) {
             if (msgs[i].fromMe) break;
             u++;
           }
           unread = u;
+          // lastPatientTs = ts da última msg do paciente APÓS a última msg do operador
+          // null se o operador respondeu por último (fromMe=true no final)
           for (let i = msgs.length - 1; i >= 0; i--) {
-            if (!msgs[i].fromMe) { lastPatientTs = msgs[i].ts || null; break; }
+            if (msgs[i].fromMe) { lastPatientTs = null; break; } // operador respondeu depois
+            if (!msgs[i].fromMe) lastPatientTs = msgs[i].ts || null;
           }
         }
+
+        // Texto limpo da última msg (sem prefixo "Operador: ") para checagem de autoresolve
+        const lastMsgClean = lastMsg.includes(": ") ? lastMsg.replace(/^[^:]+:\s*/, "") : lastMsg;
+        // Autoresolve: operador enviou "Consulta confirmada" ou paciente enviou despedida
+        const isOperatorClosing = lastMsgFromMe && /^Consulta confirmada[!.]?/i.test(lastMsgClean);
+        const isFarewell = !lastMsgFromMe && /^(ok|obg|obrigad|valeu|tchau|flw|até|ata |bjss?|bjo|boa noite|boa tarde|bom dia|perfeito|certo|entendido|anotado|combinado)/i.test(lastMsgClean.trim());
 
         return {
           id:           canonicalId,
           lastMsg,
+          lastMsgFromMe,
           lastTs:       lastTs || new Date(f.lastModified).getTime(),
           lastModified: f.lastModified,
           pushname,
           unread,
           lastPatientTs,
+          autoResolved: isOperatorClosing || isFarewell,
           status:       "open",
         };
       };
