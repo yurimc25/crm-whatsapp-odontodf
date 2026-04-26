@@ -444,7 +444,7 @@ export default function ChatWindow({
       // Locais fixos da clínica são enviados sem geocodificação; demais usam Nominatim
       const CLINIC_LOCATIONS = [
         {
-          keywords: ["odonto on face guará", "odonto on face guara", "guará", "guara", "clinica", "clínica"],
+          keywords: ["odonto", "guará", "guara", "clinica", "clínica"],
           lat: -15.83, lng: -47.9781,
           name: "Odonto On Face Guará",
           address: "QE 15 BLOCO B loja 10",
