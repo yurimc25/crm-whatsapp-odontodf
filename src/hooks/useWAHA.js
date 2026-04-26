@@ -1348,46 +1348,42 @@ export function useWAHA(operator) {
       setMessages(prev => {
         if (activeChatRef.token !== token) return prev;
         const existing = prev[chatId] || [];
-        const existIds = new Set(existing.map(m => m.id));
         const existMedia = existing.filter(m => m.hasMedia || m.media).length;
 
-        // R2 é base para horário/texto — WAHA completa mídia ausente no R2
-        const r2Merged = existing.filter(m => r2Ids.has(m.id)).map(m => {
+        // Enriquece um msg canônico (R2 ou WS) com mídia/replyTo do WAHA sem tocar em ts/id/texto
+        const enrichFromWaha = (m) => {
           const waha = getWaha(m.id, m);
           if (!waha) return m;
           const media    = m.media || (waha.hasMedia ? waha.media : null);
           const hasMedia = m.hasMedia || waha.hasMedia || false;
           const wahaType = waha.type && waha.type !== "text" && waha.type !== "chat" ? waha.type : null;
-          const type     = wahaType || m.type;
-          const replyTo  = m.replyTo || waha.replyTo || null;
-          return { ...m, media, hasMedia, type, replyTo };
-        });
+          return { ...m, media, hasMedia, type: wahaType || m.type, replyTo: m.replyTo || waha.replyTo || null };
+        };
 
-        // Mensagens que não estão no R2 mas estão no state (WS/cache)
-        // Preserva ts e id do WS — usa WAHA só para enriquecer mídia/replyTo
-        const wsExtras = existing
-          .filter(m => !r2Ids.has(m.id) && !m.id.startsWith("tmp-"))
-          .map(m => {
-            const waha = getWaha(m.id, m);
-            if (!waha) return m;
-            const media    = m.media || (waha.hasMedia ? waha.media : null);
-            const hasMedia = m.hasMedia || waha.hasMedia || false;
-            const wahaType = waha.type && waha.type !== "text" && waha.type !== "chat" ? waha.type : null;
-            return { ...m, media, hasMedia, type: wahaType || m.type, replyTo: m.replyTo || waha.replyTo || null };
-          });
+        // Fontes canônicas: R2 (webhook) + WebSocket desta sessão — ts/id/texto preservados
+        const r2Merged  = existing.filter(m => r2Ids.has(m.id)).map(enrichFromWaha);
+        const wsExtras  = existing.filter(m => !r2Ids.has(m.id) && !m.id.startsWith("tmp-")).map(enrichFromWaha);
 
-        // IDs e chaves ts+direção já cobertos por wsExtras — evita duplicatas de WAHA com ID diferente
-        const wsExtraIds = new Set(wsExtras.map(m => m.id));
-        const wsExtraTsKeys = new Set(wsExtras.map(m => {
-          const tsS = Math.floor(new Date(m.ts).getTime() / 1000);
+        // Limite inferior das fontes canônicas — WAHA só preenche histórico ANTERIOR a esse ponto
+        const canonicalTs = [...r2Merged, ...wsExtras].map(m => tsToNum(m.ts)).filter(t => t > 0);
+        const oldestCanonicalTs = canonicalTs.length ? Math.min(...canonicalTs) : 0;
+
+        // IDs canônicos conhecidos e chaves ts+direção para deduplicar por formato de ID diferente
+        const canonicalIds   = new Set([...r2Merged, ...wsExtras].map(m => m.id));
+        const canonicalTsKey = new Set([...r2Merged, ...wsExtras].map(m => {
+          const tsS = Math.floor(tsToNum(m.ts) / 1000);
           return `${m.from}_${tsS}`;
         }));
 
-        // Mensagens só no WAHA, sem nenhum match por ID ou timestamp com msgs já conhecidas
+        // WAHA preenche apenas mensagens ANTERIORES ao intervalo canônico (histórico mais antigo)
         const wahaExtras = wahaMsgs.filter(m => {
-          if (r2Ids.has(m.id) || existIds.has(m.id) || wsExtraIds.has(m.id)) return false;
-          const tsS = Math.floor(new Date(m.ts).getTime() / 1000);
-          return !wsExtraTsKeys.has(`${m.from}_${tsS}`);
+          if (canonicalIds.has(m.id)) return false;
+          const mTs = tsToNum(m.ts);
+          // Rejeita qualquer mensagem WAHA no mesmo período das fontes canônicas — é duplicata com ID diferente
+          if (oldestCanonicalTs > 0 && mTs >= oldestCanonicalTs) return false;
+          // Deduplicação extra por ts+direção (mesmo segundo)
+          const tsS = Math.floor(mTs / 1000);
+          return !canonicalTsKey.has(`${m.from}_${tsS}`);
         });
 
         const merged     = sortMsgs([...r2Merged, ...wahaExtras, ...wsExtras]);
