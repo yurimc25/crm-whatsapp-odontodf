@@ -626,12 +626,12 @@ export function useWAHA(operator) {
     initChats().then(() => {
       setTimeout(_syncChatsToR2, 5000);
       setTimeout(_batchResolveLids, 8000);
-      // Varredura única de duplicatas @lid/@c.us no R2 — fire-and-forget, não bloqueia init
+      // Varredura única de duplicatas @lid/@c.us no R2 — após merge, reaplica chatlist
       setTimeout(() => {
         fetch("/api/r2-data?type=merge-lids", {
           method: "POST",
           headers: { "X-Internal-Key": ikey() },
-        }).catch(() => {});
+        }).then(() => applyR2Chats()).catch(() => {});
       }, 15000);
     });
   }, [sessionOk]);
@@ -2166,8 +2166,8 @@ export function useWAHA(operator) {
   // ── Resync manual: reaplica R2 e sincroniza ──────────────────────────────────
   async function resyncChats() {
     if (USE_MOCK) return;
-    // Limpa arquivos @lid já resolvidos no R2 antes de recarregar
-    fetch("/api/r2-data?type=merge-lids", {
+    // Merge @lid/@c.us duplicados no R2 antes de recarregar o chatlist
+    await fetch("/api/r2-data?type=merge-lids", {
       method: "POST",
       headers: { "X-Internal-Key": ikey() },
     }).catch(() => {});
