@@ -1852,6 +1852,28 @@ export function useWAHA(operator) {
         headers: { "Content-Type": "application/json", "X-Internal-Key": ikey() },
         body: JSON.stringify({ ...tmpMsg, fromMe: true }),
       }).catch(() => {});
+      // A API WAHA não envia o campo address na mensagem de localização.
+      // Enviamos uma mensagem de texto logo após com o endereço para o destinatário ver.
+      if (address) {
+        await new Promise(r => setTimeout(r, 800)); // pequeno delay para chegar depois da localização
+        const formatted = `${operatorName}: 📍 ${address}`;
+        await sendText(chatId, formatted);
+        const addrMsg = {
+          id: `tmp-addr-${Date.now()}`, from: "operator", text: formatted,
+          time: new Date().toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" }),
+          ts: new Date().toISOString(), chatId, type: "text", operator: operatorName,
+        };
+        setMessages(prev => {
+          const updated = sortMsgs([...(prev[chatId] || []), addrMsg]);
+          _sessionMsgs.set(chatId, updated);
+          return { ...prev, [chatId]: updated };
+        });
+        fetch(`/api/r2-data?type=send-msg&chatId=${encodeURIComponent(chatId)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Internal-Key": ikey() },
+          body: JSON.stringify({ ...addrMsg, fromMe: true }),
+        }).catch(() => {});
+      }
     } catch (e) {
       setMessages(prev => ({
         ...prev,

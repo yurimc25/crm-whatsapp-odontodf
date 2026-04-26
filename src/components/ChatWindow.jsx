@@ -447,7 +447,7 @@ export default function ChatWindow({
           keywords: ["odonto", "guará", "guara", "clinica", "clínica"],
           lat: -15.83, lng: -47.9781,
           name: "Odonto On Face Guará",
-          address: "QE 15 BLOCO B loja 10",
+          address: "QE 15 BLOCO B loja 10 - Guará II",
         },
       ];
       const locMatch = text.trim().match(/^\/endere[çc]o\s+(.+)$/i);
