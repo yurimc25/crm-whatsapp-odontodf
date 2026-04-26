@@ -37,7 +37,7 @@ export default function ChatList({
   resyncKey, mutedChats, onMute, onUnmute,
   agendaOpen: agendaOpenProp, onAgendaToggle,
 }) {
-  const PAGE = 30; // itens iniciais
+  const PAGE = 20; // itens iniciais
   const MORE = 20; // itens por scroll
 
   // agendaOpen pode ser controlado pelo pai (mobile) ou internamente (desktop sem prop)
@@ -173,7 +173,7 @@ export default function ChatList({
     }, { threshold: 0.1 });
     obs.observe(sentinelRef.current);
     return () => obs.disconnect();
-  }, [filtered.length]);
+  }, [filtered.length, visibleCount]);
 
   const visibleChats = search ? filtered : filtered.slice(0, visibleCount);
 

@@ -44,6 +44,12 @@ const DEFAULT_MESSAGES = [
     titulo: "Agendar retorno",
     texto: `Olá! Gostaria de agendar seu retorno. Qual o melhor dia e horário para você? 📅`,
   },
+  {
+    id: "endereco",
+    atalho: "/endereço",
+    titulo: "Enviar localização da clínica",
+    texto: `/endereço Odonto On Face`,
+  },
 ];
 
 async function fetchMessages() {

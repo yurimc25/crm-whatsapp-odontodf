@@ -641,11 +641,11 @@ export async function sendSticker(chatId, base64DataUri) {
   return r.json();
 }
 
-export async function sendLocation(chatId, lat, lng, title = "") {
+export async function sendLocation(chatId, lat, lng, title = "", address = "") {
   const r = await fetch(`${WAHA_URL}/api/sendLocation`, {
     method: "POST",
     headers: headers(),
-    body: JSON.stringify({ session: SESSION, chatId, latitude: lat, longitude: lng, title }),
+    body: JSON.stringify({ session: SESSION, chatId, latitude: lat, longitude: lng, title, address }),
   });
   if (!r.ok) throw new Error(`WAHA sendLocation: ${r.status}`);
   return r.json();

@@ -441,18 +441,31 @@ export default function ChatWindow({
       }
 
       // Comando /endereço <nome ou endereço>
-      // Geocodifica via Nominatim (OpenStreetMap) e envia localização
+      // Locais fixos da clínica são enviados sem geocodificação; demais usam Nominatim
+      const CLINIC_LOCATIONS = [
+        {
+          keywords: ["odonto on face guará", "odonto on face guara", "guará", "guara", "clinica", "clínica"],
+          lat: -15.83, lng: -47.9781,
+          name: "Odonto On Face Guará",
+          address: "QE 15 BLOCO B loja 10",
+        },
+      ];
       const locMatch = text.trim().match(/^\/endere[çc]o\s+(.+)$/i);
       if (locMatch) {
-        const query = locMatch[1].trim();
-        const geoR  = await fetch(
-          `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1`,
-          { headers: { "Accept-Language": "pt-BR" } }
-        );
-        const geoData = await geoR.json();
-        if (!geoData?.length) { alert("Endereço não encontrado."); return; }
-        const { lat, lon, display_name } = geoData[0];
-        await sendLocation(chat.id, parseFloat(lat), parseFloat(lon), display_name);
+        const query = locMatch[1].trim().toLowerCase();
+        const preset = CLINIC_LOCATIONS.find(l => l.keywords.some(k => query.includes(k)));
+        if (preset) {
+          await sendLocation(chat.id, preset.lat, preset.lng, preset.name, preset.address);
+        } else {
+          const geoR = await fetch(
+            `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1`,
+            { headers: { "Accept-Language": "pt-BR" } }
+          );
+          const geoData = await geoR.json();
+          if (!geoData?.length) { alert("Endereço não encontrado."); return; }
+          const { lat, lon, display_name } = geoData[0];
+          await sendLocation(chat.id, parseFloat(lat), parseFloat(lon), display_name);
+        }
         setText("");
         return;
       }
