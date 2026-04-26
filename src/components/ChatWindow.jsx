@@ -257,10 +257,13 @@ export default function ChatWindow({
   const [lastRefresh, setLastRefresh] = useState(Date.now());
 
   function handleOcrResult(text, afterMsgId) {
+    // Extrai dígitos do chatId para usar como telefone de fallback (ex: "5511999999999@c.us")
+    const chatPhone = (chat.id || "").replace(/@.*/, "").replace(/\D/g, "") || null;
     addExtraMessage({
       id:          `ocr-${Date.now()}`,
       hasPatientCard: true,
       text,
+      chatPhone,
       from:        "operator",
       time:        new Date().toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" }),
       ts:          new Date().toISOString(),

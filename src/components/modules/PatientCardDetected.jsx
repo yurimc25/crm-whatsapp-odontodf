@@ -126,6 +126,14 @@ function parsePatientData(text) {
   if (validPhones.length > 1 && validPhones[1] !== validPhones[0]) {
     if (!fields.telefone2) fields.telefone2 = validPhones[1];
   }
+  // Fallback: número após keyword "telefone/celular/whatsapp" sem DDD (8-9 dígitos)
+  if (!fields.telefone) {
+    const phoneKeyM = textSemCpf.match(/(?:telefone|celular|whatsapp|fone|tel)\s*[:\-]?\s*(\d[\d\s\-]{7,14}\d)/i);
+    if (phoneKeyM) {
+      const p = phoneKeyM[1].replace(/\D/g, "");
+      if (p.length >= 8 && p.length <= 13) fields.telefone = p;
+    }
+  }
 
   // Convênio — detecta por label (com ou sem nome) OU convênio conhecido no texto
   const convenioLabelM = fullText.match(/(?:convênio|convenio)(?:\/particular)?\s*[:\-]?\s*([^\n,]{2,40})/i)
@@ -157,15 +165,27 @@ function parsePatientData(text) {
       }
     }
   }
+  // Detecta "particular" como convênio quando aparece isolado no texto
+  if (!fields.convenio && /\bparticular\b/i.test(fullText)) {
+    fields.convenio = "Particular";
+  }
+
+  // Nome — tenta extrair texto antes de "CPF" ou "CNPJ" em texto corrido
+  const nomeBeforeCpf = fullText.match(/^([A-ZÀ-Úa-zà-ú](?:[A-ZÀ-Úa-zà-ú\s]){4,60}?)\s+(?:cpf|cnpj)\b/i);
+  if (nomeBeforeCpf) {
+    fields.nome = nomeBeforeCpf[1].trim();
+  }
 
   // Nome — primeira linha que parece nome próprio (Maiúscula Maiúscula, sem números)
   const RE_NAME = /^[A-ZÀ-Ú][a-zà-ú]+(\s+[A-ZÀ-Úa-zà-ú]+){1,6}$/;
-  for (const line of lines) {
-    const clean = line.trim();
-    if (clean.length > 5 && clean.length < 60 && RE_NAME.test(clean) &&
-        !RE_EMAIL.test(clean) && !/\d{5,}/.test(clean)) {
-      fields.nome = clean;
-      break;
+  if (!fields.nome) {
+    for (const line of lines) {
+      const clean = line.trim();
+      if (clean.length > 5 && clean.length < 60 && RE_NAME.test(clean) &&
+          !RE_EMAIL.test(clean) && !/\d{5,}/.test(clean)) {
+        fields.nome = clean;
+        break;
+      }
     }
   }
   // Fallback: primeira linha sem muitos números
@@ -177,6 +197,14 @@ function parsePatientData(text) {
         fields.nome = line.trim();
         break;
       }
+    }
+  }
+
+  // Limpa valores placeholder que o LLM pode gerar quando não encontra o dado
+  const RE_PLACEHOLDER = /^(n\/a|não\s+inf|nao\s+inf|não\s+enc|nao\s+enc|nenhum|desconhec|indispon|não\s+consta|nao\s+consta|\-+|\?+|sem\s+inf)$/i;
+  for (const k of Object.keys(fields)) {
+    if (fields[k] && RE_PLACEHOLDER.test(String(fields[k]).trim())) {
+      delete fields[k];
     }
   }
 
@@ -216,8 +244,9 @@ function splitPatientBlocks(text) {
   return valid.length >= 2 ? valid : [text];
 }
 
-export default function PatientCardDetected({ msg }) {
-  const iKey = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
+export default function PatientCardDetected({ msg, chatPhone: chatPhoneProp }) {
+  const iKey      = import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10";
+  const chatPhone = chatPhoneProp ?? msg.chatPhone ?? null;
 
   // Não exibe card se template vazio
   if (isTemplateVazio(msg.text)) {
@@ -262,6 +291,7 @@ export default function PatientCardDetected({ msg }) {
             index={idx}
             total={blocks.length}
             iKey={iKey}
+            chatPhone={chatPhone}
           />
         ))}
       </div>
@@ -269,7 +299,7 @@ export default function PatientCardDetected({ msg }) {
   );
 }
 
-function PatientCard({ block, index, total, iKey }) {
+function PatientCard({ block, index, total, iKey, chatPhone }) {
   const { addLocalContact } = useContactsCtx();
   const [showModal, setShowModal] = useState(false);
   const [modalAction, setModalAction] = useState(null);
@@ -278,7 +308,11 @@ function PatientCard({ block, index, total, iKey }) {
   const [successDoctoral, setSuccessDoctoral] = useState(null);
   const [error, setError] = useState(null);
 
-  const data        = parsePatientData(block);
+  const raw = parsePatientData(block);
+  // Se o OCR não encontrou telefone, usa o telefone do chat como fallback
+  const data = (!raw.telefone && chatPhone)
+    ? { ...raw, telefone: chatPhone }
+    : raw;
   const camposVazios = CAMPOS.filter(c => !data[c] || data[c].trim() === "");
 
   const isFirst   = index === 0;
