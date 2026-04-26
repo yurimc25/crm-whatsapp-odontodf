@@ -534,21 +534,45 @@ export function useWAHA(operator) {
     setChatsRaw(prev => {
       const next = typeof updater === "function" ? updater(prev) : updater;
       if (next === prev) return prev;
-      // Antes de deduplicar: garante que lastMsg/lastTs do state atual prevaleçam
-      // Lookup por ID exato + fallback tail-8 (cobre variação de formato de ID)
-      const guardById = new Map(prev.map(c => [c.id, c]));
+      // Guard: lastMsg/lastTs do state atual prevalecem sobre dados mais antigos da base
+      // Lookup por: ID exato → alias @lid/@c.us via lidResolver → tail-8 de telefone
+      const lidResolver = _buildLidResolver(); // @lid → @c.us (memória + localStorage)
+      const guardById  = new Map(prev.map(c => [c.id, c]));
+      // Indexa também por JID resolvido para que @lid no next encontre @c.us no prev (e vice-versa)
+      const guardByJid = new Map();
+      for (const c of prev) {
+        if (c.id?.endsWith("@lid")) {
+          const jid = lidResolver.get(c.id);
+          if (jid) guardByJid.set(jid, c);
+        } else if (c.id?.endsWith("@c.us")) {
+          guardByJid.set(c.id, c);
+        }
+      }
       const guardByT8 = new Map();
       for (const c of prev) {
         if (c.id?.endsWith("@g.us")) continue;
-        const t8 = c.id?.replace(/\D/g, "").slice(-8);
-        if (t8?.length >= 8 && !guardByT8.has(t8)) guardByT8.set(t8, c);
+        const digits = _resolvedDigits(c.id, lidResolver);
+        const t8 = digits.length >= 8 ? digits.slice(-8) : null;
+        if (t8 && !guardByT8.has(t8)) guardByT8.set(t8, c);
       }
       const guardFind = (id) => {
         const ex = guardById.get(id);
         if (ex) return ex;
         if (id?.endsWith("@g.us")) return undefined;
-        const t8 = id?.replace(/\D/g, "").slice(-8);
-        return t8?.length >= 8 ? guardByT8.get(t8) : undefined;
+        // @lid no next → encontra @c.us no prev (ou outro @lid resolvido)
+        if (id?.endsWith("@lid")) {
+          const jid = lidResolver.get(id);
+          if (jid) { const r = guardById.get(jid) || guardByJid.get(jid); if (r) return r; }
+        }
+        // @c.us no next → encontra @lid no prev cujo JID resolvido é este @c.us
+        if (id?.endsWith("@c.us")) {
+          const r = guardByJid.get(id);
+          if (r) return r;
+        }
+        // Fallback: tail-8 de dígitos normalizados (cobre variações de prefixo/dígito 9)
+        const digits = _resolvedDigits(id, lidResolver);
+        const t8 = digits.length >= 8 ? digits.slice(-8) : null;
+        return t8 ? guardByT8.get(t8) : undefined;
       };
       const guarded = next.map(c => {
         const p = guardFind(c.id);
