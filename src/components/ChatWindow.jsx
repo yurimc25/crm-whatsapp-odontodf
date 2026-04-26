@@ -272,6 +272,7 @@ export default function ChatWindow({
   const prevScrollH      = useRef(0);
   const scrollToChatId   = useRef(null);
   const initialLoadDone  = useRef(false); // bloqueia loadOlderNow até chat renderizar
+  const loadOlderCooldown = useRef(false); // evita disparos consecutivos do scroll infinito
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const { displayInfo, addLocalContact, removeContact, lidPhoneMap, contactMap } = useContactsCtx();
   const info = displayInfo(chat.id, chat.name, chat.pushname);
@@ -305,10 +306,12 @@ export default function ChatWindow({
     const el = scrollRef.current;
     if (!el || !messages?.length) return;
 
-    const scrollToBottom = () => {
+    const scrollToBottom = (behavior = "instant") => {
       // Duplo rAF: garante que o DOM foi pintado antes de medir/scrollar
       requestAnimationFrame(() => requestAnimationFrame(() => {
-        bottomRef.current?.scrollIntoView({ behavior: "instant" });
+        const c = scrollRef.current;
+        if (!c) return;
+        c.scrollTop = c.scrollHeight;
         initialLoadDone.current = true;
       }));
     };
@@ -322,14 +325,16 @@ export default function ChatWindow({
 
     // Nova mensagem em tempo real ou reload do R2: scrolla só se perto do fundo
     requestAnimationFrame(() => {
-      if (!el) return;
-      const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 350;
-      if (nearBottom) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+      const c = scrollRef.current;
+      if (!c) return;
+      const nearBottom = c.scrollHeight - c.scrollTop - c.clientHeight < 350;
+      if (nearBottom) c.scrollTop = c.scrollHeight;
     });
   }, [messages]);
 
   const loadOlderNow = useCallback(async () => {
-    if (loadingMore || !hasMore || !onLoadOlder) return;
+    if (loadingMore || !hasMore || !onLoadOlder || loadOlderCooldown.current) return;
+    loadOlderCooldown.current = true;
     setLoadingMore(true);
     prevScrollH.current = scrollRef.current?.scrollHeight || 0;
     const result = await onLoadOlder(chat.id, messages);
@@ -338,6 +343,8 @@ export default function ChatWindow({
       if (scrollRef.current)
         scrollRef.current.scrollTop += scrollRef.current.scrollHeight - prevScrollH.current;
       setLoadingMore(false);
+      // libera cooldown após 400ms para evitar disparos em cascata
+      setTimeout(() => { loadOlderCooldown.current = false; }, 400);
     });
   }, [loadingMore, hasMore, onLoadOlder, chat.id, messages]);
 
@@ -708,7 +715,8 @@ export default function ChatWindow({
       {showScrollBtn && (
         <button
           onClick={() => {
-            bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+            const c = scrollRef.current;
+            if (c) c.scrollTop = c.scrollHeight;
             setShowScrollBtn(false);
           }}
           style={{
