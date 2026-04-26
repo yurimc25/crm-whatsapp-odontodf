@@ -674,21 +674,40 @@ export function useWAHA(operator) {
       const overrides = readOverrides();
 
       setChats(prev => {
-        // Lookup por ID exato, com fallback por tail-8 de telefone
-        // (cobre variação de formato de ID entre R2 e state local)
-        const prevById   = new Map(prev.map(c => [c.id, c]));
-        const prevByT8   = new Map();
+        // Lookup por ID exato → alias @lid/@c.us via lidResolver → tail-8
+        const lidResolver = _buildLidResolver();
+        const prevById  = new Map(prev.map(c => [c.id, c]));
+        const prevByJid = new Map(); // jid@c.us → chat (para achar @c.us quando prev tem @lid)
+        for (const c of prev) {
+          if (c.id?.endsWith("@lid")) {
+            const jid = lidResolver.get(c.id);
+            if (jid) prevByJid.set(jid, c);
+          } else if (c.id?.endsWith("@c.us")) {
+            prevByJid.set(c.id, c);
+          }
+        }
+        const prevByT8 = new Map();
         for (const c of prev) {
           if (c.id?.endsWith("@g.us")) continue;
-          const t8 = c.id?.replace(/\D/g, "").slice(-8);
-          if (t8?.length >= 8 && !prevByT8.has(t8)) prevByT8.set(t8, c);
+          const digits = _resolvedDigits(c.id, lidResolver);
+          const t8 = digits.length >= 8 ? digits.slice(-8) : null;
+          if (t8 && !prevByT8.has(t8)) prevByT8.set(t8, c);
         }
         const findLocal = (id) => {
           const ex = prevById.get(id);
           if (ex) return ex;
           if (id?.endsWith("@g.us")) return undefined;
-          const t8 = id?.replace(/\D/g, "").slice(-8);
-          return t8?.length >= 8 ? prevByT8.get(t8) : undefined;
+          if (id?.endsWith("@lid")) {
+            const jid = lidResolver.get(id);
+            if (jid) { const r = prevById.get(jid) || prevByJid.get(jid); if (r) return r; }
+          }
+          if (id?.endsWith("@c.us")) {
+            const r = prevByJid.get(id);
+            if (r) return r;
+          }
+          const digits = _resolvedDigits(id, lidResolver);
+          const t8 = digits.length >= 8 ? digits.slice(-8) : null;
+          return t8 ? prevByT8.get(t8) : undefined;
         };
 
         // IDs presentes no R2 — chats não encontrados em R2 são mantidos do prev (WebSocket-only)
@@ -696,8 +715,12 @@ export function useWAHA(operator) {
         const prevOnly = prev.filter(c => {
           if (r2Ids.has(c.id)) return false;
           if (c.id?.endsWith("@g.us")) return false;
-          const t8 = c.id?.replace(/\D/g, "").slice(-8);
-          return !t8 || ![...r2Ids].some(id => id.replace(/\D/g, "").slice(-8) === t8);
+          const digits = _resolvedDigits(c.id, lidResolver);
+          const t8 = digits.length >= 8 ? digits.slice(-8) : null;
+          return !t8 || ![...r2Ids].some(id => {
+            const d = _resolvedDigits(id, lidResolver);
+            return d.length >= 8 && d.slice(-8) === t8;
+          });
         });
 
         const updated = r2Chats
@@ -1701,14 +1724,21 @@ export function useWAHA(operator) {
     });
     setChats(prev => {
       const updated = prev.map(c => c.id !== chatId ? c : {
-        ...c, lastMsg: formatted, lastTime: tmpMsg.time, lastPatientTs: null, unread: 0,
+        ...c, lastMsg: formatted, lastTs: tmpMsg.ts, lastTime: tmpMsg.time, lastPatientTs: null, unread: 0,
       });
       persistChats(updated);
       return updated;
     });
     if (USE_MOCK) return;
-    try { await sendText(chatId, formatted, replyToId); }
-    catch (e) {
+    try {
+      await sendText(chatId, formatted, replyToId);
+      // Persiste mensagem enviada no R2 para que o polling não sobrescreva o lastMsg
+      fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Internal-Key": ikey() },
+        body: JSON.stringify([{ ...tmpMsg, id: tmpMsg.id, fromMe: true }]),
+      }).catch(() => {});
+    } catch (e) {
       setMessages(prev => ({
         ...prev,
         [chatId]: (prev[chatId] || []).filter(m => m.id !== tmpMsg.id),
