@@ -1,10 +1,11 @@
 // api/r2-data.js
 // GET /api/r2-data?type=chats              → chats.json
 // GET /api/r2-data?type=msgs&chatId=...    → msgs/{chatId}.json
+// GET /api/r2-data?type=msgs-list          → lista msgs/ com lastModified + última msg de cada chat
 // POST /api/r2-data?type=upload            → upload via JSON base64 (arquivos < 4MB)
 // POST /api/r2-data?type=upload-binary     → upload via FormData (arquivos grandes)
 
-import { r2Get, r2Put } from "./_r2.js";
+import { r2Get, r2Put, r2List } from "./_r2.js";
 import { formidable } from "formidable";
 import fs from "fs";
 
@@ -298,6 +299,67 @@ export default async function handler(req, res) {
       if (!r) return res.status(200).json([]);
       res.setHeader("Cache-Control", "no-store");
       return res.status(200).json(JSON.parse(r.buf.toString("utf8")));
+    }
+
+    // Lista todos os arquivos msgs/ com lastModified + última mensagem de cada chat
+    // Usado pelo cliente para montar o chatlist sem depender de chats.json
+    if (type === "msgs-list") {
+      const files = await r2List("msgs/");
+      const chats = await Promise.all(
+        files
+          .filter(f => f.key.endsWith(".json"))
+          .map(async (f) => {
+            // msgs/556199611055_c_us.json → 556199611055@c.us
+            const filename = f.key.replace("msgs/", "").replace(".json", "");
+            const chatId   = filename
+              .replace(/_c_us$/, "@c.us")
+              .replace(/_g_us$/, "@g.us")
+              .replace(/_lid$/, "@lid")
+              .replace(/_/g, "");
+
+            // Lê última mensagem do arquivo
+            let lastMsg = "", lastTs = 0, pushname = "", unread = 0, lastPatientTs = null;
+            try {
+              const r = await r2Get(f.key);
+              if (r) {
+                const msgs = JSON.parse(r.buf.toString("utf8"));
+                if (Array.isArray(msgs) && msgs.length > 0) {
+                  const last = msgs[msgs.length - 1];
+                  lastMsg  = last.body || last.text || "";
+                  lastTs   = last.ts   || 0;
+                  pushname = last.pushname || last.notifyName || "";
+                  // unread: msgs do paciente após última resposta do operador
+                  let u = 0;
+                  for (let i = msgs.length - 1; i >= 0; i--) {
+                    if (msgs[i].fromMe) break;
+                    u++;
+                  }
+                  unread = u;
+                  // lastPatientTs: última msg não-fromMe
+                  for (let i = msgs.length - 1; i >= 0; i--) {
+                    if (!msgs[i].fromMe) { lastPatientTs = msgs[i].ts || null; break; }
+                  }
+                }
+              }
+            } catch {}
+
+            return {
+              id:            chatId,
+              lastMsg,
+              lastTs:        lastTs || new Date(f.lastModified).getTime(),
+              lastModified:  f.lastModified,
+              pushname,
+              unread,
+              lastPatientTs,
+              status:        "open",
+            };
+          })
+      );
+
+      // Ordena por lastTs decrescente (mais recente primeiro)
+      chats.sort((a, b) => (b.lastTs || 0) - (a.lastTs || 0));
+      res.setHeader("Cache-Control", "no-store");
+      return res.status(200).json(chats);
     }
 
     if (type === "media") {

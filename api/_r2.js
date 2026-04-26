@@ -116,6 +116,73 @@ export async function r2Put(key, buf, contentType) {
 }
 
 /**
+ * Lista objetos no R2 com prefixo opcional.
+ * Usa S3 ListObjectsV2 (query string ?list-type=2&prefix=...).
+ * @returns {Array<{ key: string, size: number, lastModified: string }>}
+ */
+export async function r2List(prefix = "") {
+  try {
+    const accountId = process.env.R2_ACCOUNT_ID;
+    const accessKey = process.env.R2_ACCESS_KEY_ID;
+    const secretKey = process.env.R2_SECRET_ACCESS_KEY;
+    const bucket    = process.env.R2_BUCKET_NAME;
+    if (!accountId || !accessKey || !secretKey || !bucket) return [];
+
+    const region  = "auto";
+    const service = "s3";
+    const host    = `${accountId}.r2.cloudflarestorage.com`;
+
+    const now       = new Date();
+    const amzDate   = now.toISOString().replace(/[-:]|\.\d{3}/g, "").slice(0, 15) + "Z";
+    const dateStamp = amzDate.slice(0, 8);
+    const bodyHash  = sha256hex("");
+
+    const queryParams = `list-type=2&max-keys=1000${prefix ? `&prefix=${encodeURIComponent(prefix)}` : ""}`;
+
+    const rawHeaders = {
+      "content-type":         "application/octet-stream",
+      "host":                 host,
+      "x-amz-content-sha256": bodyHash,
+      "x-amz-date":           amzDate,
+    };
+    const sortedKeys      = Object.keys(rawHeaders).sort();
+    const canonicalHdr    = sortedKeys.map(k => `${k}:${rawHeaders[k]}`).join("\n") + "\n";
+    const signedHeaderStr = sortedKeys.join(";");
+
+    const canonicalReq = ["GET", `/${bucket}/`, queryParams, canonicalHdr, signedHeaderStr, bodyHash].join("\n");
+    const credScope    = `${dateStamp}/${region}/${service}/aws4_request`;
+    const stringToSign = ["AWS4-HMAC-SHA256", amzDate, credScope, sha256hex(canonicalReq)].join("\n");
+    const signingKey   = getSigningKey(secretKey, dateStamp, region, service);
+    const signature    = hmac(signingKey, stringToSign).toString("hex");
+
+    const fetchHeaders = {};
+    for (const [k, v] of Object.entries(rawHeaders)) {
+      if (k !== "host") fetchHeaders[k] = v;
+    }
+    fetchHeaders["Authorization"] = `AWS4-HMAC-SHA256 Credential=${accessKey}/${credScope}, SignedHeaders=${signedHeaderStr}, Signature=${signature}`;
+
+    const res = await fetch(`https://${host}/${bucket}/?${queryParams}`, { headers: fetchHeaders });
+    if (!res || !res.ok) return [];
+
+    const xml = await res.text();
+    const items = [];
+    const re = /<Contents>([\s\S]*?)<\/Contents>/g;
+    let m;
+    while ((m = re.exec(xml)) !== null) {
+      const block = m[1];
+      const key          = (block.match(/<Key>(.*?)<\/Key>/)          || [])[1] || "";
+      const size         = parseInt((block.match(/<Size>(.*?)<\/Size>/)         || [])[1] || "0");
+      const lastModified = (block.match(/<LastModified>(.*?)<\/LastModified>/)  || [])[1] || "";
+      if (key) items.push({ key, size, lastModified });
+    }
+    return items;
+  } catch (e) {
+    console.warn("[r2] list error:", e.message);
+    return [];
+  }
+}
+
+/**
  * Gera uma chave de cache a partir do path da requisição.
  * Ex: "/api/default/messages/true_5561...@c.us_ABCdef123/download-media" → "media/ABCdef123"
  *     "/api/files/default/ABCdef123.jpeg"                                 → "media/ABCdef123.jpeg"

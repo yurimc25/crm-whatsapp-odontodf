@@ -569,106 +569,54 @@ export function useWAHA(operator) {
     });
   }, [sessionOk]);
 
-  // Aplica dados do R2 sobre o estado atual de chats
-  // fallback: lista de chats local caso prev ainda esteja vazia (race no primeiro render)
-  async function applyR2Chats(fallbackChats = []) {
+  // Constrói chatlist a partir dos arquivos msgs/ no R2 (fonte única via webhook)
+  // Sem dedup nem merge — cada arquivo = um chat, ordem por lastModified/lastTs
+  async function applyR2Chats() {
     try {
-      const r2Res = await fetch("/api/r2-data?type=chats", {
+      const res = await fetch("/api/r2-data?type=msgs-list", {
         headers: { "X-Internal-Key": ikey() }
       });
-      if (!r2Res.ok) return;
-      const r2Chats = await r2Res.json();
+      if (!res.ok) return;
+      const r2Chats = await res.json();
       if (!Array.isArray(r2Chats) || r2Chats.length === 0) return;
-      const lidCacheApply = readLidPhoneMap();
-      const r2Map = {};
-      for (const c of r2Chats) {
-        r2Map[c.id] = c;
-        const ck = canonicalKey(c.id, lidCacheApply);
-        if (ck && ck !== c.id) r2Map[ck] = c;
-      }
+
+      const overrides = readOverrides();
+
       setChats(prev => {
-        const base = prev.length ? prev : fallbackChats;
-        if (!base.length) { console.log("[r2] applyR2Chats: sem base, aguardando WAHA"); return prev; }
-        console.log(`[r2] applyR2Chats: prev=${prev.length} base=${base.length}`);
-        const localIds = new Set(base.map(c => c.id));
-        const overrides = readOverrides();
-        let changed = false;
-        const updated = base.map(c => {
-          const ck = canonicalKey(c.id, lidCacheApply);
-          const r2 = r2Map[c.id] || (ck ? r2Map[ck] : undefined);
-          if (!r2) return c;
-          const r2TsMs  = r2.lastTs || 0;
-          const localTs = c.lastTs ? new Date(c.lastTs).getTime() : 0;
-          if (r2TsMs <= localTs) return c;
-          changed = true;
-          const isMuted  = mutedChatsRef.current.has(c.id);
-          // Usa APENAS r2.lastMsg para detectar closing — não usa c.lastMsg como fallback.
-          // Se R2 ainda tem mensagem antiga (ex: "Consulta confirmada!") mas o chat foi
-          // reaberto localmente por nova mensagem do paciente, não re-resolve.
-          const r2LastMsg = r2.lastMsg || "";
-          const closing  = lastMsgIsClosing(r2LastMsg);
-          // Se chat foi reaberto localmente (status=open) e nova msg é mais recente que R2,
-          // não deixa o R2 antigo re-resolver o chat
-          const localReopened = c.status === "open" && c.lastTs && localTs > r2TsMs - 1000;
-          const effectiveClosing = closing && !localReopened;
-          // Verifica overrides manuais do operador (keyed por dígitos canônicos)
-          const ov = ck ? overrides[ck] : overrides[c.id];
-          const r2LptMs = r2.lastPatientTs ? new Date(r2.lastPatientTs).getTime() : 0;
-          const ovResolved = ov?.resolvedAt && r2LptMs <= ov.resolvedAt;
-          const ovRead = ov?.readAt && r2LptMs <= ov.readAt;
-          const lpt = isMuted || effectiveClosing || ovRead || ovResolved ? null
-            : (r2.lastPatientTs ? new Date(r2.lastPatientTs).toISOString() : null);
-          // Não sobrescreve unread=0 local com valor maior do R2 se o chat já foi lido
-          // (c.unread===0 e c.lastPatientTs===null = operador marcou como lido)
-          const alreadyRead = c.unread === 0 && !c.lastPatientTs;
-          const unread = isMuted || effectiveClosing || !lpt || ovRead || ovResolved ? 0
-            : alreadyRead ? 0
-            : Math.max(r2.unread || 0, c.unread || 0);
-          const isResolved = (c.status === "resolved" && !localReopened) || effectiveClosing || ovResolved;
-          return {
-            ...c,
-            lastMsg:       r2LastMsg || c.lastMsg,
-            lastTs:        new Date(r2TsMs).toISOString(),
-            lastPatientTs: isResolved ? null : lpt,
-            unread:        isResolved ? 0 : unread,
-            status:        effectiveClosing && c.status !== "resolved" ? "resolved" : c.status,
-            pushname:      r2.pushname || c.pushname,
-          };
-        });
-        // Adiciona chats novos do R2 que não estão na lista local
-        // Filtra IDs inválidos (@lid, @s.whatsapp.net, >13 dígitos) e verifica dedup por tail-8
-        for (const r2 of r2Chats) {
-          if (localIds.has(r2.id)) continue;
-          if (!_isValidNewChatId(r2.id)) continue;
-          const rDigits = r2.id.replace(/\D/g, "");
-          const rTail8  = rDigits.length >= 8 ? rDigits.slice(-8) : null;
-          if (rTail8 && updated.some(c => {
-            const t = c.id.replace(/\D/g, "").slice(-8);
-            return t.length >= 8 && t === rTail8;
-          })) continue;
-          const isMuted  = mutedChatsRef.current.has(r2.id);
-          const closing  = lastMsgIsClosing(r2.lastMsg);
-          const lpt = isMuted || closing ? null
-            : (r2.lastPatientTs ? new Date(r2.lastPatientTs).toISOString() : null);
-          updated.push({
-            id:            r2.id,
-            pushname:      r2.pushname || "",
-            lastMsg:       r2.lastMsg  || "",
-            lastTs:        r2.lastTs   ? new Date(r2.lastTs).toISOString() : null,
-            lastPatientTs: lpt,
-            unread:        isMuted || closing || !lpt ? 0 : r2.unread || 0,
-            status:        closing ? "resolved" : "open",
-            assignedTo:    null,
-            tags:          [],
-            photoUrl:      null,
+        // Preserva estado local (status, assignedTo, tags, photoUrl) por ID
+        const prevMap = new Map(prev.map(c => [c.id, c]));
+
+        const updated = r2Chats
+          .filter(c => c.id && !c.id.endsWith("@s.whatsapp.net"))
+          .map(c => {
+            const local   = prevMap.get(c.id);
+            const isMuted = mutedChatsRef.current.has(c.id);
+            const ck      = canonicalKey(c.id, readLidPhoneMap());
+            const ov      = ck ? overrides[ck] : overrides[c.id];
+            const lptMs   = c.lastPatientTs || 0;
+            const ovResolved = ov?.resolvedAt && lptMs <= ov.resolvedAt;
+            const ovRead     = ov?.readAt     && lptMs <= ov.readAt;
+            const closing    = lastMsgIsClosing(c.lastMsg);
+            const isResolved = (local?.status === "resolved") || ovResolved || closing;
+            const lpt = isMuted || isResolved || ovRead ? null
+              : (c.lastPatientTs ? new Date(c.lastPatientTs).toISOString() : null);
+            return {
+              id:            c.id,
+              pushname:      local?.pushname  || c.pushname || "",
+              lastMsg:       c.lastMsg        || "",
+              lastTs:        c.lastTs ? new Date(c.lastTs).toISOString() : null,
+              lastPatientTs: lpt,
+              unread:        isMuted || isResolved || !lpt || ovRead ? 0 : c.unread || 0,
+              status:        isResolved ? "resolved" : (local?.status || "open"),
+              assignedTo:    local?.assignedTo || null,
+              tags:          local?.tags       || [],
+              photoUrl:      local?.photoUrl   || null,
+            };
           });
-          changed = true;
-        }
-        if (!changed) return prev;
+
         persistChats(updated);
         return updated;
       });
-      console.log(`[r2] chatlist aplicado: ${r2Chats.length} chats`);
     } catch (e) {
       console.warn("[r2] applyR2Chats:", e.message);
     }
