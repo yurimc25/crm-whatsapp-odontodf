@@ -1578,21 +1578,24 @@ export function useWAHA(operator) {
       // Persiste mídia de volta ao R2 para sobreviver F5 (fire-and-forget)
       // O endpoint faz merge por ID exato e fallback por timestamp+fromMe — sem duplicatas
       {
-        const toSave = wahaMsgs
-          .filter(w => w.hasMedia || w.media)
-          .map(w => ({
+        // Enriquece mídias existentes no R2 + persiste gaps (msgs que não chegaram via webhook)
+        // gaps são marcados com isGap:true para o servidor inserir sem deduplicar com IDs existentes
+        const toSave = wahaMsgs.map(w => {
+          const isGap = wahaGaps.some(g => g.id === w.id);
+          return {
             id:          w.id,
-            chatId:      chatId, // sempre @c.us — não usa w.chatId que pode ser @lid
+            chatId,
             ts:          w.ts ? new Date(w.ts).getTime() : 0,
             fromMe:      w.from === "operator",
             body:        w.text || "",
-            // Usa media.type quando type="text" (NOWEB engine retorna type errado para mídias)
-            type:        (w.media?.type && w.media.type !== "text") ? w.media.type : (w.type !== "text" && w.type !== "chat" ? w.type : "image"),
+            type:        (w.media?.type && w.media.type !== "text") ? w.media.type : (w.type !== "text" && w.type !== "chat" ? w.type : undefined),
             pushname:    w.pushname || "",
             wahaShortId: w.media?.msgId || null,
-            // Salva media.url mesmo que seja proxied — é estável enquanto WAHA server está vivo
             mediaUrl:    w.media?.url && !w.media.url.startsWith("data:") ? w.media.url : null,
-          }));
+            mimetype:    w.media?.mimetype || null,
+            ...(isGap ? { isGap: true } : {}),
+          };
+        }).filter(w => w.hasMedia || w.media || wahaGaps.some(g => g.id === w.id) || w.wahaShortId);
         if (toSave.length > 0) {
           fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`, {
             method: "POST",

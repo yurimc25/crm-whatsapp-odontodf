@@ -67,14 +67,34 @@ async function r2Json(key, def) {
   } catch { return def; }
 }
 
+// Normaliza timestamp para ms (WAHA às vezes retorna segundos Unix)
+function toMs(ts) {
+  if (!ts) return 0;
+  const n = typeof ts === "number" ? ts : new Date(ts).getTime();
+  return n > 0 && n < 1e12 ? n * 1000 : n; // segundos → ms
+}
+
+// Chave de dedup por timestamp (segundo) + direção — cobre IDs em formatos diferentes
+function tsDir(m) {
+  return `${m.fromMe ? 1 : 0}_${Math.floor(toMs(m.ts) / 1000)}`;
+}
+
 // Merge genérico: copia mensagens de srcKey para dstKey e deleta srcKey
+// Dedup por ID exato + ts+fromMe (mesmo segundo, mesma direção = mesmo evento)
 async function mergeFiles(srcKey, dstKey, canonicalChatId) {
   const srcMsgs = await r2Json(srcKey, null);
   if (!Array.isArray(srcMsgs)) { await r2Delete(srcKey).catch(() => {}); return 0; }
   const dstMsgs = await r2Json(dstKey, []);
-  const seen = new Set(dstMsgs.map(m => m.id));
+  const seenId  = new Set(dstMsgs.map(m => m.id));
+  const seenTs  = new Set(dstMsgs.map(tsDir));
   for (const m of srcMsgs) {
-    if (m.id && !seen.has(m.id)) dstMsgs.push({ ...m, chatId: canonicalChatId });
+    if (!m.id) continue;
+    if (seenId.has(m.id)) continue;            // duplicata por ID
+    const td = tsDir(m);
+    if (seenTs.has(td)) continue;              // mesmo evento com ID diferente (cross-format)
+    seenId.add(m.id);
+    seenTs.add(td);
+    dstMsgs.push({ ...m, chatId: canonicalChatId });
   }
   dstMsgs.sort((a, b) => (a.ts || 0) - (b.ts || 0));
   if (dstMsgs.length > MAX_MSGS) dstMsgs.splice(0, dstMsgs.length - MAX_MSGS);
@@ -407,51 +427,61 @@ export default async function handler(req, res) {
       const existMap = {};
       for (const m of existing) if (m.id) existMap[m.id] = m;
 
-      // Índice por timestamp+fromMe para match quando IDs têm formatos diferentes
-      // (webhook usa @c.us/Baileys hex; WAHA getMessages usa @lid/servidor hex)
+      // Índice por ts+fromMe normalizado (ms) — cobre IDs em formatos diferentes
       const existByTs = new Map();
       for (const m of existing) {
-        const tsS = Math.floor((m.ts || 0) / 1000);
-        const key = `${m.fromMe ? 1 : 0}_${tsS}`;
-        if (!existByTs.has(key)) existByTs.set(key, m);
+        const k = tsDir(m);
+        if (!existByTs.has(k)) existByTs.set(k, m);
       }
 
       for (const m of incoming) {
         if (!m.id) continue;
         const mediaFields = {
-          type:        m.type && m.type !== "chat" ? m.type : undefined,
+          type:        m.type && m.type !== "chat" && m.type !== "text" ? m.type : undefined,
           wahaShortId: m.wahaShortId || undefined,
           mediaUrl:    m.mediaUrl || undefined,
           mimetype:    m.mimetype || undefined,
+          body:        m.body || undefined,
         };
 
         const ex = existMap[m.id];
         if (ex) {
-          // ID exato encontrado — atualiza campos de mídia sem criar duplicata
+          // ID exato — atualiza campos de mídia preservando o registro canônico
           existMap[m.id] = {
             ...ex,
-            chatId:      ex.chatId      || chatId,
+            chatId:      ex.chatId || chatId,
             type:        mediaFields.type        || ex.type,
             wahaShortId: mediaFields.wahaShortId || ex.wahaShortId || null,
             mediaUrl:    mediaFields.mediaUrl    || ex.mediaUrl    || null,
             mimetype:    mediaFields.mimetype    || ex.mimetype    || null,
           };
         } else {
-          // Sem match por ID — tenta por timestamp+fromMe para evitar duplicata
-          const tsS = Math.floor((m.ts || 0) / 1000);
-          const byTs = existByTs.get(`${m.fromMe ? 1 : 0}_${tsS}`);
+          const td  = tsDir(m);
+          const byTs = existByTs.get(td);
           if (byTs) {
-            // Atualiza o registro R2 existente com type/wahaShortId do WAHA
+            // Mesmo evento com ID diferente — atualiza mídia no registro canônico
             existMap[byTs.id] = {
               ...byTs,
-              chatId:      byTs.chatId    || chatId,
+              chatId:      byTs.chatId || chatId,
               type:        mediaFields.type        || byTs.type,
               wahaShortId: mediaFields.wahaShortId || byTs.wahaShortId || null,
               mediaUrl:    mediaFields.mediaUrl    || byTs.mediaUrl    || null,
               mimetype:    mediaFields.mimetype    || byTs.mimetype    || null,
             };
+          } else if (m.isGap) {
+            // Mensagem que não chegou via webhook (gap detectado pelo cliente) — insere
+            existMap[m.id] = {
+              id:     m.id,
+              chatId,
+              ts:     toMs(m.ts),
+              fromMe: !!m.fromMe,
+              body:   m.body || m.text || "",
+              type:   m.type || "text",
+              pushname: m.pushname || "",
+              ...(m.mimetype ? { mimetype: m.mimetype } : {}),
+            };
+            existByTs.set(td, existMap[m.id]);
           }
-          // Sem match algum: não adiciona (evita duplicatas de sistema de IDs diferente)
         }
       }
 
