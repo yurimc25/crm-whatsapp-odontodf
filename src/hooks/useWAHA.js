@@ -605,12 +605,16 @@ export function useWAHA(operator) {
             const isResolved = (local?.status === "resolved") || ovResolved || closing;
             const lpt = isMuted || isResolved || ovRead ? null
               : (c.lastPatientTs ? new Date(c.lastPatientTs).toISOString() : null);
+            // Preserva lastMsg/lastTs local se for mais recente que o R2
+            const localTs = local?.lastTs ? new Date(local.lastTs).getTime() : 0;
+            const r2Ts    = c.lastTs        ? new Date(c.lastTs).getTime()    : 0;
+            const useLocal = local && localTs > r2Ts;
             return {
               id:            c.id,
               pushname:      local?.pushname  || c.pushname || "",
-              lastMsg:       c.lastMsg        || "",
-              lastTs:        c.lastTs ? new Date(c.lastTs).toISOString() : null,
-              lastPatientTs: lpt,
+              lastMsg:       useLocal ? local.lastMsg : (c.lastMsg || ""),
+              lastTs:        useLocal ? local.lastTs  : (c.lastTs ? new Date(c.lastTs).toISOString() : null),
+              lastPatientTs: useLocal ? (local.lastPatientTs || lpt) : lpt,
               unread:        isMuted || isResolved || !lpt || ovRead ? 0 : c.unread || 0,
               status:        isResolved ? "resolved" : (local?.status || "open"),
               assignedTo:    local?.assignedTo || null,
