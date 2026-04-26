@@ -5,7 +5,7 @@
 // POST /api/r2-data?type=upload            → upload via JSON base64 (arquivos < 4MB)
 // POST /api/r2-data?type=upload-binary     → upload via FormData (arquivos grandes)
 
-import { r2Get, r2Put, r2List } from "./_r2.js";
+import { r2Get, r2Put, r2List, r2Delete } from "./_r2.js";
 import { formidable } from "formidable";
 import fs from "fs";
 

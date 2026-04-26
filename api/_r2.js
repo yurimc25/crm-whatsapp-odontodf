@@ -101,6 +101,21 @@ export async function r2Get(key) {
 }
 
 /**
+ * Deleta objeto do R2.  Fire-and-forget — erros são apenas logados.
+ */
+export async function r2Delete(key) {
+  try {
+    const res = await r2Request("DELETE", key);
+    if (res && !res.ok && res.status !== 404) {
+      const txt = await res.text().catch(() => "");
+      console.warn(`[r2] delete ${key} returned ${res.status}: ${txt.slice(0, 200)}`);
+    }
+  } catch (e) {
+    console.warn("[r2] delete error:", e.message);
+  }
+}
+
+/**
  * Armazena objeto no R2.  Fire-and-forget — erros são apenas logados.
  */
 export async function r2Put(key, buf, contentType) {

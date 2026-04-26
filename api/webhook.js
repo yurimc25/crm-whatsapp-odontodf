@@ -1,7 +1,7 @@
 // api/webhook.js
 // WAHA → Vercel /api/webhook → R2 (persistência) + PartyKit (tempo real) → browsers
 
-import { r2Get, r2Put } from "./_r2.js";
+import { r2Get, r2Put, r2Delete } from "./_r2.js";
 
 const RELEVANT = new Set(["message", "message.any", "chat.new", "message.revoked", "message.reaction"]);
 const MAX_MSGS_PER_CHAT = 200;
@@ -276,13 +276,32 @@ export default async function handler(req, res) {
           if (jid) {
             finalMsg = { ...rawMsg, chatId: jid };
             console.log(`[webhook] @lid resolvido: ${lid} → ${jid}`);
-            // Salva mapeamento lid_map.json no R2 para dedup server-side
+            // Atualiza lid_map e faz merge @lid → @c.us (canônico) em background
             if (r2Enabled) {
-              r2Json("lid_map.json", {}).then(map => {
-                if (map[lidKey] === jid) return; // já salvo
+              (async () => {
+                const map = await r2Json("lid_map.json", {});
                 map[lidKey] = jid;
-                return r2WriteJson("lid_map.json", map);
-              }).catch(() => {});
+                await r2WriteJson("lid_map.json", map);
+                // Merge mensagens do arquivo @lid no arquivo @c.us e deleta @lid
+                const lidFileKey = chatKey(lid);
+                const lidMsgs = await r2Json(lidFileKey, null);
+                if (Array.isArray(lidMsgs) && lidMsgs.length > 0) {
+                  const cusKey  = chatKey(jid);
+                  const cusMsgs = await r2Json(cusKey, []);
+                  const seen    = new Set(cusMsgs.map(m => m.id));
+                  for (const m of lidMsgs) {
+                    if (m.id && !seen.has(m.id)) cusMsgs.push({ ...m, chatId: jid });
+                  }
+                  cusMsgs.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+                  if (cusMsgs.length > MAX_MSGS_PER_CHAT) cusMsgs.splice(0, cusMsgs.length - MAX_MSGS_PER_CHAT);
+                  await r2WriteJson(cusKey, cusMsgs);
+                  await r2Delete(lidFileKey);
+                  console.log(`[webhook] merged ${lid} → ${jid}, deletado ${lidFileKey}`);
+                } else if (lidMsgs !== null) {
+                  // Arquivo @lid existe mas está vazio — deleta mesmo assim
+                  await r2Delete(lidFileKey);
+                }
+              })().catch(e => console.warn("[webhook/lid-merge]", e.message));
             }
           } else {
             console.warn(`[webhook] @lid não resolvido: ${lid} — mantendo @lid no R2`);
