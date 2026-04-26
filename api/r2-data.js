@@ -467,23 +467,17 @@ export default async function handler(req, res) {
           .replace(/_lid$/, "@lid");
       }
 
-      // Constrói mapa inverso: jid@c.us → lid@lid (para saber quais @c.us são duplicatas)
       // lidMap = { "267769870340186": "556198431643@c.us" }
-      // inverseLid = { "556198431643@c.us": "267769870340186@lid" }
-      const inverseLid = {};
-      for (const [lidKey, jid] of Object.entries(lidMap)) {
-        if (jid) inverseLid[jid] = lidKey + "@lid";
-      }
-
-      // Identifica arquivos que serão absorvidos por um LID canônico
-      const absorbed = new Set();
+      // lidResolved: Set de arquivos @c.us que já têm um @lid correspondente
+      // (serão absorvidos pelo @lid no readFile — o @lid retorna com id=@c.us)
+      const lidResolved = new Set();
       for (const [lidKey, jid] of Object.entries(lidMap)) {
         if (!jid) continue;
-        const cusFile = "msgs/" + chatKey(jid).replace("msgs/", "");
-        if (files.some(f => f.key === cusFile)) absorbed.add(cusFile);
+        const cusFile = chatKey(jid); // "msgs/556198431643_c_us.json"
+        if (files.some(f => f.key === cusFile)) lidResolved.add(cusFile);
       }
 
-      // Lê conteúdo de cada arquivo, pulando os absorvidos
+      // Lê conteúdo de cada arquivo, pulando @c.us que já estão cobertos por um @lid resolvido
       const readFile = async (f) => {
         const chatId = filenameToChatId(f.key);
         let msgs = [];
@@ -493,18 +487,18 @@ export default async function handler(req, res) {
           if (!Array.isArray(msgs)) msgs = [];
         } catch {}
 
-        // Se é @lid e tem @c.us correspondente, mescla as mensagens
+        // @lid com JID resolvido → mescla msgs do @c.us e usa @c.us como ID canônico
+        let canonicalId = chatId;
         if (chatId.endsWith("@lid")) {
           const lidKey = chatId.replace(/@lid$/, "");
           const jid    = lidMap[lidKey];
           if (jid) {
+            canonicalId = jid; // retorna com ID @c.us
             try {
-              const cusKey = chatKey(jid);
-              const cr = await r2Get(cusKey);
+              const cr = await r2Get(chatKey(jid));
               if (cr) {
                 const cusMsgs = JSON.parse(cr.buf.toString("utf8"));
                 if (Array.isArray(cusMsgs) && cusMsgs.length > 0) {
-                  // Merge por ID — evita duplicatas
                   const seen = new Set(msgs.map(m => m.id));
                   for (const m of cusMsgs) if (m.id && !seen.has(m.id)) msgs.push(m);
                   msgs.sort((a, b) => (a.ts || 0) - (b.ts || 0));
@@ -532,7 +526,7 @@ export default async function handler(req, res) {
         }
 
         return {
-          id:           chatId,
+          id:           canonicalId,
           lastMsg,
           lastTs:       lastTs || new Date(f.lastModified).getTime(),
           lastModified: f.lastModified,
@@ -545,7 +539,7 @@ export default async function handler(req, res) {
 
       const chats = await Promise.all(
         files
-          .filter(f => f.key.endsWith(".json") && !absorbed.has(f.key))
+          .filter(f => f.key.endsWith(".json") && !lidResolved.has(f.key))
           .map(readFile)
       );
 

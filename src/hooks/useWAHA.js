@@ -108,19 +108,48 @@ function _isValidNewChatId(id) {
   return true;
 }
 
+// Constrói mapa @lid → @c.us a partir do cache em memória + localStorage
+// Usado pelo dedup para reconhecer que um @lid e um @c.us são o mesmo contato
+function _buildLidResolver() {
+  const resolver = new Map(_lidToJid); // in-memory: lid@lid → jid@c.us
+  try {
+    const stored = readLidPhoneMap(); // localStorage: lidOnly → { phone }
+    for (const [lid, val] of Object.entries(stored)) {
+      const phone = val?.phone;
+      if (phone) {
+        const jid = phone.replace(/\D/g, "") + "@c.us";
+        const full = lid.endsWith("@lid") ? lid : lid + "@lid";
+        if (!resolver.has(full)) resolver.set(full, jid);
+      }
+    }
+  } catch {}
+  return resolver;
+}
+
+// Retorna os dígitos canônicos a usar no tail-8 para dedup
+// Para @lid com JID resolvido, usa os dígitos do JID; senão usa os próprios dígitos do ID
+function _resolvedDigits(id, lidResolver) {
+  if (id.endsWith("@lid")) {
+    const jid = lidResolver.get(id);
+    if (jid) return _normalizeDigits(jid.replace(/\D/g, ""));
+  }
+  return _normalizeDigits(id.replace(/\D/g, ""));
+}
+
 // Deduplica lista de chats por tail-8 de telefone, filtrando apagados e IDs inválidos
-// Mesma lógica usada em loadChats — centralizada aqui para reutilização
+// Usa lid_map (memória + localStorage) para reconhecer @lid e @c.us do mesmo contato
 function _dedupeChats(chats) {
+  const lidResolver = _buildLidResolver();
   const deduped = [];
   const seen8   = new Map(); // tail-8 → índice em deduped
   let _skipDel = 0, _skipInv = 0, _skipMerge = 0;
   for (const chat of chats) {
     if (_deletedChats.has(chat.id)) { _skipDel++; continue; }
     if (!_isValidChatId(chat.id))   { _skipInv++; continue; }
-    const digits  = _normalizeDigits(chat.id.replace(/\D/g, ""));
+    const digits = _resolvedDigits(chat.id, lidResolver);
     // Usa os 8 últimos dígitos do número normalizado como chave de dedup
-    // (cobre variações de prefixo país/DDD mas não confunde DDDs diferentes)
-    const tail8   = digits.length >= 8 ? digits.slice(-8) : null;
+    // (cobre variações de prefixo país/DDD, @lid vs @c.us, com/sem dígito 9)
+    const tail8  = digits.length >= 8 ? digits.slice(-8) : null;
     if (!tail8) { deduped.push(chat); continue; }
     const existIdx = seen8.get(tail8);
     if (existIdx === undefined) {
@@ -131,13 +160,14 @@ function _dedupeChats(chats) {
       const ex    = deduped[existIdx];
       const exTs  = ex.lastTs  ? new Date(ex.lastTs).getTime()   : 0;
       const newTs = chat.lastTs ? new Date(chat.lastTs).getTime() : 0;
-      // Prefere @lid (alimentado pelo webhook/R2 em tempo real) sobre @c.us (lista WAHA)
+      // Prefer @c.us over @lid; se ambos forem @lid, prefer o que tem JID resolvido
       const lidId  = ex.id.endsWith("@lid") ? ex.id : (chat.id.endsWith("@lid") ? chat.id : null);
       const cusId  = ex.id.endsWith("@c.us") ? ex.id : (chat.id.endsWith("@c.us") ? chat.id : null);
-      const bestId = lidId || cusId || ex.id;
-      // Para dados do chat, prioriza o @lid (tem lastMsg/lastTs mais recentes via webhook)
-      const lidChat = ex.id.endsWith("@lid") ? ex : (chat.id.endsWith("@lid") ? chat : null);
-      const base    = lidChat || (newTs > exTs ? chat : ex);
+      // Se o @lid tem resolução conhecida, usa o JID como ID canônico
+      const resolvedFromLid = lidId ? lidResolver.get(lidId) : null;
+      const bestId = cusId || resolvedFromLid || lidId || ex.id;
+      // Para dados do chat, usa o mais recente (timestamp maior)
+      const base = newTs > exTs ? chat : ex;
       // Acumula todos os IDs conhecidos para este número — usado para persistir status em todos os aliases
       const prevAliases = ex.aliases || [];
       const newAliases  = chat.aliases || [];
