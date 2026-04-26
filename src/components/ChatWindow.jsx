@@ -551,6 +551,18 @@ export default function ChatWindow({
               onMouseLeave={e => e.currentTarget.style.color = T.sub}>
               🔍
             </button>
+            <button
+              onClick={() => alert(`ID: ${chat.id}\nAliases: ${(chat.aliases||[]).join(", ")||"—"}`)}
+              title="Info do chat"
+              style={{
+                background:"transparent", border:"none", cursor:"pointer",
+                color:T.sub, padding:"0 4px", fontSize:12,
+                transition:"color .15s",
+              }}
+              onMouseEnter={e => e.currentTarget.style.color = T.accent}
+              onMouseLeave={e => e.currentTarget.style.color = T.sub}>
+              ⓘ
+            </button>
           </div>
         </div>
 

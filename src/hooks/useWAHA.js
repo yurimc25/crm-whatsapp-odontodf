@@ -757,29 +757,13 @@ export function useWAHA(operator) {
         } catch {}
       }
 
-      // ── 2. R2 + MongoDB — fonte persistente, mostra "Carregando conversas..." ──
-      const [dbRes, r2Res] = await Promise.all([
-        fetch(`/api/db?action=chats`, { headers: { "X-Internal-Key": ikey() } })
-          .then(r => r.json()).catch(() => ({ chats: {} })),
-        fetch("/api/r2-data?type=chats", { headers: { "X-Internal-Key": ikey() } })
-          .then(r => r.ok ? r.json() : []).catch(() => []),
-      ]);
+      // ── 2. R2 — fonte persistente, mostra "Carregando conversas..." ──
+      const r2Res = await fetch("/api/r2-data?type=chats", { headers: { "X-Internal-Key": ikey() } })
+        .then(r => r.ok ? r.json() : []).catch(() => []);
 
-      const dbMeta  = dbRes?.chats || {};
+      const dbMeta  = {};
       const r2Chats = Array.isArray(r2Res) ? r2Res : [];
       const lidPhoneCacheR2 = readLidPhoneMap();
-
-      // Inicializa mutedChats a partir do DB (fonte de verdade multi-usuário)
-      const dbMutedIds = Object.entries(dbMeta)
-        .filter(([, m]) => m.muted === true)
-        .map(([id]) => id);
-      if (dbMutedIds.length > 0) {
-        setMutedChats(prev => {
-          const next = new Set([...prev, ...dbMutedIds]);
-          try { localStorage.setItem("crm_muted", JSON.stringify([...next])); } catch {}
-          return next;
-        });
-      }
 
       // Aplica chats do R2 ao state (mescla com localStorage se já tiver)
       if (r2Chats.length > 0) {
@@ -1100,25 +1084,12 @@ export function useWAHA(operator) {
         console.log(`[waha] loadChats setChats: prev=${prev.length} merged=${merged.length} deduped=${deduped.length}`);
 
         persistChats(deduped);
-        // Persiste auto-resolves (30 dias + Consulta confirmada) no localStorage e MongoDB
         if (toAutoResolveIds.size > 0) {
-          console.log(`[waha] auto-resolve: ${toAutoResolveIds.size} chats (30 dias ou mensagem de fechamento)`);
+          console.log(`[waha] auto-resolve: ${toAutoResolveIds.size} chats`);
           const now = Date.now();
-          // Salva override no localStorage para sobreviver ao reload
           for (const id of toAutoResolveIds) {
             saveOverride(id, { resolvedAt: now, readAt: now });
           }
-          Promise.allSettled([...toAutoResolveIds].map(id =>
-            fetch("/api/db?action=chat", {
-              method: "PATCH",
-              headers: { "Content-Type": "application/json", "X-Internal-Key": ikey() },
-              body: JSON.stringify({
-                chatId: id, status: "resolved", unread: 0,
-                lastPatientTs: null, autoResolved: true,
-                autoResolvedAt: new Date().toISOString(),
-              }),
-            }).catch(() => {})
-          ));
         }
         return deduped;
       });
@@ -1480,15 +1451,12 @@ export function useWAHA(operator) {
                        : isPatient && !isMuted && c.status === "resolved" ? "open"
                        : c.status,
         });
-        // Persiste mudanças de status no MongoDB e localStorage (override)
         const afterUpdate = updated.find(c => c.id === target.id);
         if (autoRes && target.status !== "resolved") {
           const now = Date.now();
           saveOverride(target.id, { resolvedAt: now, readAt: now });
-          persistChat(target.id, { status: "resolved", unread: 0, lastPatientTs: null });
         } else if (afterUpdate?.status === "open" && target.status === "resolved") {
           clearOverride(target.id);
-          persistChat(target.id, { status: "open", lastPatientTs: msg.ts });
         }
         persistChats(updated);
         return updated;
@@ -1949,13 +1917,11 @@ export function useWAHA(operator) {
         persistChats(updated);
         return updated;
       });
-      // Persiste status resolved detectado ao abrir o chat (MongoDB + R2)
       if (autoResolve) {
         const current = (_sessionChats.value || []).find(c => c.id === chatId);
         if (!current || current.status !== "resolved") {
           const now = Date.now();
           saveOverride(chatId, { resolvedAt: now, readAt: now });
-          persistChat(chatId, { status: "resolved", unread: 0, lastPatientTs: null });
           setTimeout(_syncChatsToR2, 1500);
         }
       }
@@ -2166,7 +2132,6 @@ export function useWAHA(operator) {
       persistChats(updated);
       return updated;
     });
-    persistChat(chatId, { lastPatientTs: null, unread: 0 });
     if (USE_MOCK) return;
     try { await sendText(chatId, formatted, replyToId); }
     catch (e) {
@@ -2451,8 +2416,6 @@ export function useWAHA(operator) {
       const chat = prev.find(c => c.id === chatId);
       const updated = prev.map(c => c.id === chatId ? { ...c, assignedTo: toRole, status: "open" } : c);
       persistChats(updated);
-      const data = { assignedTo: toRole, status: "open" };
-      if (chat) persistChatAll(chat, data); else persistChat(chatId, data);
       return updated;
     });
   }, []);
@@ -2472,19 +2435,11 @@ export function useWAHA(operator) {
         };
       });
       persistChats(updated);
-      // Persiste override manual para sobreviver ao reload
       if (newSt === "resolved") {
         saveOverride(chatId, { resolvedAt: Date.now(), readAt: Date.now() });
       } else {
         clearOverride(chatId);
       }
-      // Persiste no MongoDB para o ID visível E todos os aliases (evita duplicata ao recarregar)
-      const data = {
-        status:        newSt,
-        lastPatientTs: newSt === "resolved" ? null : undefined,
-        unread:        newSt === "resolved" ? 0    : undefined,
-      };
-      if (chat) persistChatAll(chat, data); else persistChat(chatId, data);
       return updated;
     });
   }, []);
@@ -2497,8 +2452,6 @@ export function useWAHA(operator) {
       );
       persistChats(updated);
       saveOverride(chatId, { readAt: Date.now() });
-      const data = { unread: 0, lastPatientTs: null };
-      if (chat) persistChatAll(chat, data); else persistChat(chatId, data);
       return updated;
     });
   }, []);
@@ -2524,7 +2477,6 @@ export function useWAHA(operator) {
       persistChats(updated);
       return updated;
     });
-    persistChat(chatId, { muted: true });
   }, []);
 
   const unmuteChat = useCallback((chatId) => {
@@ -2534,7 +2486,6 @@ export function useWAHA(operator) {
       try { localStorage.setItem("crm_muted", JSON.stringify([...next])); } catch {}
       return next;
     });
-    persistChat(chatId, { muted: false });
   }, []);
 
   // ── Pesquisa em conteúdo de mensagens (cache local) ─────────────
@@ -2843,20 +2794,3 @@ export function useWAHA(operator) {
   }
 }
 
-// Persiste metadata de chat no MongoDB para o chatId e todos os aliases conhecidos
-function persistChatAll(chat, data) {
-  const ids = [chat.id, ...(chat.aliases || [])].filter(Boolean);
-  for (const id of ids) persistChat(id, data);
-}
-
-// Persiste metadata de chat no MongoDB (fire-and-forget)
-function persistChat(chatId, data) {
-  fetch("/api/db?action=chat", {
-    method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Internal-Key": import.meta.env.VITE_INTERNAL_API_KEY || "@Deuse10",
-    },
-    body: JSON.stringify({ chatId, ...data }),
-  }).catch(() => {});
-}

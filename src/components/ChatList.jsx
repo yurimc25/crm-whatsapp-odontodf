@@ -674,6 +674,18 @@ function ChatItem({ chat, active, onClick, onOpenMenu, isMuted, now }) {
           {chat.unread > 99 ? "99+" : chat.unread}
         </div>
       )}
+
+      {/* Botão info — exibe chatId para debug de duplicatas */}
+      <button
+        onClick={e => { e.stopPropagation(); alert(`ID: ${chat.id}\nAliases: ${(chat.aliases||[]).join(", ")||"—"}`); }}
+        title="Info do chat"
+        style={{
+          background:"transparent", border:"none", cursor:"pointer",
+          color:"#555", fontSize:11, padding:"2px 4px", flexShrink:0,
+          lineHeight:1,
+        }}>
+        ⓘ
+      </button>
     </div>
   );
 }
