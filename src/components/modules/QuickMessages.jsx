@@ -44,11 +44,16 @@ const DEFAULT_MESSAGES = [
     titulo: "Agendar retorno",
     texto: `Olá! Gostaria de agendar seu retorno. Qual o melhor dia e horário para você? 📅`,
   },
+];
+
+// Entradas fixas — sempre visíveis independente do MongoDB (comandos especiais do sistema)
+const PINNED_MESSAGES = [
   {
-    id: "endereco",
+    id: "__endereco__",
     atalho: "/endereço",
     titulo: "Enviar localização da clínica",
     texto: `/endereço Odonto On Face`,
+    pinned: true,
   },
 ];
 
@@ -102,7 +107,8 @@ export function QuickMessages({ query, onSelect, onClose }) {
 
   const q = (query || "").toLowerCase().replace(/^\//, "");
 
-  const filtered = messages.filter(m =>
+  const allMessages = [...PINNED_MESSAGES, ...messages];
+  const filtered = allMessages.filter(m =>
     !q ||
     m.atalho.toLowerCase().replace(/^\//, "").includes(q) ||
     m.titulo.toLowerCase().includes(q) ||
@@ -223,17 +229,19 @@ export function QuickMessages({ query, onSelect, onClose }) {
                   {msg.texto.split("\n")[0]}
                 </div>
               </div>
-              <div style={{ display:"flex", gap:4, opacity:0.6 }}
-                onClick={e => e.stopPropagation()}>
-                <button onClick={() => openEdit(msg)}
-                  style={{ background:"none", border:"none", color:T.sub,
-                    cursor:"pointer", fontSize:13, padding:"2px 4px" }}
-                  title="Editar">✏️</button>
-                <button onClick={() => remove(msg.id)}
-                  style={{ background:"none", border:"none", color:"#e57373",
-                    cursor:"pointer", fontSize:13, padding:"2px 4px" }}
-                  title="Excluir">🗑️</button>
-              </div>
+              {!msg.pinned && (
+                <div style={{ display:"flex", gap:4, opacity:0.6 }}
+                  onClick={e => e.stopPropagation()}>
+                  <button onClick={() => openEdit(msg)}
+                    style={{ background:"none", border:"none", color:T.sub,
+                      cursor:"pointer", fontSize:13, padding:"2px 4px" }}
+                    title="Editar">✏️</button>
+                  <button onClick={() => remove(msg.id)}
+                    style={{ background:"none", border:"none", color:"#e57373",
+                      cursor:"pointer", fontSize:13, padding:"2px 4px" }}
+                    title="Excluir">🗑️</button>
+                </div>
+              )}
             </div>
           ))}
         </div>
