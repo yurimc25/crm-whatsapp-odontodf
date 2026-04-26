@@ -1387,8 +1387,9 @@ export function useWAHA(operator) {
     return {
       id:       m.id,
       chatId:   m.chatId,
-      from:     m.fromMe ? "operator" : "patient",
-      text:     m.body || "",
+      from:     m.from || (m.fromMe ? "operator" : "patient"),
+      operator: m.operator || null,
+      text:     m.body || m.text || "",
       type:     m.type || "chat",
       ts:       tsMs ? new Date(tsMs).toISOString() : null,
       time:     tsMs ? new Date(tsMs).toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" }) : "",
@@ -1397,6 +1398,7 @@ export function useWAHA(operator) {
       replyTo,
       revoked:  m.revoked || false,
       reactions: m.reactions || null,
+      location: m.location || null,
       media:    hasMedia ? {
         msgId,
         type:     MEDIA_TYPES.includes(t) ? t : "document", // fallback "document" — NOWEB armazena type="text" p/ arquivos
