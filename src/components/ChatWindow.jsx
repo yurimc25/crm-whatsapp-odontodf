@@ -3,7 +3,7 @@ import { fetchAndCachePhoto, readPhotoCache } from "./ChatList";
 import PatientCardDetected from "./modules/PatientCardDetected";
 import { QuickMessages } from "./modules/QuickMessages";
 import { useContactsCtx } from "../App";
-import { sendImage, sendFile, sendVideo, sendVoice, uploadToR2, sendReaction, sendLocation } from "../services/waha";
+import { sendImage, sendFile, sendVideo, sendVoice, uploadToR2, sendReaction } from "../services/waha";
 import { ContactLookupModal } from "./ContactLookupModal";
 
 // Emojis frequentes para o picker rápido
@@ -181,7 +181,7 @@ function dayLabel(ts) {
 }
 
 export default function ChatWindow({
-  chat, messages, operator, onSend, onForward, onResolve,
+  chat, messages, operator, onSend, onSendLocation, onForward, onResolve,
   onDeleteMsg, onEditMsg, onReactMsg,
   canForwardToAdmin, onLoadOlder, onSyncMedia, onOpenPatient
 }) {
@@ -455,7 +455,7 @@ export default function ChatWindow({
         const query = locMatch[1].trim().toLowerCase();
         const preset = CLINIC_LOCATIONS.find(l => l.keywords.some(k => query.includes(k)));
         if (preset) {
-          await sendLocation(chat.id, preset.lat, preset.lng, preset.name, preset.address);
+          await onSendLocation(preset.lat, preset.lng, preset.name, preset.address);
         } else {
           const geoR = await fetch(
             `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1`,
@@ -464,7 +464,7 @@ export default function ChatWindow({
           const geoData = await geoR.json();
           if (!geoData?.length) { alert("Endereço não encontrado."); return; }
           const { lat, lon, display_name } = geoData[0];
-          await sendLocation(chat.id, parseFloat(lat), parseFloat(lon), display_name);
+          await onSendLocation(parseFloat(lat), parseFloat(lon), display_name, "");
         }
         setText("");
         return;

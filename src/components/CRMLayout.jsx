@@ -69,7 +69,7 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
 
   const {
     chats, messages, loadMessages, loadOlderMessages, send, deleteMsg, editMsg, reactMsg,
-    deleteChat, forwardChat, resolveChat, markRead, markUnread, searchMessages, syncMediaToR2,
+    deleteChat, forwardChat, resolveChat, markRead, markUnread, searchMessages, syncMediaToR2, sendLocationMsg,
     resyncChats, syncChatsToR2, mutedChats, muteChat, unmuteChat, loading, error, wsStatus, myJid,
   } = useWAHA(operator);
 
@@ -408,6 +408,7 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
               canForwardToAdmin={perms.verAdmin}
               onLoadOlder={loadOlderMessages}
               onSyncMedia={operator.role === "admin" ? syncMediaToR2 : undefined}
+              onSendLocation={(lat, lng, name, address) => sendLocationMsg(activeChat.id, operator.name, lat, lng, name, address)}
             />
           ) : (
             <div style={{

@@ -13,6 +13,7 @@ import {
   normalizeChat, normalizeMessage,
   deleteMessage as wahaDeleteMessage, editMessage as wahaEditMessage,
   sendReaction as wahaSendReaction,
+  sendLocation as wahaSendLocation,
 } from "../services/waha";
 import { MOCK_CHATS, MOCK_MESSAGES } from "../data/mock";
 
@@ -1800,6 +1801,46 @@ export function useWAHA(operator) {
     }
   }, []);
 
+  // ── Envia mensagem de localização ─────────────────────────────
+  const sendLocationMsg = useCallback(async (chatId, operatorName, lat, lng, name, address) => {
+    const now    = new Date();
+    const tmpMsg = {
+      id: `tmp-loc-${Date.now()}`, from: "operator",
+      text: null, type: "location",
+      time: now.toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" }),
+      ts: now.toISOString(), chatId, operator: operatorName,
+      location: { latitude: lat, longitude: lng, name, address, thumbnail: null },
+    };
+    setMessages(prev => {
+      const updated = sortMsgs([...(prev[chatId] || []), tmpMsg]);
+      _sessionMsgs.set(chatId, updated);
+      return { ...prev, [chatId]: updated };
+    });
+    setChats(prev => {
+      const updated = prev.map(c => c.id !== chatId ? c : {
+        ...c, lastMsg: `📍 ${name}`, lastTs: tmpMsg.ts, lastTime: tmpMsg.time,
+        lastPatientTs: null, unread: 0,
+      });
+      persistChats(updated);
+      return updated;
+    });
+    if (USE_MOCK) return;
+    try {
+      await wahaSendLocation(chatId, lat, lng, name, address);
+      fetch(`/api/r2-data?type=send-msg&chatId=${encodeURIComponent(chatId)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Internal-Key": ikey() },
+        body: JSON.stringify({ ...tmpMsg, fromMe: true }),
+      }).catch(() => {});
+    } catch (e) {
+      setMessages(prev => ({
+        ...prev,
+        [chatId]: (prev[chatId] || []).filter(m => m.id !== tmpMsg.id),
+      }));
+      throw e;
+    }
+  }, []);
+
   // ── Sincroniza mídias do WAHA para o R2 (forçado pelo operador) ──
   const syncMediaToR2 = useCallback(async (chatId) => {
     console.log(`[sync-media] chatId=${chatId}`);
@@ -2213,6 +2254,7 @@ export function useWAHA(operator) {
     resyncChats,
     syncChatsToR2: _syncChatsToR2,
     syncMediaToR2,
+    sendLocationMsg,
     mutedChats,
     muteChat,
     unmuteChat,
