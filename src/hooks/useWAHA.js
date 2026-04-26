@@ -1568,7 +1568,7 @@ export function useWAHA(operator) {
         const sortedWahaOld     = [...wahaOld].sort((a, b) => tsToNum(a.ts) - tsToNum(b.ts));
         const merged            = [...sortedWahaOld, ...canonicalWithGaps];
         const mergedMedia = merged.filter(m => m.hasMedia || m.media).length;
-        console.log(`[load-msgs] 3-WAHA-SET | exist=${existing.length}(mídia=${existMedia}) r2Merged=${r2Merged.length} wahaExtras=${wahaExtras.length} wsExtras=${wsExtras.length} → final=${merged.length}(mídia=${mergedMedia})`);
+        console.log(`[load-msgs] 3-WAHA-SET | exist=${existing.length}(mídia=${existMedia}) r2Merged=${r2Merged.length} wahaOld=${wahaOld.length} wahaGaps=${wahaGaps.length} wsExtras=${wsExtras.length} → final=${merged.length}(mídia=${mergedMedia})`);
         const finalMediaSample = merged.filter(m => m.hasMedia||m.media).slice(0,3).map(m=>`id=...${String(m.id||"").slice(-10)} type=${m.type} url=${m.media?.url?"sim":"não"}`);
         if (finalMediaSample.length) console.log(`[load-msgs] 3-WAHA-SET mídias:`, finalMediaSample);
         _sessionMsgs.set(chatId, merged);
