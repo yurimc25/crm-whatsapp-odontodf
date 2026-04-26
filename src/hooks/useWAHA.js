@@ -737,10 +737,12 @@ export function useWAHA(operator) {
             const isResolved = (local?.status === "resolved") || ovResolved || closing;
             const lpt = isMuted || isResolved || ovRead ? null
               : (c.lastPatientTs ? new Date(c.lastPatientTs).toISOString() : null);
-            // Preserva lastMsg/lastTs local se for mais recente que o R2
-            const localTs = local?.lastTs ? new Date(local.lastTs).getTime() : 0;
-            const r2Ts    = c.lastTs        ? new Date(c.lastTs).getTime()    : 0;
-            const useLocal = local && localTs > r2Ts;
+            // Preserva lastMsg/lastTs local quando:
+            //   1. local é mais recente que R2 (timestamp maior), OU
+            //   2. R2 não tem lastMsg mas local tem (R2 ainda não recebeu a msg via webhook)
+            const localTs  = local?.lastTs ? new Date(local.lastTs).getTime() : 0;
+            const r2Ts     = c.lastTs      ? new Date(c.lastTs).getTime()     : 0;
+            const useLocal = local && (localTs > r2Ts || (local.lastMsg && !c.lastMsg));
             return {
               id:            c.id,
               pushname:      local?.pushname  || c.pushname || "",
