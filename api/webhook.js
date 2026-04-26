@@ -270,12 +270,30 @@ export default async function handler(req, res) {
         // Tenta resolver @lid → @c.us antes de persistir
         let finalMsg = rawMsg;
         if (rawMsg.chatId.endsWith("@lid")) {
-          const jid = await resolveLidToJid(rawMsg.chatId, session || "default");
+          const lid    = rawMsg.chatId;
+          const lidKey = lid.replace(/@lid$/, "");
+          const jid    = await resolveLidToJid(lid, session || "default");
           if (jid) {
             finalMsg = { ...rawMsg, chatId: jid };
-            console.log(`[webhook] @lid resolvido: ${rawMsg.chatId} → ${jid}`);
+            console.log(`[webhook] @lid resolvido: ${lid} → ${jid}`);
+            // Salva mapeamento lid_map.json no R2 para dedup server-side
+            if (r2Enabled) {
+              r2Json("lid_map.json", {}).then(map => {
+                if (map[lidKey] === jid) return; // já salvo
+                map[lidKey] = jid;
+                return r2WriteJson("lid_map.json", map);
+              }).catch(() => {});
+            }
           } else {
-            console.warn(`[webhook] @lid não resolvido: ${rawMsg.chatId} — mantendo @lid no R2`);
+            console.warn(`[webhook] @lid não resolvido: ${lid} — mantendo @lid no R2`);
+            // Registra LID como pendente (null) para que msgs-list saiba que existe
+            if (r2Enabled) {
+              r2Json("lid_map.json", {}).then(map => {
+                if (lidKey in map) return; // não sobrescreve mapeamento já resolvido
+                map[lidKey] = null;
+                return r2WriteJson("lid_map.json", map);
+              }).catch(() => {});
+            }
           }
         }
 

@@ -52,6 +52,37 @@ export default async function handler(req, res) {
 
   const { type, chatId } = req.query;
 
+  // ── GET: lê lid_map.json ──────────────────────────────────────────────────
+  if (req.method === "GET" && type === "lid-map") {
+    const r = await r2Get("lid_map.json");
+    const map = r ? JSON.parse(r.buf.toString("utf8")) : {};
+    res.setHeader("Cache-Control", "no-store");
+    return res.status(200).json(map);
+  }
+
+  // ── POST: cliente envia mapeamentos LID→JID conhecidos ───────────────────
+  if (req.method === "POST" && type === "lid-map") {
+    let incoming;
+    try {
+      const raw = await new Promise((resolve, reject) => {
+        let d = ""; req.on("data", c => d += c); req.on("end", () => resolve(d)); req.on("error", reject);
+      });
+      incoming = JSON.parse(raw);
+    } catch { return res.status(400).json({ error: "JSON inválido" }); }
+    if (typeof incoming !== "object" || Array.isArray(incoming)) {
+      return res.status(400).json({ error: "Esperado objeto { lid: jid }" });
+    }
+    const existing = await r2Get("lid_map.json").then(r =>
+      r ? JSON.parse(r.buf.toString("utf8")) : {}
+    ).catch(() => ({}));
+    // Só atualiza entradas não-nulas (não sobrescreve resolução com null)
+    for (const [lid, jid] of Object.entries(incoming)) {
+      if (jid && (!existing[lid] || existing[lid] === null)) existing[lid] = jid;
+    }
+    await r2Put("lid_map.json", Buffer.from(JSON.stringify(existing), "utf8"), "application/json");
+    return res.status(200).json({ ok: true });
+  }
+
   // ── POST: sync de chats (lista enriquecida para multi-usuário) ──
   if (req.method === "POST" && type === "chats") {
     let body;
@@ -302,61 +333,104 @@ export default async function handler(req, res) {
     }
 
     // Lista todos os arquivos msgs/ com lastModified + última mensagem de cada chat
-    // Usado pelo cliente para montar o chatlist sem depender de chats.json
+    // Usa lid_map.json para dedup server-side: @lid canônico absorve @c.us duplicado
     if (type === "msgs-list") {
-      const files = await r2List("msgs/");
-      const chats = await Promise.all(
-        files
-          .filter(f => f.key.endsWith(".json"))
-          .map(async (f) => {
-            // msgs/556199611055_c_us.json → 556199611055@c.us
-            const filename = f.key.replace("msgs/", "").replace(".json", "");
-            const chatId   = filename
-              .replace(/_c_us$/, "@c.us")
-              .replace(/_g_us$/, "@g.us")
-              .replace(/_lid$/, "@lid")
-              .replace(/_/g, "");
+      const [files, lidMap] = await Promise.all([
+        r2List("msgs/"),
+        r2Get("lid_map.json").then(r => r ? JSON.parse(r.buf.toString("utf8")) : {}).catch(() => ({})),
+      ]);
 
-            // Lê última mensagem do arquivo
-            let lastMsg = "", lastTs = 0, pushname = "", unread = 0, lastPatientTs = null;
+      // Converte filename → chatId
+      function filenameToChatId(key) {
+        const filename = key.replace("msgs/", "").replace(".json", "");
+        return filename
+          .replace(/_c_us$/, "@c.us")
+          .replace(/_g_us$/, "@g.us")
+          .replace(/_lid$/, "@lid");
+      }
+
+      // Constrói mapa inverso: jid@c.us → lid@lid (para saber quais @c.us são duplicatas)
+      // lidMap = { "267769870340186": "556198431643@c.us" }
+      // inverseLid = { "556198431643@c.us": "267769870340186@lid" }
+      const inverseLid = {};
+      for (const [lidKey, jid] of Object.entries(lidMap)) {
+        if (jid) inverseLid[jid] = lidKey + "@lid";
+      }
+
+      // Identifica arquivos que serão absorvidos por um LID canônico
+      const absorbed = new Set();
+      for (const [lidKey, jid] of Object.entries(lidMap)) {
+        if (!jid) continue;
+        const cusFile = "msgs/" + chatKey(jid).replace("msgs/", "");
+        if (files.some(f => f.key === cusFile)) absorbed.add(cusFile);
+      }
+
+      // Lê conteúdo de cada arquivo, pulando os absorvidos
+      const readFile = async (f) => {
+        const chatId = filenameToChatId(f.key);
+        let msgs = [];
+        try {
+          const r = await r2Get(f.key);
+          if (r) msgs = JSON.parse(r.buf.toString("utf8"));
+          if (!Array.isArray(msgs)) msgs = [];
+        } catch {}
+
+        // Se é @lid e tem @c.us correspondente, mescla as mensagens
+        if (chatId.endsWith("@lid")) {
+          const lidKey = chatId.replace(/@lid$/, "");
+          const jid    = lidMap[lidKey];
+          if (jid) {
             try {
-              const r = await r2Get(f.key);
-              if (r) {
-                const msgs = JSON.parse(r.buf.toString("utf8"));
-                if (Array.isArray(msgs) && msgs.length > 0) {
-                  const last = msgs[msgs.length - 1];
-                  lastMsg  = last.body || last.text || "";
-                  lastTs   = last.ts   || 0;
-                  pushname = last.pushname || last.notifyName || "";
-                  // unread: msgs do paciente após última resposta do operador
-                  let u = 0;
-                  for (let i = msgs.length - 1; i >= 0; i--) {
-                    if (msgs[i].fromMe) break;
-                    u++;
-                  }
-                  unread = u;
-                  // lastPatientTs: última msg não-fromMe
-                  for (let i = msgs.length - 1; i >= 0; i--) {
-                    if (!msgs[i].fromMe) { lastPatientTs = msgs[i].ts || null; break; }
-                  }
+              const cusKey = chatKey(jid);
+              const cr = await r2Get(cusKey);
+              if (cr) {
+                const cusMsgs = JSON.parse(cr.buf.toString("utf8"));
+                if (Array.isArray(cusMsgs) && cusMsgs.length > 0) {
+                  // Merge por ID — evita duplicatas
+                  const seen = new Set(msgs.map(m => m.id));
+                  for (const m of cusMsgs) if (m.id && !seen.has(m.id)) msgs.push(m);
+                  msgs.sort((a, b) => (a.ts || 0) - (b.ts || 0));
                 }
               }
             } catch {}
+          }
+        }
 
-            return {
-              id:            chatId,
-              lastMsg,
-              lastTs:        lastTs || new Date(f.lastModified).getTime(),
-              lastModified:  f.lastModified,
-              pushname,
-              unread,
-              lastPatientTs,
-              status:        "open",
-            };
-          })
+        let lastMsg = "", lastTs = 0, pushname = "", unread = 0, lastPatientTs = null;
+        if (msgs.length > 0) {
+          const last = msgs[msgs.length - 1];
+          lastMsg  = last.body || last.text || "";
+          lastTs   = last.ts   || 0;
+          pushname = last.pushname || last.notifyName || "";
+          let u = 0;
+          for (let i = msgs.length - 1; i >= 0; i--) {
+            if (msgs[i].fromMe) break;
+            u++;
+          }
+          unread = u;
+          for (let i = msgs.length - 1; i >= 0; i--) {
+            if (!msgs[i].fromMe) { lastPatientTs = msgs[i].ts || null; break; }
+          }
+        }
+
+        return {
+          id:           chatId,
+          lastMsg,
+          lastTs:       lastTs || new Date(f.lastModified).getTime(),
+          lastModified: f.lastModified,
+          pushname,
+          unread,
+          lastPatientTs,
+          status:       "open",
+        };
+      };
+
+      const chats = await Promise.all(
+        files
+          .filter(f => f.key.endsWith(".json") && !absorbed.has(f.key))
+          .map(readFile)
       );
 
-      // Ordena por lastTs decrescente (mais recente primeiro)
       chats.sort((a, b) => (b.lastTs || 0) - (a.lastTs || 0));
       res.setHeader("Cache-Control", "no-store");
       return res.status(200).json(chats);

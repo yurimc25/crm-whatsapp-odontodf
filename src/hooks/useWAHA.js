@@ -296,6 +296,11 @@ async function resolveLid(lid, pushname) {
           _lidToJid.set(lid, jid);
           _saveLidResolution(lid, jid, pushname || name);
           console.log(`[lid] resolvido via API: ${lid} → ${jid}`);
+          fetch("/api/r2-data?type=lid-map", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Internal-Key": ikey() },
+            body: JSON.stringify({ [lid.replace(/@lid$/, "")]: jid }),
+          }).catch(() => {});
           return jid;
         }
         // API retornou mas só tem nome (sem JID @c.us) — salva o nome mesmo assim
