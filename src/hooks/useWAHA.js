@@ -1325,13 +1325,11 @@ export function useWAHA(operator) {
 
       if (activeChatRef.token !== token) return;
 
-      // Índice por ID exato
-      // Fallback por timestamp+direção: R2 e WAHA usam hexes diferentes no mesmo campo "id"
-      // (webhook salva IDs do formato @c.us/Baileys; getMessages retorna @lid/servidor)
-      // então a única forma de correlacionar é pelo segundo do timestamp + fromMe
+      // Índice por ID exato + fallback ts+direção para TODOS os tipos
+      // R2 e WAHA usam hexes diferentes (formato @c.us/Baileys vs @lid/servidor)
       const wahaByTs = new Map();
       for (const w of wahaMsgs) {
-        if (!w.ts || !(w.hasMedia || w.media)) continue; // só indexa mensagens com mídia
+        if (!w.ts) continue;
         const tsS = Math.floor(new Date(w.ts).getTime() / 1000);
         const key = `${w.from}_${tsS}`;
         if (!wahaByTs.has(key)) wahaByTs.set(key, w);
@@ -1339,7 +1337,6 @@ export function useWAHA(operator) {
       const getWaha = (id, m) => {
         const byId = wahaById.get(id);
         if (byId) return byId;
-        // Fallback: timestamp + direção (quando IDs têm formatos distintos)
         if (m?.ts) {
           const tsS = Math.floor(new Date(m.ts).getTime() / 1000);
           const byTs = wahaByTs.get(`${m.from}_${tsS}`);
@@ -1360,25 +1357,38 @@ export function useWAHA(operator) {
           if (!waha) return m;
           const media    = m.media || (waha.hasMedia ? waha.media : null);
           const hasMedia = m.hasMedia || waha.hasMedia || false;
-          // WAHA type é autoritativo para mídia — corrige tipo errado salvo no R2 (ex: "image" em vez de "document")
           const wahaType = waha.type && waha.type !== "text" && waha.type !== "chat" ? waha.type : null;
           const type     = wahaType || m.type;
-          // replyTo: preserva de qualquer fonte que tenha
           const replyTo  = m.replyTo || waha.replyTo || null;
           return { ...m, media, hasMedia, type, replyTo };
         });
 
-        // Mensagens só no WAHA e não vistas antes
-        const wahaExtras = wahaMsgs.filter(m => !r2Ids.has(m.id) && !existIds.has(m.id));
-        // Mensagens que não estão no R2 mas estão no state (WS/cache) — usa versão WAHA se disponível (tem mídia)
-        // Preserva replyTo da versão WS/cache se a WAHA não trouxer
+        // Mensagens que não estão no R2 mas estão no state (WS/cache)
+        // Preserva ts e id do WS — usa WAHA só para enriquecer mídia/replyTo
         const wsExtras = existing
           .filter(m => !r2Ids.has(m.id) && !m.id.startsWith("tmp-"))
           .map(m => {
             const waha = getWaha(m.id, m);
             if (!waha) return m;
-            return { ...waha, replyTo: m.replyTo || waha.replyTo || null };
+            const media    = m.media || (waha.hasMedia ? waha.media : null);
+            const hasMedia = m.hasMedia || waha.hasMedia || false;
+            const wahaType = waha.type && waha.type !== "text" && waha.type !== "chat" ? waha.type : null;
+            return { ...m, media, hasMedia, type: wahaType || m.type, replyTo: m.replyTo || waha.replyTo || null };
           });
+
+        // IDs e chaves ts+direção já cobertos por wsExtras — evita duplicatas de WAHA com ID diferente
+        const wsExtraIds = new Set(wsExtras.map(m => m.id));
+        const wsExtraTsKeys = new Set(wsExtras.map(m => {
+          const tsS = Math.floor(new Date(m.ts).getTime() / 1000);
+          return `${m.from}_${tsS}`;
+        }));
+
+        // Mensagens só no WAHA, sem nenhum match por ID ou timestamp com msgs já conhecidas
+        const wahaExtras = wahaMsgs.filter(m => {
+          if (r2Ids.has(m.id) || existIds.has(m.id) || wsExtraIds.has(m.id)) return false;
+          const tsS = Math.floor(new Date(m.ts).getTime() / 1000);
+          return !wsExtraTsKeys.has(`${m.from}_${tsS}`);
+        });
 
         const merged     = sortMsgs([...r2Merged, ...wahaExtras, ...wsExtras]);
         const mergedMedia = merged.filter(m => m.hasMedia || m.media).length;
