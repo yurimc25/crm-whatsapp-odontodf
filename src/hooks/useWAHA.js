@@ -516,7 +516,9 @@ export function useWAHA(operator) {
         return c;
       });
       const deduped = _dedupeChats(guarded);
-      return deduped.length === guarded.length ? guarded : deduped;
+      const final = deduped.length === guarded.length ? guarded : deduped;
+      persistChats(final);
+      return final;
     });
   }, []);
   const [messages,    setMessages]    = useState({});
@@ -633,7 +635,6 @@ export function useWAHA(operator) {
             };
           });
 
-        persistChats(updated);
         return updated;
       });
     } catch (e) {
