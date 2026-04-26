@@ -504,9 +504,19 @@ export function useWAHA(operator) {
     setChatsRaw(prev => {
       const next = typeof updater === "function" ? updater(prev) : updater;
       if (next === prev) return prev;
-      const deduped = _dedupeChats(next);
-      // Só gera novo array se algo mudou (evita re-render desnecessário)
-      return deduped.length === next.length ? next : deduped;
+      // Antes de deduplicar: garante que lastMsg/lastTs do state atual prevaleçam
+      // quando o caller passou dados mais antigos (ex: applyR2Chats com snapshot desatualizado)
+      const prevMap = new Map(prev.map(c => [c.id, c]));
+      const guarded = next.map(c => {
+        const p = prevMap.get(c.id);
+        if (!p) return c;
+        const pTs = p.lastTs  ? new Date(p.lastTs).getTime()  : 0;
+        const cTs = c.lastTs  ? new Date(c.lastTs).getTime()  : 0;
+        if (pTs > cTs) return { ...c, lastMsg: p.lastMsg, lastTs: p.lastTs, lastPatientTs: p.lastPatientTs || c.lastPatientTs };
+        return c;
+      });
+      const deduped = _dedupeChats(guarded);
+      return deduped.length === guarded.length ? guarded : deduped;
     });
   }, []);
   const [messages,    setMessages]    = useState({});
