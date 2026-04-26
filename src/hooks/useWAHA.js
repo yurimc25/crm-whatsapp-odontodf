@@ -1733,10 +1733,10 @@ export function useWAHA(operator) {
     try {
       await sendText(chatId, formatted, replyToId);
       // Persiste mensagem enviada no R2 para que o polling não sobrescreva o lastMsg
-      fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`, {
+      fetch(`/api/r2-data?type=send-msg&chatId=${encodeURIComponent(chatId)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Internal-Key": ikey() },
-        body: JSON.stringify([{ ...tmpMsg, id: tmpMsg.id, fromMe: true }]),
+        body: JSON.stringify({ ...tmpMsg, fromMe: true }),
       }).catch(() => {});
     } catch (e) {
       setMessages(prev => ({

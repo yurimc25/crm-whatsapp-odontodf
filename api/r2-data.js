@@ -328,6 +328,40 @@ export default async function handler(req, res) {
     }
   }
 
+  // ── POST: insere mensagem enviada pelo operador no R2 ──────────────
+  // Garante que o polling (applyR2Chats) já leia o lastMsg correto sem depender do webhook
+  if (req.method === "POST" && type === "send-msg") {
+    if (!chatId) return res.status(400).json({ error: "chatId obrigatório" });
+    let msg;
+    try {
+      const raw = await new Promise((resolve, reject) => {
+        let d = ""; req.on("data", c => d += c); req.on("end", () => resolve(d)); req.on("error", reject);
+      });
+      msg = JSON.parse(raw);
+    } catch { return res.status(400).json({ error: "JSON inválido" }); }
+    if (!msg || typeof msg !== "object" || !msg.id) {
+      return res.status(400).json({ error: "msg inválida" });
+    }
+    try {
+      const existing = await r2Json(chatKey(chatId), []);
+      // Dedup por ID e por timestamp+fromMe (evita duplicar se webhook já chegou)
+      const seen = new Set(existing.map(m => m.id));
+      const tsKey = `${msg.fromMe ? 1 : 0}_${Math.floor((msg.ts || 0) / 1000)}`;
+      const dupByTs = existing.some(m =>
+        `${m.fromMe ? 1 : 0}_${Math.floor((m.ts || 0) / 1000)}` === tsKey
+      );
+      if (!seen.has(msg.id) && !dupByTs) {
+        existing.push({ ...msg, chatId });
+        existing.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+        if (existing.length > MAX_MSGS) existing.splice(0, existing.length - MAX_MSGS);
+        await r2Put(chatKey(chatId), Buffer.from(JSON.stringify(existing), "utf8"), "application/json");
+      }
+      return res.status(200).json({ ok: true });
+    } catch (e) {
+      return res.status(500).json({ error: e.message });
+    }
+  }
+
   // ── POST: salvar/enriquecer mensagens de um chat no R2 ─────────────
   // Usado pelo frontend após merge WAHA para persistir type e wahaShortId de mídias
   if (req.method === "POST" && type === "msgs") {
