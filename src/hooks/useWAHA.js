@@ -505,10 +505,23 @@ export function useWAHA(operator) {
       const next = typeof updater === "function" ? updater(prev) : updater;
       if (next === prev) return prev;
       // Antes de deduplicar: garante que lastMsg/lastTs do state atual prevaleçam
-      // quando o caller passou dados mais antigos (ex: applyR2Chats com snapshot desatualizado)
-      const prevMap = new Map(prev.map(c => [c.id, c]));
+      // Lookup por ID exato + fallback tail-8 (cobre variação de formato de ID)
+      const guardById = new Map(prev.map(c => [c.id, c]));
+      const guardByT8 = new Map();
+      for (const c of prev) {
+        if (c.id?.endsWith("@g.us")) continue;
+        const t8 = c.id?.replace(/\D/g, "").slice(-8);
+        if (t8?.length >= 8 && !guardByT8.has(t8)) guardByT8.set(t8, c);
+      }
+      const guardFind = (id) => {
+        const ex = guardById.get(id);
+        if (ex) return ex;
+        if (id?.endsWith("@g.us")) return undefined;
+        const t8 = id?.replace(/\D/g, "").slice(-8);
+        return t8?.length >= 8 ? guardByT8.get(t8) : undefined;
+      };
       const guarded = next.map(c => {
-        const p = prevMap.get(c.id);
+        const p = guardFind(c.id);
         if (!p) return c;
         const pTs = p.lastTs  ? new Date(p.lastTs).getTime()  : 0;
         const cTs = c.lastTs  ? new Date(c.lastTs).getTime()  : 0;
@@ -600,13 +613,36 @@ export function useWAHA(operator) {
       const overrides = readOverrides();
 
       setChats(prev => {
-        // Preserva estado local (status, assignedTo, tags, photoUrl) por ID
-        const prevMap = new Map(prev.map(c => [c.id, c]));
+        // Lookup por ID exato, com fallback por tail-8 de telefone
+        // (cobre variação de formato de ID entre R2 e state local)
+        const prevById   = new Map(prev.map(c => [c.id, c]));
+        const prevByT8   = new Map();
+        for (const c of prev) {
+          if (c.id?.endsWith("@g.us")) continue;
+          const t8 = c.id?.replace(/\D/g, "").slice(-8);
+          if (t8?.length >= 8 && !prevByT8.has(t8)) prevByT8.set(t8, c);
+        }
+        const findLocal = (id) => {
+          const ex = prevById.get(id);
+          if (ex) return ex;
+          if (id?.endsWith("@g.us")) return undefined;
+          const t8 = id?.replace(/\D/g, "").slice(-8);
+          return t8?.length >= 8 ? prevByT8.get(t8) : undefined;
+        };
+
+        // IDs presentes no R2 — chats não encontrados em R2 são mantidos do prev (WebSocket-only)
+        const r2Ids = new Set(r2Chats.map(c => c.id));
+        const prevOnly = prev.filter(c => {
+          if (r2Ids.has(c.id)) return false;
+          if (c.id?.endsWith("@g.us")) return false;
+          const t8 = c.id?.replace(/\D/g, "").slice(-8);
+          return !t8 || ![...r2Ids].some(id => id.replace(/\D/g, "").slice(-8) === t8);
+        });
 
         const updated = r2Chats
           .filter(c => c.id && !c.id.endsWith("@s.whatsapp.net"))
           .map(c => {
-            const local   = prevMap.get(c.id);
+            const local   = findLocal(c.id);
             const isMuted = mutedChatsRef.current.has(c.id);
             const ck      = canonicalKey(c.id, readLidPhoneMap());
             const ov      = ck ? overrides[ck] : overrides[c.id];
@@ -635,7 +671,8 @@ export function useWAHA(operator) {
             };
           });
 
-        return updated;
+        // Mantém chats que só existem no state local (WebSocket-only nesta sessão)
+        return [...updated, ...prevOnly];
       });
     } catch (e) {
       console.warn("[r2] applyR2Chats:", e.message);
