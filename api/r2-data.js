@@ -50,28 +50,80 @@ async function r2Json(key, def) {
   } catch { return def; }
 }
 
+// Merge genérico: copia mensagens de srcKey para dstKey e deleta srcKey
+async function mergeFiles(srcKey, dstKey, canonicalChatId) {
+  const srcMsgs = await r2Json(srcKey, null);
+  if (!Array.isArray(srcMsgs)) { await r2Delete(srcKey).catch(() => {}); return 0; }
+  const dstMsgs = await r2Json(dstKey, []);
+  const seen = new Set(dstMsgs.map(m => m.id));
+  for (const m of srcMsgs) {
+    if (m.id && !seen.has(m.id)) dstMsgs.push({ ...m, chatId: canonicalChatId });
+  }
+  dstMsgs.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  if (dstMsgs.length > MAX_MSGS) dstMsgs.splice(0, dstMsgs.length - MAX_MSGS);
+  await r2Put(dstKey, Buffer.from(JSON.stringify(dstMsgs), "utf8"), "application/json");
+  await r2Delete(srcKey);
+  return srcMsgs.length;
+}
+
 // Merge mensagens do arquivo @lid no arquivo @c.us e deleta @lid
 async function mergeLidFiles(pairs) {
   for (const { lid, jid } of pairs) {
     try {
       const lidFileKey = "msgs/" + (lid + "@lid").replace(/[^a-zA-Z0-9_-]/g, "_") + ".json";
       const cusFileKey = chatKey(jid);
-      const lidMsgs = await r2Json(lidFileKey, null);
-      if (!Array.isArray(lidMsgs)) { await r2Delete(lidFileKey).catch(() => {}); continue; }
-      const cusMsgs = await r2Json(cusFileKey, []);
-      const seen = new Set(cusMsgs.map(m => m.id));
-      for (const m of lidMsgs) {
-        if (m.id && !seen.has(m.id)) cusMsgs.push({ ...m, chatId: jid });
-      }
-      cusMsgs.sort((a, b) => (a.ts || 0) - (b.ts || 0));
-      if (cusMsgs.length > MAX_MSGS) cusMsgs.splice(0, cusMsgs.length - MAX_MSGS);
-      await r2Put(cusFileKey, Buffer.from(JSON.stringify(cusMsgs), "utf8"), "application/json");
-      await r2Delete(lidFileKey);
-      console.log(`[merge-lids] ${lid}@lid → ${jid}: ${lidMsgs.length} msgs merged, file deleted`);
+      const n = await mergeFiles(lidFileKey, cusFileKey, jid);
+      console.log(`[merge-lids] ${lid}@lid → ${jid}: ${n} msgs merged, file deleted`);
     } catch (e) {
       console.warn(`[merge-lids] erro em ${lid}:`, e.message);
     }
   }
+}
+
+// Extrai chatId a partir do nome do arquivo R2 (inverte chatKey)
+function chatIdFromKey(fileKey) {
+  const m = fileKey.match(/^msgs\/(.+)\.json$/);
+  if (!m) return null;
+  // inverte replace: _ vira @ ou . (heurística: _c_us → @c.us, _g_us → @g.us, _lid → @lid)
+  let id = m[1]
+    .replace(/_c_us$/, "@c.us")
+    .replace(/_g_us$/, "@g.us")
+    .replace(/_lid$/, "@lid");
+  return id;
+}
+
+// Detecta e mescla arquivos duplicados de @c.us para o mesmo número
+// (ex: com/sem dígito 9 brasileiro) — mantém o canônico, deleta o outro
+async function mergePhoneDuplicates(files) {
+  // Agrupa por chave normalizada (só dígitos, com 9 para BR)
+  const groups = new Map(); // normalizedKey → [{ fileKey, chatId }]
+  for (const { key } of files) {
+    if (!key.startsWith("msgs/") || !key.endsWith(".json")) continue;
+    const chatId = chatIdFromKey(key);
+    if (!chatId || chatId.endsWith("@lid") || chatId.endsWith("@g.us")) continue;
+    const norm = toChatKey(chatId); // normaliza número
+    if (!groups.has(norm)) groups.set(norm, []);
+    groups.get(norm).push({ fileKey: key, chatId });
+  }
+
+  let merged = 0;
+  for (const [norm, entries] of groups) {
+    if (entries.length < 2) continue;
+    // Canônico é o que já tem o chatId igual ao toCanonicalId
+    const canonical = entries.find(e => e.chatId === toCanonicalId(e.chatId))
+      || entries.reduce((a, b) => a.chatId.length >= b.chatId.length ? a : b); // maior comprimento = mais dígitos
+    const others = entries.filter(e => e.fileKey !== canonical.fileKey);
+    for (const src of others) {
+      try {
+        const n = await mergeFiles(src.fileKey, canonical.fileKey, canonical.chatId);
+        console.log(`[merge-dupes] ${src.chatId} → ${canonical.chatId}: ${n} msgs merged, ${src.fileKey} deleted`);
+        merged++;
+      } catch (e) {
+        console.warn(`[merge-dupes] erro em ${src.chatId}:`, e.message);
+      }
+    }
+  }
+  return merged;
 }
 
 export default async function handler(req, res) {
@@ -133,6 +185,7 @@ export default async function handler(req, res) {
         r2List("msgs/"),
         r2Get("lid_map.json").then(r => r ? JSON.parse(r.buf.toString("utf8")) : {}).catch(() => ({})),
       ]);
+      // 1) Merge @lid → @c.us para mapeamentos resolvidos
       const toMerge = [];
       for (const [lid, jid] of Object.entries(lidMap)) {
         if (!jid) continue;
@@ -140,7 +193,9 @@ export default async function handler(req, res) {
         if (files.some(f => f.key === lidFileKey)) toMerge.push({ lid, jid });
       }
       await mergeLidFiles(toMerge);
-      return res.status(200).json({ ok: true, merged: toMerge.length });
+      // 2) Merge arquivos @c.us duplicados para o mesmo número (ex: com/sem dígito 9)
+      const dupsMerged = await mergePhoneDuplicates(files);
+      return res.status(200).json({ ok: true, merged: toMerge.length, dupesMerged: dupsMerged });
     } catch (e) {
       return res.status(500).json({ error: e.message });
     }
