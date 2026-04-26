@@ -39,6 +39,41 @@ function toCanonicalId(chatId) {
   return ck.includes("@") ? ck : ck + "@c.us";
 }
 
+const MAX_MSGS = 200;
+
+// Lê JSON do R2 ou retorna default
+async function r2Json(key, def) {
+  try {
+    const r = await r2Get(key);
+    if (!r) return def;
+    return JSON.parse(r.buf.toString("utf8"));
+  } catch { return def; }
+}
+
+// Merge mensagens do arquivo @lid no arquivo @c.us e deleta @lid
+async function mergeLidFiles(pairs) {
+  for (const { lid, jid } of pairs) {
+    try {
+      const lidFileKey = "msgs/" + (lid + "@lid").replace(/[^a-zA-Z0-9_-]/g, "_") + ".json";
+      const cusFileKey = chatKey(jid);
+      const lidMsgs = await r2Json(lidFileKey, null);
+      if (!Array.isArray(lidMsgs)) { await r2Delete(lidFileKey).catch(() => {}); continue; }
+      const cusMsgs = await r2Json(cusFileKey, []);
+      const seen = new Set(cusMsgs.map(m => m.id));
+      for (const m of lidMsgs) {
+        if (m.id && !seen.has(m.id)) cusMsgs.push({ ...m, chatId: jid });
+      }
+      cusMsgs.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+      if (cusMsgs.length > MAX_MSGS) cusMsgs.splice(0, cusMsgs.length - MAX_MSGS);
+      await r2Put(cusFileKey, Buffer.from(JSON.stringify(cusMsgs), "utf8"), "application/json");
+      await r2Delete(lidFileKey);
+      console.log(`[merge-lids] ${lid}@lid → ${jid}: ${lidMsgs.length} msgs merged, file deleted`);
+    } catch (e) {
+      console.warn(`[merge-lids] erro em ${lid}:`, e.message);
+    }
+  }
+}
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS");
@@ -61,6 +96,7 @@ export default async function handler(req, res) {
   }
 
   // ── POST: cliente envia mapeamentos LID→JID conhecidos ───────────────────
+  // Após salvar, dispara merge @lid → @c.us para novos mapeamentos resolvidos
   if (req.method === "POST" && type === "lid-map") {
     let incoming;
     try {
@@ -75,12 +111,39 @@ export default async function handler(req, res) {
     const existing = await r2Get("lid_map.json").then(r =>
       r ? JSON.parse(r.buf.toString("utf8")) : {}
     ).catch(() => ({}));
-    // Só atualiza entradas não-nulas (não sobrescreve resolução com null)
+    const newlyResolved = [];
     for (const [lid, jid] of Object.entries(incoming)) {
-      if (jid && (!existing[lid] || existing[lid] === null)) existing[lid] = jid;
+      if (jid && (!existing[lid] || existing[lid] === null)) {
+        existing[lid] = jid;
+        newlyResolved.push({ lid, jid });
+      }
     }
     await r2Put("lid_map.json", Buffer.from(JSON.stringify(existing), "utf8"), "application/json");
-    return res.status(200).json({ ok: true });
+    // Merge @lid files into @c.us in background para novos mapeamentos
+    if (newlyResolved.length > 0) {
+      mergeLidFiles(newlyResolved).catch(() => {});
+    }
+    return res.status(200).json({ ok: true, merged: newlyResolved.length });
+  }
+
+  // ── POST: limpa arquivos @lid já resolvidos no R2 (chamado pelo Resync) ────
+  if (req.method === "POST" && type === "merge-lids") {
+    try {
+      const [files, lidMap] = await Promise.all([
+        r2List("msgs/"),
+        r2Get("lid_map.json").then(r => r ? JSON.parse(r.buf.toString("utf8")) : {}).catch(() => ({})),
+      ]);
+      const toMerge = [];
+      for (const [lid, jid] of Object.entries(lidMap)) {
+        if (!jid) continue;
+        const lidFileKey = "msgs/" + (lid + "@lid").replace(/[^a-zA-Z0-9_-]/g, "_") + ".json";
+        if (files.some(f => f.key === lidFileKey)) toMerge.push({ lid, jid });
+      }
+      await mergeLidFiles(toMerge);
+      return res.status(200).json({ ok: true, merged: toMerge.length });
+    } catch (e) {
+      return res.status(500).json({ error: e.message });
+    }
   }
 
   // ── POST: sync de chats (lista enriquecida para multi-usuário) ──
