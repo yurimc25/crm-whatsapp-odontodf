@@ -1423,15 +1423,26 @@ export function useWAHA(operator) {
           return `${m.from}_${tsS}`;
         }));
 
-        // WAHA preenche mensagens ausentes nas fontes canônicas
-        // Descarta apenas: ID idêntico ou mesmo segundo+direção (duplicata com ID em outro formato)
+        // WAHA preenche apenas histórico anterior ao que temos no R2/WS
+        // Descarta: ID idêntico, mesmo segundo+direção, ou ts >= menor ts canônico
+        // (WAHA tem timestamps inconsistentes — não pode reordenar fontes canônicas)
+        const canonicalTsList = [...r2Merged, ...wsExtras]
+          .map(m => tsToNum(m.ts)).filter(t => t > 0);
+        const oldestCanonicalTs = canonicalTsList.length ? Math.min(...canonicalTsList) : 0;
+
         const wahaExtras = wahaMsgs.filter(m => {
           if (canonicalIds.has(m.id)) return false;
-          const tsS = Math.floor(tsToNum(m.ts) / 1000);
+          const mTs = tsToNum(m.ts);
+          if (oldestCanonicalTs > 0 && mTs >= oldestCanonicalTs) return false;
+          const tsS = Math.floor(mTs / 1000);
           return !canonicalTsKey.has(`${m.from}_${tsS}`);
         });
 
-        const merged     = sortMsgs([...r2Merged, ...wahaExtras, ...wsExtras]);
+        // Ordem canônica: wahaExtras (histórico antigo, sorted por ts) + r2Merged
+        // (ordem R2, webhook) + wsExtras (chegaram via WS nesta sessão)
+        // NÃO re-sort o r2Merged — timestamps do WAHA são inconsistentes
+        const sortedWahaExtras = [...wahaExtras].sort((a, b) => tsToNum(a.ts) - tsToNum(b.ts));
+        const merged     = [...sortedWahaExtras, ...r2Merged, ...wsExtras];
         const mergedMedia = merged.filter(m => m.hasMedia || m.media).length;
         console.log(`[load-msgs] 3-WAHA-SET | exist=${existing.length}(mídia=${existMedia}) r2Merged=${r2Merged.length} wahaExtras=${wahaExtras.length} wsExtras=${wsExtras.length} → final=${merged.length}(mídia=${mergedMedia})`);
         const finalMediaSample = merged.filter(m => m.hasMedia||m.media).slice(0,3).map(m=>`id=...${String(m.id||"").slice(-10)} type=${m.type} url=${m.media?.url?"sim":"não"}`);
