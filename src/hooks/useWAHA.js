@@ -352,6 +352,9 @@ async function resolveLid(lid, pushname) {
         }
         // API retornou mas só tem nome (sem JID @c.us) — salva o nome mesmo assim
         if (name) _saveLidResolution(lid, null, name);
+      } else {
+        // 404 ou outro erro HTTP — WAHA não conhece este LID; não tenta de novo
+        _lidFailed.add(lid);
       }
     } catch {}
   }
