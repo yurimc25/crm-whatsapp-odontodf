@@ -1,8 +1,8 @@
 // src/components/modules/QuickMessages.jsx
 // Menu de mensagens rápidas acionado por "/" no input
-// Salvo no localStorage — permite adicionar/editar atalhos
+// Armazenado no MongoDB — qualquer operador pode editar; sincronizado em tempo real
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 
 const T = {
   bg: "#1e1e1e", panel: "#212121", border: "#2d2d2d",
@@ -10,7 +10,8 @@ const T = {
   accentBg: "rgba(212,149,106,.08)",
 };
 
-const LS_KEY = "crm_quick_messages";
+const API_BASE = "/api/db";
+const INTERNAL_KEY = import.meta.env.VITE_INTERNAL_API_KEY || "";
 
 const DEFAULT_MESSAGES = [
   {
@@ -45,25 +46,53 @@ const DEFAULT_MESSAGES = [
   },
 ];
 
-function loadMessages() {
-  try {
-    const raw = localStorage.getItem(LS_KEY);
-    return raw ? JSON.parse(raw) : DEFAULT_MESSAGES;
-  } catch { return DEFAULT_MESSAGES; }
+async function fetchMessages() {
+  const res = await fetch(`${API_BASE}?action=quick-messages`, {
+    headers: { "x-internal-key": INTERNAL_KEY },
+  });
+  if (!res.ok) throw new Error("fetch failed");
+  const data = await res.json();
+  return data.messages?.length ? data.messages : null;
 }
 
-function saveMessages(msgs) {
-  try { localStorage.setItem(LS_KEY, JSON.stringify(msgs)); } catch {}
+async function persistMessages(msgs) {
+  await fetch(`${API_BASE}?action=quick-messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-internal-key": INTERNAL_KEY },
+    body: JSON.stringify({ messages: msgs }),
+  });
 }
 
 // ── Componente principal ──────────────────────────────────────────
 export function QuickMessages({ query, onSelect, onClose }) {
-  const [messages, setMessages] = useState(loadMessages);
+  const [messages, setMessages] = useState(DEFAULT_MESSAGES);
+  const [loading, setLoading]   = useState(true);
+  const [syncing, setSyncing]   = useState(false);
   const [showAdd, setShowAdd]   = useState(false);
-  const [editing, setEditing]   = useState(null); // null | message object
+  const [editing, setEditing]   = useState(null);
   const [form, setForm]         = useState({ atalho: "", titulo: "", texto: "" });
   const listRef = useRef(null);
   const [selected, setSelected] = useState(0);
+
+  const load = useCallback(async (showLoader = false) => {
+    if (showLoader) setSyncing(true);
+    try {
+      const remote = await fetchMessages();
+      if (remote) setMessages(remote);
+      else {
+        // Primeira vez: persiste os defaults na nuvem
+        await persistMessages(DEFAULT_MESSAGES);
+      }
+    } catch (e) {
+      console.warn("[QuickMessages] falha ao carregar:", e.message);
+    } finally {
+      setLoading(false);
+      setSyncing(false);
+    }
+  }, []);
+
+  // Carrega do MongoDB no mount
+  useEffect(() => { load(); }, [load]);
 
   const q = (query || "").toLowerCase().replace(/^\//, "");
 
@@ -74,10 +103,7 @@ export function QuickMessages({ query, onSelect, onClose }) {
     m.texto.toLowerCase().includes(q)
   );
 
-  // Navegação por teclado
-  useEffect(() => {
-    setSelected(0);
-  }, [query]);
+  useEffect(() => { setSelected(0); }, [query]);
 
   useEffect(() => {
     function onKey(e) {
@@ -102,7 +128,7 @@ export function QuickMessages({ query, onSelect, onClose }) {
     setShowAdd(true);
   }
 
-  function saveForm() {
+  async function saveForm() {
     if (!form.atalho || !form.texto) return;
     const clean = { ...form, atalho: form.atalho.startsWith("/") ? form.atalho : "/" + form.atalho };
     let updated;
@@ -112,14 +138,14 @@ export function QuickMessages({ query, onSelect, onClose }) {
       updated = [...messages, { ...clean, id: Date.now().toString() }];
     }
     setMessages(updated);
-    saveMessages(updated);
     setShowAdd(false);
+    try { await persistMessages(updated); } catch (e) { console.warn("[QuickMessages] falha ao salvar:", e.message); }
   }
 
-  function remove(id) {
+  async function remove(id) {
     const updated = messages.filter(m => m.id !== id);
     setMessages(updated);
-    saveMessages(updated);
+    try { await persistMessages(updated); } catch (e) { console.warn("[QuickMessages] falha ao salvar:", e.message); }
   }
 
   return (
@@ -137,8 +163,18 @@ export function QuickMessages({ query, onSelect, onClose }) {
         <span style={{ color:T.accent, fontSize:12, fontWeight:700 }}>
           ⚡ Mensagens rápidas
           {q && <span style={{ color:T.sub }}> · "{q}"</span>}
+          {loading && <span style={{ color:T.sub, fontWeight:400 }}> · carregando...</span>}
         </span>
         <div style={{ display:"flex", gap:8 }}>
+          {/* Botão refresh */}
+          <button
+            onClick={() => load(true)}
+            disabled={syncing}
+            title="Sincronizar da nuvem"
+            style={{ background:"none", border:`1px solid ${T.border}`, color: syncing ? T.sub : T.accent,
+              borderRadius:6, padding:"3px 8px", fontSize:13, cursor: syncing ? "default" : "pointer" }}>
+            {syncing ? "⏳" : "🔄"}
+          </button>
           <button onClick={openAdd}
             style={{ background:T.accentBg, color:T.accent, border:`1px solid ${T.accent}44`,
               borderRadius:6, padding:"3px 10px", fontSize:11, fontWeight:600, cursor:"pointer" }}>
@@ -154,9 +190,9 @@ export function QuickMessages({ query, onSelect, onClose }) {
       {/* Lista */}
       {!showAdd && (
         <div ref={listRef} style={{ overflowY:"auto", flex:1 }}>
-          {filtered.length === 0 && (
+          {filtered.length === 0 && !loading && (
             <div style={{ color:T.sub, fontSize:12, textAlign:"center", padding:20 }}>
-              Nenhuma mensagem encontrada para "{q}"
+              Nenhuma mensagem encontrada{q ? ` para "${q}"` : ""}
             </div>
           )}
           {filtered.map((msg, i) => (
@@ -168,12 +204,10 @@ export function QuickMessages({ query, onSelect, onClose }) {
                 transition:"background .15s" }}
               onMouseEnter={() => setSelected(i)}
               onClick={() => onSelect(msg.texto)}>
-              {/* Atalho */}
               <span style={{ color:T.accent, fontFamily:"monospace", fontSize:12,
                 fontWeight:700, minWidth:110, paddingTop:2 }}>
                 {msg.atalho}
               </span>
-              {/* Conteúdo */}
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ color:T.text, fontSize:12, fontWeight:600, marginBottom:2 }}>
                   {msg.titulo}
@@ -183,7 +217,6 @@ export function QuickMessages({ query, onSelect, onClose }) {
                   {msg.texto.split("\n")[0]}
                 </div>
               </div>
-              {/* Ações */}
               <div style={{ display:"flex", gap:4, opacity:0.6 }}
                 onClick={e => e.stopPropagation()}>
                 <button onClick={() => openEdit(msg)}

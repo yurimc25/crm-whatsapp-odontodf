@@ -190,6 +190,24 @@ export default async function handler(req, res) {
       return res.json({ ok: true, merged, renamed, total: docs.length });
     }
 
+    // ── GET /api/db?action=quick-messages — lista mensagens rápidas da clínica
+    if (req.method === "GET" && action === "quick-messages") {
+      const doc = await db.collection("quick_messages").findOne({ _id: "global" });
+      return res.json({ messages: doc?.messages || [] });
+    }
+
+    // ── POST /api/db?action=quick-messages — salva lista completa (substitui)
+    if (req.method === "POST" && action === "quick-messages") {
+      const { messages } = req.body || {};
+      if (!Array.isArray(messages)) return res.status(400).json({ error: "messages deve ser array" });
+      await db.collection("quick_messages").updateOne(
+        { _id: "global" },
+        { $set: { messages, updatedAt: new Date() } },
+        { upsert: true }
+      );
+      return res.json({ ok: true });
+    }
+
     return res.status(404).json({ error: `Ação desconhecida: ${action}` });
 
   } catch (e) {
