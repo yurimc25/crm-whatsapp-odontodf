@@ -11,6 +11,23 @@ import fs from "fs";
 
 export const config = { api: { bodyParser: false } };
 
+// Texto de preview para o chatlist — body/caption ou fallback descritivo por tipo de mídia
+function msgPreview(msg) {
+  if (msg.body || msg.text) return msg.body || msg.text;
+  switch (msg.type) {
+    case "image":    return "📷 Imagem";
+    case "video":    return "🎥 Vídeo";
+    case "audio":
+    case "voice":    return "🎵 Áudio";
+    case "document": return "📄 Documento";
+    case "sticker":  return "⭐ Figurinha";
+    case "location": return "📍 Localização";
+    case "vcard":
+    case "contact":  return "👤 Contato";
+    default:         return "";
+  }
+}
+
 function chatKey(chatId) {
   return "msgs/" + chatId.replace(/[^a-zA-Z0-9_-]/g, "_") + ".json";
 }
@@ -546,7 +563,7 @@ export default async function handler(req, res) {
         let lastMsgFromMe = false;
         if (msgs.length > 0) {
           const last = msgs[msgs.length - 1];
-          lastMsg       = last.body || last.text || "";
+          lastMsg       = msgPreview(last);
           lastTs        = last.ts   || 0;
           lastMsgFromMe = !!last.fromMe;
           pushname      = last.pushname || last.notifyName || "";

@@ -162,6 +162,23 @@ async function r2WriteJson(key, data) {
   await r2Put(key, Buffer.from(JSON.stringify(data), "utf8"), "application/json");
 }
 
+// Retorna texto de preview para o chatlist — usa body/caption ou fallback por tipo de mídia
+function msgPreview(msg) {
+  if (msg.body) return msg.body;
+  switch (msg.type) {
+    case "image":    return "📷 Imagem";
+    case "video":    return "🎥 Vídeo";
+    case "audio":
+    case "voice":    return "🎵 Áudio";
+    case "document": return "📄 Documento";
+    case "sticker":  return "⭐ Figurinha";
+    case "location": return "📍 Localização";
+    case "vcard":
+    case "contact":  return "👤 Contato";
+    default:         return msg.body || "";
+  }
+}
+
 // Atualiza chats.json com última msg + lastPatientTs + unread pré-computados
 async function updateChatsIndex(msg, msgs) {
   const chats = await r2Json("chats.json", []);
@@ -170,7 +187,7 @@ async function updateChatsIndex(msg, msgs) {
   const unread = computeUnread(msgs);
   const entry = {
     id:            msg.chatId,
-    lastMsg:       msg.body,
+    lastMsg:       msgPreview(msg),
     lastTs:        msg.ts,
     fromMe:        msg.fromMe,
     pushname:      msg.pushname || (idx >= 0 ? chats[idx].pushname : ""),

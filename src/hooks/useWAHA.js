@@ -17,6 +17,23 @@ import {
 import { MOCK_CHATS, MOCK_MESSAGES } from "../data/mock";
 
 // Ordena mensagens — estável por timestamp real, nunca usa índice de array como critério primário
+// Preview de mensagem para o chatlist — body/text ou fallback descritivo por tipo
+function msgPreview(msg) {
+  if (msg.text) return msg.text;
+  if (msg.location) return "📍 Localização";
+  switch (msg.type) {
+    case "image":    return "📷 Imagem";
+    case "video":    return "🎥 Vídeo";
+    case "audio":
+    case "voice":    return "🎵 Áudio";
+    case "document": return "📄 Documento";
+    case "sticker":  return "⭐ Figurinha";
+    case "vcard":
+    case "contact":  return "👤 Contato";
+    default:         return msg.media ? "📎 Mídia" : "";
+  }
+}
+
 function tsToNum(ts) {
   if (!ts) return 0;
   const n = new Date(ts).getTime();
@@ -1081,7 +1098,7 @@ export function useWAHA(operator) {
       setChats(prev => {
         const isPatient = msg.from === "patient";
         const autoRes   = (isPatient && isFarewell(msg.text)) || (!isPatient && isOperatorClosing(msg.text));
-        const lastMsg   = msg.text || (msg.location ? "📍 Localização" : msg.media ? "📎 Mídia" : "");
+        const lastMsg   = msgPreview(msg);
 
         // Encontra o chat por ID exato, depois por tail-10 e tail-8
         const target = _findTarget(prev);
@@ -1593,7 +1610,7 @@ export function useWAHA(operator) {
         const ex      = prev.find(c => c.id === chatId);
         const updated = prev.map(c => c.id !== chatId ? c : {
           ...c,
-          lastMsg:       lastAny?.text || c.lastMsg,
+          lastMsg:       (lastAny ? msgPreview(lastAny) : null) || c.lastMsg,
           lastTime:      lastAny?.time || c.lastTime,
           lastPatientTs: novoLPTs,
           unread:        ex?.unread ?? 0,
