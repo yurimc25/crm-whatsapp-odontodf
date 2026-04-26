@@ -187,6 +187,7 @@ export default function ChatWindow({
 }) {
   const [text, setText]               = useState("");
   const [sending, setSending]         = useState(false);
+  const [keepWaiting, setKeepWaiting] = useState(false);
   const [showForward, setShowForward] = useState(false);
   const [syncingMedia, setSyncingMedia] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -456,7 +457,7 @@ export default function ChatWindow({
         return;
       }
 
-      await onSend(text.trim(), replyTo?.id || null);
+      await onSend(text.trim(), replyTo?.id || null, keepWaiting);
       setReplyTo(null);
       setText("");
     }
@@ -899,6 +900,24 @@ export default function ChatWindow({
               onFocus={e => e.target.style.borderColor = editingId ? "#9090d8" : T.accent}
               onBlur={e => e.target.style.borderColor = editingId ? "#7c7ce8" : T.border} />
           </div>
+
+          {/* Toggle: manter chat aguardando após envio */}
+          {!recording && (
+            <button
+              onClick={() => setKeepWaiting(v => !v)}
+              title={keepWaiting ? "Aguardando resposta (clique para desativar)" : "Enviar e aguardar resposta do paciente"}
+              style={{
+                background: keepWaiting ? "rgba(212,149,106,.18)" : "transparent",
+                border: `1px solid ${keepWaiting ? T.accent : T.border}`,
+                borderRadius: 8, width: 36, height: 36,
+                color: keepWaiting ? T.accent : T.sub,
+                fontSize: 16, cursor: "pointer", flexShrink: 0,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                transition: "all .15s",
+              }}>
+              ⏳
+            </button>
+          )}
 
           {/* Botão gravar voz ou enviar texto */}
           {recording ? (

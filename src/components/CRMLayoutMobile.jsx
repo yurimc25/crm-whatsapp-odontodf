@@ -574,7 +574,7 @@ export default function CRMLayoutMobile({ operator, onLogout }) {
               }}
               messages={messages[activeChat.id] || []}
               operator={operator}
-              onSend={(text, replyToId) => send(activeChat.id, text, operator.name, replyToId)}
+              onSend={(text, replyToId, keepWaiting) => send(activeChat.id, text, operator.name, replyToId, keepWaiting)}
               onForward={toRole => forwardChat(activeChat.id, toRole)}
               onResolve={() => resolveChat(activeChat.id)}
               canForwardToAdmin={perms.verAdmin}

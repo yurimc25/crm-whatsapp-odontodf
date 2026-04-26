@@ -399,7 +399,7 @@ export default function CRMLayout({ operator, onLogout, notificationBell }) {
               chat={activeChat}
               messages={messages[activeChat.id] || []}
               operator={operator}
-              onSend={(text, replyToId) => send(activeChat.id, text, operator.name, replyToId)}
+              onSend={(text, replyToId, keepWaiting) => send(activeChat.id, text, operator.name, replyToId, keepWaiting)}
               onForward={toRole => forwardChat(activeChat.id, toRole)}
               onResolve={() => resolveChat(activeChat.id)}
               onDeleteMsg={(msgId, forEveryone) => deleteMsg(activeChat.id, msgId, forEveryone)}

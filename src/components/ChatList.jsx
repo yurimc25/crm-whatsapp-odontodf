@@ -603,7 +603,14 @@ function ChatItem({ chat, active, onClick, onOpenMenu, isMuted, now }) {
           <img src={photoUrl} alt={initials}
             style={{ width:46, height:46, borderRadius:"50%", objectFit:"cover",
               border:`2px solid ${T.border}`, display:"block" }}
-            onError={e => { e.target.style.display="none"; }} />
+            onError={() => {
+              // URL stale (404) — remove do cache e exibe iniciais
+              const cache = readPhotoCache();
+              delete cache[chat.id];
+              writePhotoCache(cache);
+              _photoFetched.delete(chat.id);
+              setPhotoUrl(null);
+            }} />
         ) : (
           <div style={{ width:46, height:46, borderRadius:"50%",
             background:chat.avatarColor+"33", color:chat.avatarColor,

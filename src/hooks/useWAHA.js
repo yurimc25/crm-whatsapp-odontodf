@@ -1759,7 +1759,7 @@ export function useWAHA(operator) {
 
 
   // ── 6. Envia mensagem ─────────────────────────────────────────
-  const send = useCallback(async (chatId, text, operatorName, replyToId = null) => {
+  const send = useCallback(async (chatId, text, operatorName, replyToId = null, keepWaiting = false) => {
     const now       = new Date();
     const formatted = `${operatorName}: ${text}`;
     const tmpMsg    = {
@@ -1774,7 +1774,10 @@ export function useWAHA(operator) {
     });
     setChats(prev => {
       const updated = prev.map(c => c.id !== chatId ? c : {
-        ...c, lastMsg: formatted, lastTs: tmpMsg.ts, lastTime: tmpMsg.time, lastPatientTs: null, unread: 0,
+        ...c, lastMsg: formatted, lastTs: tmpMsg.ts, lastTime: tmpMsg.time,
+        // keepWaiting: mantém chat na fila de espera após envio (ex: mensagem de boas-vindas)
+        lastPatientTs: keepWaiting ? tmpMsg.ts : null,
+        unread: keepWaiting ? (c.unread || 0) : 0,
       });
       persistChats(updated);
       return updated;
