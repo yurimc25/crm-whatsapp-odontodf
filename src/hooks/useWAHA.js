@@ -1513,6 +1513,9 @@ export function useWAHA(operator) {
         return undefined;
       };
 
+      // Calcula gaps fora do setMessages para poder usar no toSave depois
+      let detectedGaps = [];
+
       setMessages(prev => {
         if (activeChatRef.token !== token) return prev;
         const existing = prev[chatId] || [];
@@ -1560,6 +1563,7 @@ export function useWAHA(operator) {
 
         if (wahaGaps.length > 0) {
           console.log(`[load-msgs] 3-WAHA gaps detectados=${wahaGaps.length}:`, wahaGaps.map(m => `ts=${m.ts} from=${m.from} text=${String(m.text||"").slice(0,30)}`));
+          detectedGaps = wahaGaps; // expõe para o bloco toSave fora do callback
         }
 
         // Sequência canônica com gaps intercalados por timestamp
@@ -1581,7 +1585,7 @@ export function useWAHA(operator) {
         // Enriquece mídias existentes no R2 + persiste gaps (msgs que não chegaram via webhook)
         // gaps são marcados com isGap:true para o servidor inserir sem deduplicar com IDs existentes
         const toSave = wahaMsgs.map(w => {
-          const isGap = wahaGaps.some(g => g.id === w.id);
+          const isGap = detectedGaps.some(g => g.id === w.id);
           return {
             id:          w.id,
             chatId,
@@ -1595,7 +1599,7 @@ export function useWAHA(operator) {
             mimetype:    w.media?.mimetype || null,
             ...(isGap ? { isGap: true } : {}),
           };
-        }).filter(w => w.hasMedia || w.media || wahaGaps.some(g => g.id === w.id) || w.wahaShortId);
+        }).filter(w => w.hasMedia || w.media || detectedGaps.some(g => g.id === w.id) || w.wahaShortId);
         if (toSave.length > 0) {
           fetch(`/api/r2-data?type=msgs&chatId=${encodeURIComponent(chatId)}`, {
             method: "POST",
