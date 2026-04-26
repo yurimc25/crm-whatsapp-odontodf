@@ -2066,59 +2066,9 @@ export function useWAHA(operator) {
   // ── Sync de chats para R2 (multi-usuário) — a cada 5 min ────────────────────────────────
   // Envia a lista local enriquecida (nome resolvido, LID→phone, última mensagem) para R2.
   // O servidor faz merge: chats mais recentes vencem, sem apagar dados de outros clientes.
-  async function _syncChatsToR2() {
-    if (USE_MOCK) return;
-    const chats = _sessionChats.value || [];
-    if (!chats.length) return;
-    const lidCache = lidPhoneMapRef2.current;
-    try {
-      const payload = chats
-        .filter(c => c.id && !c.id.endsWith("@s.whatsapp.net"))
-        .map(c => {
-          // Resolve ID canônico: @lid → phone@c.us se possível
-          let resolvedId = c.id;
-          let resolvedPhone = null;
-          if (c.id.endsWith("@lid")) {
-            const lidOnly = c.id.replace(/@lid$/, "");
-            const cached  = lidCache[lidOnly];
-            if (cached?.phone) {
-              resolvedPhone = cached.phone;
-              resolvedId = cached.phone.replace(/\D/g, "") + "@c.us";
-            }
-          } else if (!c.id.endsWith("@g.us")) {
-            resolvedPhone = c.id.replace(/@.*$/, "").replace(/\D/g, "") || null;
-            // Normaliza para chave canônica (mesma lógica do backend) — evita duplicatas no R2
-            resolvedId = _normalizeDigits(resolvedPhone || "") || resolvedId;
-          }
-
-          // Nome: usa displayName (via ref para evitar closure stale)
-          const name = displayNameRef.current(c.id, c.name || c.pushname, c.pushname) || c.name || c.pushname || null;
-
-          return {
-            id:            resolvedId,
-            originalId:    resolvedId !== c.id ? c.id : undefined,
-            phone:         resolvedPhone,
-            pushname:      name || c.pushname || "",
-            lastMsg:       c.lastMsg  || "",
-            lastTs:        c.lastTs   ? new Date(c.lastTs).getTime() : 0,
-            lastPatientTs: c.lastPatientTs ? new Date(c.lastPatientTs).getTime() : null,
-            unread:        c.unread   || 0,
-            status:        c.status   || "open",
-            assignedTo:    c.assignedTo || null,
-            tags:          c.tags     || [],
-          };
-        });
-
-      await fetch("/api/r2-data?type=chats", {
-        method:  "POST",
-        headers: { "Content-Type": "application/json", "X-Internal-Key": ikey() },
-        body:    JSON.stringify(payload),
-      });
-      console.log(`[r2-sync] ${payload.length} chats enviados para R2`);
-    } catch (e) {
-      console.warn("[r2-sync] falha:", e.message);
-    }
-  }
+  // _syncChatsToR2 removido — R2 é populado exclusivamente pelo webhook (api/webhook.js)
+  // O cliente não deve sobrescrever o R2 com dados do localStorage
+  function _syncChatsToR2() {}
 
   // ── Resolução em lote de LIDs — processa TODOS os chats @lid ainda sem phone/nome ──
   // Delega para resolveLidAsync (useContacts) que já tem throttle (MAX_CONCURRENT_LIDS=6)
