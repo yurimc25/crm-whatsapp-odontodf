@@ -626,6 +626,13 @@ export function useWAHA(operator) {
     initChats().then(() => {
       setTimeout(_syncChatsToR2, 5000);
       setTimeout(_batchResolveLids, 8000);
+      // Varredura única de duplicatas @lid/@c.us no R2 — fire-and-forget, não bloqueia init
+      setTimeout(() => {
+        fetch("/api/r2-data?type=merge-lids", {
+          method: "POST",
+          headers: { "X-Internal-Key": ikey() },
+        }).catch(() => {});
+      }, 15000);
     });
   }, [sessionOk]);
 
