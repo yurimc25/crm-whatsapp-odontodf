@@ -384,10 +384,24 @@ export default async function handler(req, res) {
       // Dedup por ID e por timestamp+fromMe (evita duplicar se webhook já chegou)
       const seen = new Set(existing.map(m => m.id));
       const tsKey = `${msg.fromMe ? 1 : 0}_${Math.floor((msg.ts || 0) / 1000)}`;
-      const dupByTs = existing.some(m =>
+      const dupByTsIdx = existing.findIndex(m =>
         `${m.fromMe ? 1 : 0}_${Math.floor((m.ts || 0) / 1000)}` === tsKey
       );
-      if (!seen.has(msg.id) && !dupByTs) {
+      const dupById = seen.has(msg.id);
+
+      if (dupById || dupByTsIdx >= 0) {
+        // Enriquece mensagem existente com campos que o webhook pode não ter salvo (ex: location)
+        const idx = dupById ? existing.findIndex(m => m.id === msg.id) : dupByTsIdx;
+        if (idx >= 0) {
+          const cur = existing[idx];
+          let changed = false;
+          if (!cur.location && msg.location) { cur.location = msg.location; changed = true; }
+          if (!cur.operator && msg.operator)  { cur.operator = msg.operator; changed = true; }
+          if (changed) {
+            await r2Put(chatKey(chatId), Buffer.from(JSON.stringify(existing), "utf8"), "application/json");
+          }
+        }
+      } else {
         existing.push({ ...msg, chatId });
         existing.sort((a, b) => (a.ts || 0) - (b.ts || 0));
         if (existing.length > MAX_MSGS) existing.splice(0, existing.length - MAX_MSGS);
