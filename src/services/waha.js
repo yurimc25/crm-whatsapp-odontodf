@@ -407,7 +407,7 @@ export function normalizeMessage(wahaMsg) {
   };
 }
 
-function detectPatientCard(text) {
+export function detectPatientCard(text) {
   if (!text) return false;
 
   // NUNCA detecta mensagens de operador/bot

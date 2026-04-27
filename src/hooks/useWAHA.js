@@ -14,6 +14,7 @@ import {
   deleteMessage as wahaDeleteMessage, editMessage as wahaEditMessage,
   sendReaction as wahaSendReaction,
   sendLocation as wahaSendLocation,
+  detectPatientCard,
 } from "../services/waha";
 import { MOCK_CHATS, MOCK_MESSAGES } from "../data/mock";
 
@@ -1384,16 +1385,18 @@ export function useWAHA(operator) {
       } : null,
     } : null;
 
+    const bodyText = m.body || m.text || "";
     return {
       id:       m.id,
       chatId:   m.chatId,
       from:     m.from || (m.fromMe ? "operator" : "patient"),
       operator: m.operator || null,
-      text:     m.body || m.text || "",
+      text:     bodyText,
       type:     m.type || "chat",
       ts:       tsMs ? new Date(tsMs).toISOString() : null,
       time:     tsMs ? new Date(tsMs).toLocaleTimeString("pt-BR", { hour:"2-digit", minute:"2-digit" }) : "",
       hasMedia,
+      hasPatientCard: !hasMedia && !!(m.hasPatientCard ?? detectPatientCard(bodyText)),
       pushname: m.pushname || "",
       replyTo,
       revoked:  m.revoked || false,
