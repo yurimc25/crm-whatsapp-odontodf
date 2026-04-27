@@ -1550,12 +1550,18 @@ export function useWAHA(operator) {
 
         // Enriquece um msg canônico (R2 ou WS) com mídia/replyTo do WAHA sem tocar em ts/id/texto
         const enrichFromWaha = (m) => {
+          if (m.media && m.hasMedia && m.replyTo) return m; // R2 já completo
           const waha = getWaha(m.id, m);
           if (!waha) return m;
-          const media    = m.media || (waha.hasMedia ? waha.media : null);
-          const hasMedia = m.hasMedia || waha.hasMedia || false;
-          const wahaType = waha.type && waha.type !== "text" && waha.type !== "chat" ? waha.type : null;
-          return { ...m, media, hasMedia, type: wahaType || m.type, replyTo: m.replyTo || waha.replyTo || null };
+          const r2TypeValid = m.type && m.type !== "text" && m.type !== "chat";
+          const wahaTypeValid = waha.type && waha.type !== "text" && waha.type !== "chat";
+          return {
+            ...m,
+            media:    m.media    || (waha.hasMedia ? waha.media : null),
+            hasMedia: m.hasMedia || waha.hasMedia  || false,
+            type:     r2TypeValid ? m.type : (wahaTypeValid ? waha.type : m.type),
+            replyTo:  m.replyTo  || waha.replyTo   || null,
+          };
         };
 
         // Fontes canônicas: R2 (webhook) + WebSocket desta sessão — ts/id/texto preservados

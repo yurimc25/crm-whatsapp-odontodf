@@ -112,10 +112,27 @@ function normalizeMsg(payload) {
     } : null,
   } : null;
 
+  // Localização
+  const locRaw = payload.location || payload._data?.message?.locationMessage || null;
+  const location = locRaw ? {
+    latitude:  parseFloat(locRaw.latitude  ?? locRaw.degreesLatitude  ?? 0),
+    longitude: parseFloat(locRaw.longitude ?? locRaw.degreesLongitude ?? 0),
+    name:      locRaw.name    || null,
+    address:   locRaw.address || null,
+    thumbnail: locRaw.thumbnail || (locRaw.jpegThumbnail
+      ? (typeof locRaw.jpegThumbnail === "string"
+          ? `data:image/jpeg;base64,${locRaw.jpegThumbnail}`
+          : locRaw.jpegThumbnail?.data
+            ? `data:image/jpeg;base64,${Buffer.from(locRaw.jpegThumbnail.data).toString("base64")}`
+            : null)
+      : null),
+  } : null;
+
   return { id, chatId, ts: tsMs, fromMe, body, type, pushname,
            ...(wahaShortId ? { wahaShortId } : {}),
            ...(mimetype ? { mimetype } : {}),
-           ...(replyTo ? { replyTo } : {}) };
+           ...(replyTo ? { replyTo } : {}),
+           ...(location ? { location } : {}) };
 }
 
 // Resolve @lid → JID @c.us real via API de contatos do WAHA (server-side).
