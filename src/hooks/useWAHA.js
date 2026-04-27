@@ -1466,7 +1466,11 @@ export function useWAHA(operator) {
       }).then(r => r.ok ? r.json() : []).catch(() => []);
 
       const r2Msgs = Array.isArray(r2Raw)
-        ? sortMsgs(r2Raw.map(m => normalizeR2Msg(m.chatId ? m : { chatId, ...m })))
+        ? sortMsgs(
+            r2Raw
+              .filter(m => !String(m.id || "").startsWith("tmp-")) // descarta tmp-IDs salvos pelo send-msg antes do webhook chegar
+              .map(m => normalizeR2Msg(m.chatId ? m : { chatId, ...m }))
+          )
         : [];
 
       // Limpa flags de falha para mídias que o R2 confirmou terem wahaShortId

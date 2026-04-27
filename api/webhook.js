@@ -223,8 +223,16 @@ async function updateChatsIndex(msg, msgs) {
 // Salva mensagem no histórico e retorna lista atualizada
 async function saveMessage(msg) {
   const key  = chatKey(msg.chatId);
-  const msgs = await r2Json(key, []);
+  let msgs = await r2Json(key, []);
   if (msgs.find(m => m.id === msg.id)) return msgs; // duplicata por ID
+
+  // Remove entradas tmp-* com mesmo segundo+direção (criadas pelo send-msg do frontend)
+  const tsSec = Math.floor(msg.ts / 1000);
+  msgs = msgs.filter(m => {
+    if (!String(m.id).startsWith("tmp-")) return true;
+    return Math.floor((m.ts || 0) / 1000) !== tsSec || !!m.fromMe !== !!msg.fromMe;
+  });
+
   msgs.push(msg);
   msgs.sort((a, b) => a.ts - b.ts);
   if (msgs.length > MAX_MSGS_PER_CHAT) msgs.splice(0, msgs.length - MAX_MSGS_PER_CHAT);
