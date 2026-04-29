@@ -503,59 +503,83 @@ function Modal({ data, camposVazios, action, onConfirm, onClose }) {
     telefone:   data.telefone   || "",
   });
 
+  const [pos, setPos] = useState({ x: Math.max(0, window.innerWidth / 2 - 230), y: 80 });
+  const dragging = useRef(false);
+  const offset = useRef({ x: 0, y: 0 });
+
+  const onMouseDown = (e) => {
+    dragging.current = true;
+    offset.current = { x: e.clientX - pos.x, y: e.clientY - pos.y };
+    e.preventDefault();
+  };
+
+  useEffect(() => {
+    const onMove = (e) => {
+      if (!dragging.current) return;
+      setPos({ x: e.clientX - offset.current.x, y: e.clientY - offset.current.y });
+    };
+    const onUp = () => { dragging.current = false; };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+  }, []);
+
   return (
-    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.7)",
-      zIndex:1000, display:"flex", alignItems:"center", justifyContent:"center" }}
-      onClick={onClose}>
-      <div style={{ background:"#252525", borderRadius:12, padding:24,
-        width:460, maxWidth:"90vw", boxShadow:"0 20px 60px rgba(0,0,0,.6)",
-        border:"1px solid #383838" }}
-        onClick={e => e.stopPropagation()}>
+    <div style={{ position:"fixed", left: pos.x, top: pos.y,
+      zIndex:1000, background:"#252525", borderRadius:12, padding:24,
+      width:460, maxWidth:"90vw", boxShadow:"0 20px 60px rgba(0,0,0,.8)",
+      border:"1px solid #383838", userSelect: dragging.current ? "none" : "auto" }}>
 
-        <div style={{ fontWeight:700, fontSize:15, color:"#ececec", marginBottom:4 }}>
-          Completar dados do paciente
+      <div onMouseDown={onMouseDown} style={{ cursor:"grab", marginBottom:12,
+        borderBottom:"1px solid #333", paddingBottom:10,
+        display:"flex", alignItems:"flex-start", justifyContent:"space-between" }}>
+        <div>
+          <div style={{ fontWeight:700, fontSize:15, color:"#ececec", marginBottom:2 }}>
+            Completar dados do paciente
+          </div>
+          <div style={{ color:"#8e8e8e", fontSize:12 }}>
+            Preencha os campos ausentes antes de adicionar ao {action === "codental" ? "Codental" : "Doctoralia"}.
+          </div>
         </div>
-        <div style={{ color:"#8e8e8e", fontSize:12, marginBottom:16 }}>
-          Preencha os campos ausentes antes de adicionar ao {action === "codental" ? "Codental" : "Doctoralia"}.
-        </div>
+        <span title="Mover" style={{ color:"#555", fontSize:18, lineHeight:1, paddingLeft:8, paddingTop:2, flexShrink:0 }}>⠿</span>
+      </div>
 
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"10px 16px", marginBottom:20 }}>
-          {[["nome","Nome completo","span 2"],["cpf","CPF","span 1"],
-            ["convenio","Convênio / Plano","span 1"],["carteirinha","Nº da carteirinha","span 1"],
-            ["nascimento","Data de nascimento","span 1"],["telefone","Telefone","span 1"],
-            ["email","E-mail","span 2"]
-          ].map(([k,l,col]) => (
-            <div key={k} style={{ gridColumn:col }}>
-              <label style={{ display:"block", fontSize:10, fontWeight:700,
-                color: camposVazios.includes(k) ? "#c9a84c" : "#8e8e8e",
-                marginBottom:4, textTransform:"uppercase", letterSpacing:.5 }}>
-                {l}{camposVazios.includes(k) ? " *" : ""}
-              </label>
-              <input value={form[k]} onChange={e => setForm(p=>({...p,[k]:e.target.value}))}
-                placeholder={camposVazios.includes(k) ? "Obrigatório..." : ""}
-                style={{ width:"100%", background: camposVazios.includes(k) ? "#2a2010" : "#1e1e1e",
-                  border:`1px solid ${camposVazios.includes(k) ? "#c9a84c66" : "#383838"}`,
-                  borderRadius:6, padding:"8px 10px", color:"#ececec",
-                  fontSize:13, outline:"none", boxSizing:"border-box",
-                  fontFamily:"'DM Sans', sans-serif" }}
-                onFocus={e => e.target.style.borderColor="#d4956a"}
-                onBlur={e => e.target.style.borderColor=camposVazios.includes(k)?"#c9a84c66":"#383838"} />
-            </div>
-          ))}
-        </div>
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"10px 16px", marginBottom:20 }}>
+        {[["nome","Nome completo","span 2"],["cpf","CPF","span 1"],
+          ["convenio","Convênio / Plano","span 1"],["carteirinha","Nº da carteirinha","span 1"],
+          ["nascimento","Data de nascimento","span 1"],["telefone","Telefone","span 1"],
+          ["email","E-mail","span 2"]
+        ].map(([k,l,col]) => (
+          <div key={k} style={{ gridColumn:col }}>
+            <label style={{ display:"block", fontSize:10, fontWeight:700,
+              color: camposVazios.includes(k) ? "#c9a84c" : "#8e8e8e",
+              marginBottom:4, textTransform:"uppercase", letterSpacing:.5 }}>
+              {l}{camposVazios.includes(k) ? " *" : ""}
+            </label>
+            <input value={form[k]} onChange={e => setForm(p=>({...p,[k]:e.target.value}))}
+              placeholder={camposVazios.includes(k) ? "Obrigatório..." : ""}
+              style={{ width:"100%", background: camposVazios.includes(k) ? "#2a2010" : "#1e1e1e",
+                border:`1px solid ${camposVazios.includes(k) ? "#c9a84c66" : "#383838"}`,
+                borderRadius:6, padding:"8px 10px", color:"#ececec",
+                fontSize:13, outline:"none", boxSizing:"border-box",
+                fontFamily:"'DM Sans', sans-serif" }}
+              onFocus={e => e.target.style.borderColor="#d4956a"}
+              onBlur={e => e.target.style.borderColor=camposVazios.includes(k)?"#c9a84c66":"#383838"} />
+          </div>
+        ))}
+      </div>
 
-        <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
-          <button onClick={onClose} style={{ background:"transparent",
-            border:"1px solid #383838", borderRadius:6, padding:"8px 16px",
-            color:"#8e8e8e", fontSize:13, cursor:"pointer" }}>
-            Cancelar
-          </button>
-          <button onClick={() => onConfirm(form)} style={{ background:"#3a2a1e",
-            border:"1px solid #d4956a44", borderRadius:6, padding:"8px 16px",
-            color:"#d4956a", fontSize:13, fontWeight:600, cursor:"pointer" }}>
-            ✓ Confirmar e adicionar
-          </button>
-        </div>
+      <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
+        <button onClick={onClose} style={{ background:"transparent",
+          border:"1px solid #383838", borderRadius:6, padding:"8px 16px",
+          color:"#8e8e8e", fontSize:13, cursor:"pointer" }}>
+          Cancelar
+        </button>
+        <button onClick={() => onConfirm(form)} style={{ background:"#3a2a1e",
+          border:"1px solid #d4956a44", borderRadius:6, padding:"8px 16px",
+          color:"#d4956a", fontSize:13, fontWeight:600, cursor:"pointer" }}>
+          ✓ Confirmar e adicionar
+        </button>
       </div>
     </div>
   );

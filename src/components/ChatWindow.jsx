@@ -718,6 +718,7 @@ export default function ChatWindow({
               msg={item}
               currentOperator={operator}
               onOcrResult={handleOcrResult}
+              chatPhone={(chat.id || "").replace(/@.*/, "").replace(/\D/g, "") || null}
               onContextMenu={(e, msg) => {
                 e.preventDefault();
                 setMsgCtxMenu({ msg, x: e.clientX, y: e.clientY });
@@ -1051,8 +1052,8 @@ function LocationBubble({ location }) {
   );
 }
 
-function MessageBubble({ msg, currentOperator, onContextMenu, onOcrResult }) {
-  if (msg.hasPatientCard) return <PatientCardDetected msg={msg} />;
+function MessageBubble({ msg, currentOperator, onContextMenu, onOcrResult, chatPhone }) {
+  if (msg.hasPatientCard) return <PatientCardDetected msg={msg} chatPhone={msg.chatPhone ?? chatPhone} />;
   const isPatient  = msg.from === "patient";
   const isBot      = msg.operator?.includes("🤖");
   const isMe       = msg.operator === currentOperator?.name;
